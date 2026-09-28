@@ -368,8 +368,6 @@ definitions:
     properties:
       host:
         type: string
-      password:
-        type: string
       port:
         description: defaults to 22
         type: integer
@@ -379,6 +377,7 @@ definitions:
         type: string
     required:
     - host
+    - privateKey
     - username
     type: object
   github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping:

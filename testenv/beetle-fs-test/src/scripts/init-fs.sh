@@ -13,10 +13,11 @@
 # steps later. Copying it here puts a root-owned 0600 file in /root/.ssh whatever
 # the host side looks like.
 #
-# ⚠ Key authentication is not a preference here, it is a requirement. transx-ex's
-#   SSH transport is key-only (pkg/core/migration/filesystem.go ResolveSSHConfig
-#   fills PrivateKey and never Password), so a password-authenticated source can
-#   be inspected by cm-honeybee and then fails at the transfer.
+# ⚠ Key authentication is not a preference here, it is a requirement. cm-honeybee
+#   refuses a password on an fs connection (HTTP 400), and cm-centipede
+#   authenticates SSH by key only (pkg/core/migration/filesystem.go
+#   ResolveSSHConfig fills PrivateKey and never a password), so a
+#   password-authenticated source cannot even be registered.
 
 set -euo pipefail
 

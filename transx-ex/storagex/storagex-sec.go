@@ -65,8 +65,10 @@ func GetKeyExpiry() time.Duration {
 //   S3/Minio Credentials:
 //     - source.objectStorage.minio.accessKeyId
 //     - source.objectStorage.minio.secretAccessKey
+//     - source.objectStorage.minio.sshTunnel.privateKey
 //     - destination.objectStorage.minio.accessKeyId
 //     - destination.objectStorage.minio.secretAccessKey
+//     - destination.objectStorage.minio.sshTunnel.privateKey
 //
 //   Spider Authentication:
 //     - source.objectStorage.spider.auth.basic.password
@@ -91,8 +93,10 @@ var sensitiveFields = []string{
 	// S3/Minio credentials
 	"source.objectStorage.minio.accessKeyId",
 	"source.objectStorage.minio.secretAccessKey",
+	"source.objectStorage.minio.sshTunnel.privateKey",
 	"destination.objectStorage.minio.accessKeyId",
 	"destination.objectStorage.minio.secretAccessKey",
+	"destination.objectStorage.minio.sshTunnel.privateKey",
 
 	// Spider authentication
 	"source.objectStorage.spider.auth.basic.password",

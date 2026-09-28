@@ -37,7 +37,12 @@ const defaultObjectConcurrency = 4
 // honeybee.GetConnectionInfo. A minio group must name one, so the empty case is
 // a group registered before that was required: there the caller's own endpoint
 // is used as before.
+//
+// A connection with os_access_type = "ssh-tunnel" names an endpoint only its SSH
+// host can reach, so the host is passed on as the config's SSHTunnel and every
+// connection to the store is opened from there.
 func ToMinioS3Config(cfg honeybee.HoneybeeConnConfig) (*transxex.S3MinioConfig, error) {
+	var s3cfg *transxex.S3MinioConfig
 	if strings.TrimSpace(cfg.ProviderName) == "" {
 		endpoint := cfg.Endpoint
 		useSSL := cfg.UseSSL
@@ -47,23 +52,37 @@ func ToMinioS3Config(cfg honeybee.HoneybeeConnConfig) (*transxex.S3MinioConfig, 
 		} else {
 			endpoint = strings.TrimPrefix(endpoint, "http://")
 		}
-		return &transxex.S3MinioConfig{
+		s3cfg = &transxex.S3MinioConfig{
 			Endpoint:        endpoint,
 			AccessKeyId:     cfg.AccessKey,
 			SecretAccessKey: cfg.SecretKey,
 			Region:          cfg.Region,
 			UseSSL:          useSSL,
-		}, nil
+		}
+	} else {
+		var err error
+		s3cfg, err = ToInlineMinioConfig(commonmodel.MinioConnConfig{
+			ProviderName:    cfg.ProviderName,
+			Endpoint:        cfg.Endpoint,
+			AccessKeyId:     cfg.AccessKey,
+			SecretAccessKey: cfg.SecretKey,
+			Region:          cfg.Region,
+			UseSSL:          cfg.UseSSL,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return ToInlineMinioConfig(commonmodel.MinioConnConfig{
-		ProviderName:    cfg.ProviderName,
-		Endpoint:        cfg.Endpoint,
-		AccessKeyId:     cfg.AccessKey,
-		SecretAccessKey: cfg.SecretKey,
-		Region:          cfg.Region,
-		UseSSL:          cfg.UseSSL,
-	})
+	if t := cfg.OSTunnel; t != nil {
+		s3cfg.SSHTunnel = &transxex.SSHConfig{
+			Host:       t.Host,
+			Port:       t.Port,
+			Username:   t.User,
+			PrivateKey: normalizePEMKey(t.PrivateKey),
+		}
+	}
+	return s3cfg, nil
 }
 
 // tumblebugPathPrefix is the group every cb-tumblebug namespace route hangs off

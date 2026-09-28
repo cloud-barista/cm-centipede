@@ -153,6 +153,7 @@ func planObjectStorageTransfer(model DataMigrationModel) (*Pipeline, error) {
 	}
 	dstProvider, err := NewS3Provider(model.Destination)
 	if err != nil {
+		_ = CloseS3Provider(srcProvider)
 		cleanup()
 		return nil, fmt.Errorf("failed to create destination S3 provider: %w", err)
 	}
@@ -163,7 +164,7 @@ func planObjectStorageTransfer(model DataMigrationModel) (*Pipeline, error) {
 	return &Pipeline{
 		Name:     PipelineObjectStorageTransfer,
 		Strategy: model.Strategy,
-		Cleanup:  cleanup,
+		Cleanup:  withProviders(cleanup, srcProvider, dstProvider),
 		Steps: []Step{
 			{
 				Name:        StepDownloadFromS3,
@@ -213,6 +214,7 @@ func planFilesystemToObjectStorage(model DataMigrationModel) (*Pipeline, error) 
 		return &Pipeline{
 			Name:     PipelineCrossStorageTransfer,
 			Strategy: model.Strategy,
+			Cleanup:  withProviders(nil, s3Provider),
 			Steps: []Step{
 				{
 					Name:        StepUploadToS3,
@@ -227,10 +229,12 @@ func planFilesystemToObjectStorage(model DataMigrationModel) (*Pipeline, error) 
 	// Relay transfer: ssh → local → s3
 	stagingLoc, cleanup, err := newStagingLocation()
 	if err != nil {
+		_ = CloseS3Provider(s3Provider)
 		return nil, err
 	}
 	rsyncExec, err := NewRsyncExecutor(model.Source, stagingLoc)
 	if err != nil {
+		_ = CloseS3Provider(s3Provider)
 		cleanup()
 		return nil, fmt.Errorf("failed to create rsync executor: %w", err)
 	}
@@ -238,7 +242,7 @@ func planFilesystemToObjectStorage(model DataMigrationModel) (*Pipeline, error) 
 	return &Pipeline{
 		Name:     PipelineCrossStorageTransfer,
 		Strategy: model.Strategy,
-		Cleanup:  cleanup,
+		Cleanup:  withProviders(cleanup, s3Provider),
 		Steps: []Step{
 			{
 				Name:        StepRsyncFromServer,
@@ -271,6 +275,7 @@ func planObjectStorageToFilesystem(model DataMigrationModel) (*Pipeline, error) 
 		return &Pipeline{
 			Name:     PipelineCrossStorageTransfer,
 			Strategy: model.Strategy,
+			Cleanup:  withProviders(nil, s3Provider),
 			Steps: []Step{
 				{
 					Name:        StepDownloadFromS3,
@@ -285,10 +290,12 @@ func planObjectStorageToFilesystem(model DataMigrationModel) (*Pipeline, error) 
 	// Relay transfer: s3 → local → ssh
 	stagingLoc, cleanup, err := newStagingLocation()
 	if err != nil {
+		_ = CloseS3Provider(s3Provider)
 		return nil, err
 	}
 	rsyncExec, err := NewRsyncExecutor(stagingLoc, model.Destination)
 	if err != nil {
+		_ = CloseS3Provider(s3Provider)
 		cleanup()
 		return nil, fmt.Errorf("failed to create rsync executor: %w", err)
 	}
@@ -296,7 +303,7 @@ func planObjectStorageToFilesystem(model DataMigrationModel) (*Pipeline, error) 
 	return &Pipeline{
 		Name:     PipelineCrossStorageTransfer,
 		Strategy: model.Strategy,
-		Cleanup:  cleanup,
+		Cleanup:  withProviders(cleanup, s3Provider),
 		Steps: []Step{
 			{
 				Name:        StepDownloadFromS3,
@@ -360,6 +367,32 @@ func newStagingLocation() (DataLocation, func(), error) {
 	return loc, func() { _ = os.RemoveAll(dir) }, nil
 }
 
+// withProviders extends a pipeline's cleanup so it also closes the S3 providers
+// the planner created. A tunnelled provider holds an SSH connection, and the
+// pipeline's Cleanup is the one moment its owner is known to be finished with
+// it. cleanup may be nil, and is returned unchanged when no provider holds
+// anything, so a pipeline that allocated nothing still carries no Cleanup.
+func withProviders(cleanup func(), providers ...S3Provider) func() {
+	var held []S3Provider
+	for _, p := range providers {
+		if mp, ok := p.(*MinioProvider); ok && mp.tunnel != nil {
+			held = append(held, p)
+		}
+	}
+	if len(held) == 0 {
+		return cleanup
+	}
+
+	return func() {
+		for _, p := range held {
+			_ = CloseS3Provider(p)
+		}
+		if cleanup != nil {
+			cleanup()
+		}
+	}
+}
+
 // NewS3Provider creates an S3 provider from DataLocation.
 func NewS3Provider(loc DataLocation) (S3Provider, error) {
 	if !loc.IsObjectStorage() || loc.ObjectStorage == nil {
@@ -394,6 +427,7 @@ func NewS3Provider(loc DataLocation) (S3Provider, error) {
 			Region:          osAccess.Minio.Region,
 			UseSSL:          osAccess.Minio.UseSSL,
 			BucketLookup:    osAccess.Minio.BucketLookup,
+			SSHTunnel:       osAccess.Minio.SSHTunnel,
 		}
 		return NewMinioProvider(cfg, bucket)
 

@@ -42,17 +42,21 @@ const (
 	sourceGroupTypeMinIO = "minio"
 )
 
+// accessTypeSSHTunnel is honeybee's db_access_type / os_access_type value for a
+// source reached through an SSH host.
+const accessTypeSSHTunnel = "ssh-tunnel"
+
 // HoneybeeConnConfig is the normalised connection config derived from a
 // honeybee ConnectionInfo response. Only the fields relevant to ConnType are
 // populated; callers should switch on ConnType before reading credentials.
 type HoneybeeConnConfig struct {
 	ConnType string // "ssh" | "objectStorage" | "dbms"
 
-	// SSH (ConnType = "ssh")
+	// SSH (ConnType = "ssh"). Key auth only: honeybee accepts no password for
+	// the source group types centipede reads.
 	Host       string
 	Port       int
 	User       string
-	Password   string
 	PrivateKey string
 
 	// ObjectStorage (ConnType = "objectStorage")
@@ -60,6 +64,11 @@ type HoneybeeConnConfig struct {
 	AccessKey string
 	SecretKey string
 	UseSSL    bool
+
+	// OSTunnel is set when os_access_type = "ssh-tunnel": Endpoint is then
+	// reachable only from that SSH host, and every connection to it has to be
+	// opened from there.
+	OSTunnel *SSHTunnel
 
 	// ProviderName and Region come from the connection's SOURCE GROUP rather than
 	// from the connection itself, and they are read for one reason: cm-honeybee
@@ -100,8 +109,15 @@ type HoneybeeConnConfig struct {
 	SSHTunnelHost       string
 	SSHTunnelPort       int
 	SSHTunnelUser       string
-	SSHTunnelPassword   string
 	SSHTunnelPrivateKey string
+}
+
+// SSHTunnel is the SSH host a connection's endpoint is reached through.
+type SSHTunnel struct {
+	Host       string
+	Port       int
+	User       string
+	PrivateKey string
 }
 
 // honeybeeConnectionInfo mirrors the JSON returned by
@@ -112,7 +128,6 @@ type honeybeeConnectionInfo struct {
 	IPAddress  string `json:"ip_address,omitempty"`
 	SSHPort    string `json:"ssh_port,omitempty"`
 	User       string `json:"user,omitempty"`
-	Password   string `json:"password,omitempty"`
 	PrivateKey string `json:"private_key,omitempty"`
 
 	// DB fields
@@ -134,6 +149,7 @@ type honeybeeConnectionInfo struct {
 	SourceGroupID string `json:"source_group_id,omitempty"`
 
 	// MinIO / ObjectStorage fields
+	OSAccessType      string `json:"os_access_type,omitempty"` // "direct" | "ssh-tunnel"
 	OSEndpoint        string `json:"os_endpoint,omitempty"`
 	OSAccessKeyId     string `json:"os_access_key_id,omitempty"`
 	OSSecretAccessKey string `json:"os_secret_access_key,omitempty"`
@@ -237,17 +253,17 @@ func mapToConfig(raw *honeybeeConnectionInfo, sg *honeybeeSourceGroup, connID st
 
 	switch sg.Type {
 	case sourceGroupTypeFS:
-		if err := fillSSH(cfg, raw); err != nil {
+		if err := fillSSH(cfg, raw, connID); err != nil {
 			return nil, err
 		}
 
 	case sourceGroupTypeDB:
-		if err := fillDBMS(cfg, raw); err != nil {
+		if err := fillDBMS(cfg, raw, connID); err != nil {
 			return nil, err
 		}
 
 	case sourceGroupTypeMinIO:
-		if err := fillObjectStorage(cfg, raw); err != nil {
+		if err := fillObjectStorage(cfg, raw, connID); err != nil {
 			return nil, err
 		}
 
@@ -261,34 +277,49 @@ func mapToConfig(raw *honeybeeConnectionInfo, sg *honeybeeSourceGroup, connID st
 	return cfg, nil
 }
 
-// fillSSH populates SSH-type fields, decrypting user/password/private_key.
-func fillSSH(cfg *HoneybeeConnConfig, raw *honeybeeConnectionInfo) error {
-	cfg.ConnType = ConnTypeSSH
-	cfg.Host = raw.IPAddress
-
+// decryptSSH reads the SSH host of a connection: its address and the decrypted
+// user and private key. The key is required, because SSH is authenticated by key
+// only. A password honeybee may still hold for an older connection is not read.
+func decryptSSH(raw *honeybeeConnectionInfo, connID string) (*SSHTunnel, error) {
 	port, _ := strconv.Atoi(raw.SSHPort)
-	cfg.Port = port
+	t := &SSHTunnel{Host: raw.IPAddress, Port: port}
 
 	var err error
-	if cfg.User, err = decryptField(raw.User); err != nil {
-		return fmt.Errorf("decrypt ssh user: %w", err)
-	}
-	if cfg.Password, err = decryptField(raw.Password); err != nil {
-		return fmt.Errorf("decrypt ssh password: %w", err)
+	if t.User, err = decryptField(raw.User); err != nil {
+		return nil, fmt.Errorf("decrypt ssh user: %w", err)
 	}
 	pk, err := decryptField(raw.PrivateKey)
 	if err != nil {
-		return fmt.Errorf("decrypt ssh private_key: %w", err)
+		return nil, fmt.Errorf("decrypt ssh private_key: %w", err)
 	}
-	if pk == "-" {
-		pk = ""
+	// "-" is honeybee's placeholder for "no key".
+	if pk == "" || pk == "-" {
+		return nil, fmt.Errorf("honeybee connection %s has no ssh private_key; "+
+			"SSH access is authenticated by key only", connID)
 	}
-	cfg.PrivateKey = pk
+	t.PrivateKey = pk
+	return t, nil
+}
+
+// fillSSH populates SSH-type fields, decrypting user/private_key.
+func fillSSH(cfg *HoneybeeConnConfig, raw *honeybeeConnectionInfo, connID string) error {
+	cfg.ConnType = ConnTypeSSH
+
+	t, err := decryptSSH(raw, connID)
+	if err != nil {
+		return err
+	}
+	cfg.Host = t.Host
+	cfg.Port = t.Port
+	cfg.User = t.User
+	cfg.PrivateKey = t.PrivateKey
 	return nil
 }
 
 // fillObjectStorage populates ObjectStorage-type fields, decrypting access/secret keys.
-func fillObjectStorage(cfg *HoneybeeConnConfig, raw *honeybeeConnectionInfo) error {
+// When os_access_type = "ssh-tunnel", the SSH host the endpoint is reached
+// through is populated as well.
+func fillObjectStorage(cfg *HoneybeeConnConfig, raw *honeybeeConnectionInfo, connID string) error {
 	cfg.ConnType = ConnTypeObjectStorage
 	cfg.Endpoint = raw.OSEndpoint
 	cfg.UseSSL = raw.OSUseSSL
@@ -302,12 +333,21 @@ func fillObjectStorage(cfg *HoneybeeConnConfig, raw *honeybeeConnectionInfo) err
 	if cfg.SecretKey, err = decryptField(raw.OSSecretAccessKey); err != nil {
 		return fmt.Errorf("decrypt os_secret_access_key: %w", err)
 	}
+
+	if raw.OSAccessType == accessTypeSSHTunnel {
+		if raw.IPAddress == "" {
+			return fmt.Errorf("honeybee connection %s is %s but names no ip_address", connID, accessTypeSSHTunnel)
+		}
+		if cfg.OSTunnel, err = decryptSSH(raw, connID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // fillDBMS populates DBMS-type fields, decrypting db_username and db_password.
 // When db_access_type = "ssh-tunnel", SSH tunnel credentials are also populated.
-func fillDBMS(cfg *HoneybeeConnConfig, raw *honeybeeConnectionInfo) error {
+func fillDBMS(cfg *HoneybeeConnConfig, raw *honeybeeConnectionInfo, connID string) error {
 	cfg.ConnType = ConnTypeDBMS
 	cfg.DBType = raw.DBType
 	cfg.DBHost = raw.DBHost
@@ -331,25 +371,15 @@ func fillDBMS(cfg *HoneybeeConnConfig, raw *honeybeeConnectionInfo) error {
 	}
 
 	// SSH tunnel credentials for ssh-tunnel access type
-	if raw.DBAccessType == "ssh-tunnel" && raw.IPAddress != "" {
-		cfg.SSHTunnelHost = raw.IPAddress
-		tunnelPort, _ := strconv.Atoi(raw.SSHPort)
-		cfg.SSHTunnelPort = tunnelPort
-
-		if cfg.SSHTunnelUser, err = decryptField(raw.User); err != nil {
-			return fmt.Errorf("decrypt ssh tunnel user: %w", err)
-		}
-		if cfg.SSHTunnelPassword, err = decryptField(raw.Password); err != nil {
-			return fmt.Errorf("decrypt ssh tunnel password: %w", err)
-		}
-		pk, err := decryptField(raw.PrivateKey)
+	if raw.DBAccessType == accessTypeSSHTunnel && raw.IPAddress != "" {
+		t, err := decryptSSH(raw, connID)
 		if err != nil {
-			return fmt.Errorf("decrypt ssh tunnel private_key: %w", err)
+			return err
 		}
-		if pk == "-" {
-			pk = ""
-		}
-		cfg.SSHTunnelPrivateKey = pk
+		cfg.SSHTunnelHost = t.Host
+		cfg.SSHTunnelPort = t.Port
+		cfg.SSHTunnelUser = t.User
+		cfg.SSHTunnelPrivateKey = t.PrivateKey
 	}
 
 	return nil

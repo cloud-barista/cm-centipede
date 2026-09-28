@@ -85,9 +85,9 @@ The container this example uses is **`fs-source`**:
 | key | `testenv/dockerenv/ssh_keys/id_rsa` (generated on first run) |
 | data | `/testdata` — documents, csv/json, media, logs, scripts |
 
-**Key authentication, not a password.** cm-honeybee accepts either, but
-cm-centipede's SSH transport has no password field, so a source it cannot reach
-by key cannot be migrated.
+**Key authentication, not a password.** cm-honeybee refuses a password on an fs
+connection (HTTP 400), and cm-centipede authenticates SSH by key only, so a
+source it cannot reach by key cannot even be registered.
 
 The source also needs **outbound internet access** and **rsync** — see step 4 for
 why.

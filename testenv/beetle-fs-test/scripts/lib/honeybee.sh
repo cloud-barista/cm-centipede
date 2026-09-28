@@ -150,8 +150,8 @@ hb_source_group() {
 #
 #   ssh_port is a string in honeybee's model, not a number, so it is passed as
 #   one. No password is sent: the image refuses password authentication, and
-#   cm-centipede could not use one anyway — transx-ex's SSH transport has no
-#   password field.
+#   cm-honeybee refuses a password on an fs connection anyway (HTTP 400) — the
+#   key is the only credential it accepts.
 #
 #   fs_scan_path is what the inspect reads: the scan root belongs to the
 #   connection, not to the import request, so it is set here once and every

@@ -113,21 +113,20 @@ type BeetleDBRef struct {
 // ── Inline type ──────────────────────────────────────────────────────────────
 
 // SSHConnConfig — directly supplied SSH access info. Maps to transxex.SSHConfig /
-// transxex SSH tunnel config. AES-encrypted on store: Password, PrivateKey.
+// transxex SSH tunnel config. Authentication is by key only, so there is no
+// password field. AES-encrypted on store: PrivateKey.
 type SSHConnConfig struct {
 	Host       string `json:"host"       validate:"required"`
 	Port       int    `json:"port,omitempty"` // defaults to 22
 	Username   string `json:"username"   validate:"required"`
-	Password   string `json:"password,omitempty"`
-	PrivateKey string `json:"privateKey,omitempty"`
+	PrivateKey string `json:"privateKey" validate:"required"`
 }
 
 // MinioConnConfig — directly supplied object storage access info. The field set
 // mirrors cm-honeybee ConnectionInfo's MinIO fields (os_*) plus
-// SourceGroup.ProviderName. No field corresponds to os_access_type: object
-// storage access is always direct. An SSH tunnel would need an agent to open it,
-// which exists on a honeybee source node but not on a migration target, and
-// transx-ex has no tunnelled transfer path for storage either.
+// SourceGroup.ProviderName. No field corresponds to os_access_type: inline
+// object storage access is always direct. A tunnelled store is reached only
+// through a honeybee reference, whose SSH host centipede reads from honeybee.
 //
 // Maps to transxex.S3MinioConfig after ProviderName is resolved into an
 // endpoint. AES-encrypted on store: SecretAccessKey.
@@ -172,7 +171,7 @@ type MinioConnConfig struct {
 // targetmodel.DBMigrationInfo.SrcName/DstName, which
 // DBConnConfigToDBMSLocation and ResolveDBMSLocation take as an argument.
 //
-// AES-encrypted on store: Password, SSHTunnel.Password, SSHTunnel.PrivateKey.
+// AES-encrypted on store: Password, SSHTunnel.PrivateKey.
 type DBConnConfig struct {
 	// ProviderName records where the database is hosted. transx-ex carries it
 	// through to DBMSLocation.ProviderName but never reads it: no routing,

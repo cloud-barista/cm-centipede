@@ -28,8 +28,7 @@
 # ── Access is always direct ─────────────────────────────────────────────────
 # os_access_type is "direct", and there is no other choice worth offering: the
 # ssh-tunnel branch of doImportObjectStorage sends the inspect to an agent
-# installed on the source host, which this folder does not deploy, and transx-ex
-# has no tunnelled transfer path for storage either.
+# installed on the source host, which this folder does not deploy.
 #
 # ⚠ The S3 keys travel in the connection_info body, which is why
 #   os_access_key_id / os_secret_access_key are in common.sh's masking filter.

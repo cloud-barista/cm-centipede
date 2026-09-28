@@ -50,8 +50,8 @@ func validateConnectionRef(ref commonmodel.ConnectionRef) string {
 		if ref.SSH == nil {
 			return "ssh is required"
 		}
-		if ref.SSH.Host == "" || ref.SSH.Username == "" {
-			return "ssh.host, username are required"
+		if ref.SSH.Host == "" || ref.SSH.Username == "" || ref.SSH.PrivateKey == "" {
+			return "ssh.host, username, privateKey are required"
 		}
 	case commonmodel.ConnectionSourceMinio:
 		if ref.Minio == nil {
@@ -81,8 +81,9 @@ func validateConnectionRef(ref commonmodel.ConnectionRef) string {
 				return "db.host is required for accessType=direct"
 			}
 		case "sshTunnel":
-			if ref.DB.SSHTunnel == nil || ref.DB.SSHTunnel.Host == "" || ref.DB.SSHTunnel.Username == "" {
-				return "db.sshTunnel.host, username are required for accessType=sshTunnel"
+			if ref.DB.SSHTunnel == nil || ref.DB.SSHTunnel.Host == "" || ref.DB.SSHTunnel.Username == "" ||
+				ref.DB.SSHTunnel.PrivateKey == "" {
+				return "db.sshTunnel.host, username, privateKey are required for accessType=sshTunnel"
 			}
 		default:
 			return "db.accessType must be 'direct' or 'sshTunnel'"

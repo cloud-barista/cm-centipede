@@ -257,6 +257,11 @@ func DecryptStorageModelWith(m StorageMigrationModel, keyPair *KeyPair) (Storage
 // "minio" resolves to Azure when its endpoint addresses Azure Blob Storage.
 func NewS3Provider(loc StorageLocation) (S3Provider, error) { return storagex.NewS3Provider(loc) }
 
+// CloseS3Provider releases what a provider holds open — the SSH connection of a
+// MinIO location with an SSH tunnel. It is a no-op for every other provider, so
+// a caller of NewS3Provider can always defer it.
+func CloseS3Provider(p S3Provider) error { return storagex.CloseS3Provider(p) }
+
 // NewMinioProvider builds a provider that talks S3 directly through minio-go.
 // S3-compatible services only — use NewAzureProvider for Azure Blob Storage,
 // or let NewS3Provider route by endpoint.

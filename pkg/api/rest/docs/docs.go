@@ -1052,13 +1052,11 @@ const docTemplate = `{
             "type": "object",
             "required": [
                 "host",
+                "privateKey",
                 "username"
             ],
             "properties": {
                 "host": {
-                    "type": "string"
-                },
-                "password": {
                     "type": "string"
                 },
                 "port": {

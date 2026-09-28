@@ -35,7 +35,6 @@ func DBConnConfigToDBMSLocation(cfg commonmodel.DBConnConfig, database string) (
 				Host:       cfg.SSHTunnel.Host,
 				Port:       cfg.SSHTunnel.Port,
 				Username:   cfg.SSHTunnel.Username,
-				Password:   cfg.SSHTunnel.Password,
 				PrivateKey: cfg.SSHTunnel.PrivateKey,
 			},
 			DBHost:     cfg.Host,
@@ -131,7 +130,6 @@ func HoneybeeToDBMSLocation(cfg honeybee.HoneybeeConnConfig, database string) tr
 			Host:       cfg.SSHTunnelHost,
 			Port:       cfg.SSHTunnelPort,
 			Username:   cfg.SSHTunnelUser,
-			Password:   cfg.SSHTunnelPassword,
 			PrivateKey: cfg.SSHTunnelPrivateKey,
 		}
 		tunnel := &transxex.SSHTunnelConfig{

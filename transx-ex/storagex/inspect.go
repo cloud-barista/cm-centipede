@@ -705,6 +705,7 @@ func InspectObjectStorage(loc DataLocation) (*OSInspectResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create S3 provider: %w", err)
 	}
+	defer CloseS3Provider(provider) //nolint:errcheck — a close failure cannot change the result
 
 	bucket, prefix := ParseBucketAndKey(loc.Path)
 	objects, err := provider.ListObjects(prefix)

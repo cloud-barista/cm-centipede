@@ -287,6 +287,11 @@ type S3MinioConfig struct {
 	// BucketLookup selects the bucket addressing style: "" (auto) | "dns" | "path".
 	// Some S3-compatible CSPs require an explicit style (e.g. Tencent COS = dns).
 	BucketLookup string `json:"bucketLookup,omitempty"`
+	// SSHTunnel, when set, reaches Endpoint through this SSH host: every
+	// connection to the store, presigned transfers included, is opened by the
+	// SSH server. Endpoint is therefore resolved from that host's side, so
+	// "127.0.0.1:9000" means the host itself. Not supported for Azure endpoints.
+	SSHTunnel *SSHConfig `json:"sshTunnel,omitempty"`
 }
 
 // SpiderConfig defines CB-Spider Object Storage API configuration.
@@ -418,6 +423,20 @@ func validateObjectStorageAccess(os *ObjectStorageAccess, context string) error 
 		}
 		if strings.TrimSpace(os.Minio.AccessKeyId) == "" || strings.TrimSpace(os.Minio.SecretAccessKey) == "" {
 			return fmt.Errorf("%s: S3 credentials are required", context)
+		}
+		if t := os.Minio.SSHTunnel; t != nil {
+			if strings.TrimSpace(t.Host) == "" {
+				return fmt.Errorf("%s: S3 SSH tunnel host is required", context)
+			}
+			if strings.TrimSpace(t.Username) == "" {
+				return fmt.Errorf("%s: S3 SSH tunnel username is required", context)
+			}
+			if t.Port < 0 || t.Port > 65535 {
+				return fmt.Errorf("%s: S3 SSH tunnel port out of range", context)
+			}
+			if IsAzureBlobEndpoint(os.Minio.Endpoint) {
+				return fmt.Errorf("%s: an SSH tunnel is not supported for Azure Blob Storage", context)
+			}
 		}
 		return nil
 

@@ -1,6 +1,8 @@
 package storagex
 
 import (
+	"io"
+	"net/http"
 	"strings"
 )
 
@@ -54,6 +56,36 @@ type MinioConfig struct {
 	UseSSL bool   `json:"useSSL,omitempty" default:"true"`
 	// BucketLookup: "" (auto) | "dns" | "path"
 	BucketLookup string `json:"bucketLookup,omitempty"`
+	// SSHTunnel: the SSH host Endpoint is reached through. See
+	// S3MinioConfig.SSHTunnel in model.go.
+	SSHTunnel *SSHConfig `json:"sshTunnel,omitempty"`
+}
+
+// httpClientProvider is implemented by a provider whose presigned URLs cannot be
+// fetched with the default HTTP client — a MinioProvider behind an SSH tunnel,
+// whose URLs name an endpoint only the SSH host can reach.
+type httpClientProvider interface {
+	HTTPClient() *http.Client
+}
+
+// httpClientFor returns the client presigned URLs from p must be fetched with.
+func httpClientFor(p S3Provider) *http.Client {
+	if hp, ok := p.(httpClientProvider); ok {
+		if c := hp.HTTPClient(); c != nil {
+			return c
+		}
+	}
+	return http.DefaultClient
+}
+
+// CloseS3Provider releases what p holds open — the SSH connection of a
+// tunnelled MinioProvider. Providers that hold nothing are a no-op, so it is
+// safe to call on any provider NewS3Provider returned.
+func CloseS3Provider(p S3Provider) error {
+	if c, ok := p.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 // ParseBucketAndKey parses the path into bucket and key components.

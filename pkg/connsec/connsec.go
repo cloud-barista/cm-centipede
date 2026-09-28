@@ -65,9 +65,6 @@ func transformRef(ref commonmodel.ConnectionRef, fn func(string) (string, error)
 
 	if ref.SSH != nil {
 		c := *ref.SSH
-		if c.Password, err = fn(c.Password); err != nil {
-			return ref, err
-		}
 		if c.PrivateKey, err = fn(c.PrivateKey); err != nil {
 			return ref, err
 		}
@@ -89,9 +86,6 @@ func transformRef(ref commonmodel.ConnectionRef, fn func(string) (string, error)
 		}
 		if c.SSHTunnel != nil {
 			t := *c.SSHTunnel
-			if t.Password, err = fn(t.Password); err != nil {
-				return ref, err
-			}
 			if t.PrivateKey, err = fn(t.PrivateKey); err != nil {
 				return ref, err
 			}

@@ -181,7 +181,7 @@ func (e *S3Executor) uploadFile(localPath, s3Key string) error {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClientFor(e.Provider).Do(req)
 	if err != nil {
 		return fmt.Errorf("upload request failed: %w", err)
 	}
@@ -202,7 +202,7 @@ func (e *S3Executor) downloadFile(s3Key, localPath string) error {
 		return fmt.Errorf("failed to generate presigned URL: %w", err)
 	}
 
-	resp, err := http.Get(result.URL)
+	resp, err := httpClientFor(e.Provider).Get(result.URL)
 	if err != nil {
 		return fmt.Errorf("download request failed: %w", err)
 	}

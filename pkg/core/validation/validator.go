@@ -418,10 +418,12 @@ func validateObjectBucket(srcRef, dstRef commonmodel.ConnectionRef, srcPath, dst
 	if err != nil {
 		return nil, fmt.Errorf("create src S3 provider: %w", err)
 	}
+	defer transxex.CloseS3Provider(srcProvider) //nolint:errcheck
 	dstProvider, err := transxex.NewS3Provider(dstLoc)
 	if err != nil {
 		return nil, fmt.Errorf("create dst S3 provider: %w", err)
 	}
+	defer transxex.CloseS3Provider(dstProvider) //nolint:errcheck
 
 	_, srcPrefix := transxex.ParseBucketAndKey(srcPath)
 	_, dstPrefix := transxex.ParseBucketAndKey(dstPath)

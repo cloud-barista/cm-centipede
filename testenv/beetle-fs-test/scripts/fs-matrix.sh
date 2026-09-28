@@ -27,8 +27,9 @@
 #   outbound access to raw.githubusercontent.com and media.githubusercontent.com.
 #   The URL is hard-coded in cm-honeybee; nothing here can point it elsewhere.
 #
-# ⚠ Access is SSH on both sides, by key. There is no password anywhere: transx-ex
-#   has no password field for SSH, so a password-only source or target cannot be
+# ⚠ Access is SSH on both sides, by key. There is no password anywhere: cm-honeybee
+#   refuses a password on an fs connection (HTTP 400) and cm-centipede
+#   authenticates SSH by key only, so a password-only source or target cannot be
 #   migrated at all.
 #
 # ⚠ Requires:

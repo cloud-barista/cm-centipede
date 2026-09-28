@@ -64,11 +64,11 @@ RUN find /etc/systemd/system /lib/systemd/system \
     \) -exec rm -f {} \; 2>/dev/null || true
 
 # ── SSH: key authentication only ──────────────────────────────────────────────
-# Passwords are turned off rather than merely unused. transx-ex's SSH transport
-# has no password field at all, so a source reachable only by password is one
-# that cm-honeybee can inspect and cm-centipede then cannot read — a failure that
-# lands two steps after its cause. Refusing passwords here makes a missing key
-# fail at the first login instead.
+# Passwords are turned off rather than merely unused. cm-honeybee refuses a
+# password on an fs connection (HTTP 400) and cm-centipede authenticates SSH by
+# key only, so a source reachable only by password cannot be registered at all.
+# Refusing passwords here as well keeps the image honest about that: a missing
+# key fails at the first login, not at a password nothing downstream will take.
 #
 # PermitRootLogin prohibit-password is what lets copyAgent.sh run: honeybee logs
 # in as the connection's user and calls sudo, and root is the one user for which
