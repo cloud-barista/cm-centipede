@@ -1007,15 +1007,15 @@
             "type": "object",
             "properties": {
                 "action": {
-                    "description": "include | exclude",
+                    "description": "include | exclude. An item no rule matched is kept, so an include only\nnarrows the transfer when an exclude below it would otherwise have\ndropped the item: end a whitelist with {\"action\":\"exclude\",\"type\":\"glob\",\"pattern\":\"*\"}.",
                     "type": "string"
                 },
                 "op": {
-                    "description": "type=size (\u003e \u003e= \u003c \u003c= ==)",
+                    "description": "type=size (\u003e \u003e= \u003c \u003c= ==). On a filesystem source the bound is applied\nglobally by rsync, so a size rule must sit above every include rule.",
                     "type": "string"
                 },
                 "pattern": {
-                    "description": "type=glob",
+                    "description": "type=glob; matched against the path relative to the migrated folder or key\nprefix: \"*.log\" (base name, any depth), \"src/*.go\" (path tail, so\n\"a/src/main.go\" matches too; \"/src/*.go\" anchors at the root), \"a/**\"\n(crosses directories), \"logs\" (a folder and everything under it).",
                     "type": "string"
                 },
                 "type": {

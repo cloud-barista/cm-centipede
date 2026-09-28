@@ -127,7 +127,7 @@ func (e *S3Executor) download(ctx context.Context, s3Path, localPath string, flt
 		default:
 		}
 
-		if !flt.Match(filter.Item{Path: obj.Key, Name: filepath.Base(obj.Key), Size: obj.Size}) {
+		if !flt.MatchPath(filter.Rel(keyPrefix, obj.Key), obj.Size, false) {
 			continue
 		}
 
@@ -246,8 +246,10 @@ func (e *S3Executor) listLocalFiles(path string, flt *FilterOption) ([]string, e
 		if info.IsDir() {
 			return nil
 		}
-		item := filter.Item{Path: filePath, Name: info.Name(), Size: info.Size(), ModTime: info.ModTime()}
-		if !flt.Match(item) {
+		// Relative to the walk root, which on a relay is the staging directory
+		// holding a copy of the source tree — so a rule reads the same here as
+		// it did on the rsync leg that filled it.
+		if !flt.MatchPath(filter.Rel(path, filePath), info.Size(), false) {
 			return nil
 		}
 		files = append(files, filePath)

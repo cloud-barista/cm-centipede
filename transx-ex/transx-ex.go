@@ -174,6 +174,12 @@ func PlanDBMS(m DBMSMigrationModel) (*DBMSPipeline, error) { return dbmsx.Plan(m
 // ValidateStorage reports whether m is structurally and semantically usable.
 func ValidateStorage(m StorageMigrationModel) error { return storagex.Validate(m) }
 
+// RsyncFilterArgs returns the native rsync arguments a path filter translates to.
+// See storagex.RsyncFilterArgs.
+func RsyncFilterArgs(opt *PathFilterOption) ([]string, error) {
+	return storagex.RsyncFilterArgs(opt)
+}
+
 // ValidateDBMS reports whether m is structurally and semantically usable.
 func ValidateDBMS(m DBMSMigrationModel) error { return dbmsx.Validate(m) }
 

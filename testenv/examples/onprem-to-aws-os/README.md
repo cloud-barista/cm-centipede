@@ -311,8 +311,14 @@ decides, and anything no rule matches is kept. Two types:
 
 | Type | Field | Matches |
 |---|---|---|
-| `glob` | `pattern` | `*.png` · `**/*.jpg` (any depth) · `banners/*` (an anchored path) |
+| `glob` | `pattern` | `*.png` · `**/*.jpg` (any depth) · `banners/*` (a sub-path, at any depth — write `/banners/*` to anchor it at the prefix) · `banners` (a folder, and everything under it) |
 | `size` | `op` + `value` | `>` `>=` `<` `<=` `==` against a byte count |
+
+**A pattern is matched against the key with the migrated prefix removed**, which
+is the same thing the filesystem example matches a file path against: one pattern
+means one thing wherever it is attached. So a pattern naming a folder takes
+everything under it — `banners` would drop `banners/spring/hero.png` too — and a
+pattern carrying a `/` matches at any depth unless a leading `/` anchors it.
 
 The rule above drops the three `.png` banners and lets the six `.jpg` products
 through. **Validation knows about it** — an excluded object is reported as

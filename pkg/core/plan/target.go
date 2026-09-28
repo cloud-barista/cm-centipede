@@ -313,6 +313,42 @@ func validateSizeGateOrdering(rules []commonmodel.PathFilterRule) error {
 	return nil
 }
 
+// validateIncludeHasEffect rejects an include rule that cannot change what is
+// transferred.
+//
+// The pipeline keeps anything no rule matched, so an include only ever means
+// something when an exclude below it would otherwise have dropped the file. With
+// no exclude below, every item reaching that include is kept either way — by the
+// include if it matches, by the default if it does not — and deleting the rule
+// would transfer exactly the same files.
+//
+// The mistake this catches is a whitelist written without its catch-all:
+//
+//	include glob  *.go            ← "only the .go files"
+//
+// which silently copies the whole folder. "exclude glob *" at the end is what
+// makes the include a whitelist, and nothing adds it for the caller: an include
+// above an exclude is also how a single file is carved back OUT of a broader
+// exclude ("include keep.log" then "exclude *.log"), and the two intentions
+// cannot be told apart from the rules alone. So the caller has to say which one
+// it meant, and this reports the case where it said neither.
+func validateIncludeHasEffect(domain string, rules []commonmodel.PathFilterRule) error {
+	lastExclude := -1
+	for i, r := range rules {
+		if r.Action == commonmodel.FilterActionExclude {
+			lastExclude = i
+		}
+	}
+	for i, r := range rules {
+		if r.Action == commonmodel.FilterActionInclude && i > lastExclude {
+			return validationErr(
+				"%s: the include rule at position %d has no effect — the pipeline keeps whatever no rule matched, so with no exclude rule below it every file is kept either way. To transfer only what it names, add {\"action\":\"exclude\",\"type\":\"glob\",\"pattern\":\"*\"} as the last rule; to carve an exception out of a broader exclude, move that exclude below this include",
+				domain, i+1)
+		}
+	}
+	return nil
+}
+
 func validateRsyncCompatibleRules(rules []commonmodel.PathFilterRule) error {
 	for _, r := range rules {
 		if r.Type != "size" {
@@ -557,6 +593,9 @@ func buildFileSystemEntry(
 		if err := validateSizeGateOrdering(rules); err != nil {
 			return targetmodel.MigrationFileSystemModel{}, err
 		}
+		if err := validateIncludeHasEffect("fileSystemFilter", rules); err != nil {
+			return targetmodel.MigrationFileSystemModel{}, err
+		}
 	}
 
 	// Destination must be filesystem (SSH→SSH) or object storage (filesystem→S3
@@ -620,6 +659,12 @@ func buildObjectStorageEntry(
 		rules = f.Rules
 		mapping = &f.TargetMapping
 		if err := validateStorageMapping("objectStorageFilter", mapping); err != nil {
+			return targetmodel.MigrationObjectStorageModel{}, err
+		}
+		// Not rsync-specific: the default-keep pipeline is shared, so a
+		// whitelist missing its catch-all misfires on a bucket just as it does
+		// on a folder.
+		if err := validateIncludeHasEffect("objectStorageFilter", rules); err != nil {
 			return targetmodel.MigrationObjectStorageModel{}, err
 		}
 	}

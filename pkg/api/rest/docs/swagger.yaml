@@ -340,13 +340,22 @@ definitions:
   github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule:
     properties:
       action:
-        description: include | exclude
+        description: |-
+          include | exclude. An item no rule matched is kept, so an include only
+          narrows the transfer when an exclude below it would otherwise have
+          dropped the item: end a whitelist with {"action":"exclude","type":"glob","pattern":"*"}.
         type: string
       op:
-        description: type=size (> >= < <= ==)
+        description: |-
+          type=size (> >= < <= ==). On a filesystem source the bound is applied
+          globally by rsync, so a size rule must sit above every include rule.
         type: string
       pattern:
-        description: type=glob
+        description: |-
+          type=glob; matched against the path relative to the migrated folder or key
+          prefix: "*.log" (base name, any depth), "src/*.go" (path tail, so
+          "a/src/main.go" matches too; "/src/*.go" anchors at the root), "a/**"
+          (crosses directories), "logs" (a folder and everything under it).
         type: string
       type:
         description: glob | size

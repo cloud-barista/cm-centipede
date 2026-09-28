@@ -455,7 +455,7 @@ func validateObjectBucket(srcRef, dstRef commonmodel.ConnectionRef, srcPath, dst
 	excluded := make(map[string]bool)
 	for _, relKey := range srcKeys {
 		src := srcMap[relKey]
-		if flt.excludesObject(src.key, src.size) {
+		if flt.excludesObject(relKey, src.size) {
 			excluded[relKey] = true
 			continue
 		}
@@ -509,7 +509,6 @@ func validateObjectBucket(srcRef, dstRef commonmodel.ConnectionRef, srcPath, dst
 // them: executor-s3.go matches on the whole key, not on the relative one.
 type remoteObject struct {
 	etag string
-	key  string
 	size int64
 }
 
@@ -523,7 +522,7 @@ func buildObjectMap(objects []transxex.ObjectInfo, prefix string) map[string]rem
 		if relKey == "" {
 			continue
 		}
-		m[relKey] = remoteObject{etag: obj.ETag, key: obj.Key, size: obj.Size}
+		m[relKey] = remoteObject{etag: obj.ETag, size: obj.Size}
 	}
 	return m
 }

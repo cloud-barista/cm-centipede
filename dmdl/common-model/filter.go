@@ -27,14 +27,31 @@ const (
 // entry evaluated top-to-bottom; the first matching rule decides the outcome and
 // an item matched by no rule is kept.
 //
-// Type "glob": Pattern is a glob against the path/base name ("*.log", "**/*.txt").
-// Type "size": Op is one of > >= < <= == and Value is a byte threshold.
+// Type "glob": Pattern is matched against the path relative to the migrated
+// folder or key prefix, by rsync's rules — a pattern with no "/" matches the base
+// name at any depth ("*.log"); a "/" makes it match the path tail, so "src/*.go"
+// also matches "a/src/main.go", and a leading "/" anchors it at the root
+// ("/src/*.go"); "**" crosses directories ("a/**") where "*" does not; and a
+// pattern that matches a directory takes everything under it ("logs").
+//
+// Type "size": Op is one of > >= < <= == and Value is a byte threshold. On a
+// filesystem source rsync applies the bound globally, so a size rule must sit
+// above every include rule; the plan rejects it otherwise.
 type PathFilterRule struct {
-	Action  string `json:"action"`            // include | exclude
-	Type    string `json:"type"`              // glob | size
-	Pattern string `json:"pattern,omitempty"` // type=glob
-	Op      string `json:"op,omitempty"`      // type=size (> >= < <= ==)
-	Value   int64  `json:"value,omitempty"`   // type=size (bytes)
+	// include | exclude. An item no rule matched is kept, so an include only
+	// narrows the transfer when an exclude below it would otherwise have
+	// dropped the item: end a whitelist with {"action":"exclude","type":"glob","pattern":"*"}.
+	Action string `json:"action"`
+	Type   string `json:"type"` // glob | size
+	// type=glob; matched against the path relative to the migrated folder or key
+	// prefix: "*.log" (base name, any depth), "src/*.go" (path tail, so
+	// "a/src/main.go" matches too; "/src/*.go" anchors at the root), "a/**"
+	// (crosses directories), "logs" (a folder and everything under it).
+	Pattern string `json:"pattern,omitempty"`
+	// type=size (> >= < <= ==). On a filesystem source the bound is applied
+	// globally by rsync, so a size rule must sit above every include rule.
+	Op    string `json:"op,omitempty"`
+	Value int64  `json:"value,omitempty"` // type=size (bytes)
 }
 
 // ── dbmsx filter (exclude-only) ──────────────────────────────────────────────

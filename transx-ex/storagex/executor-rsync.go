@@ -560,12 +560,28 @@ func (e *RsyncExecutor) buildSSHCommand(source, destination DataLocation) string
 	return strings.Join(parts, " ")
 }
 
+// RsyncFilterArgs returns the native rsync arguments a filter option translates
+// to, or an error when a rule cannot be expressed as one.
+//
+// Exported so a caller can put the translation and PathFilterOption.MatchPath
+// side by side and check that they agree — the two halves of one contract, one
+// read by rsync and one by Go. Nothing in a transfer needs it.
+func RsyncFilterArgs(opt *FilterOption) ([]string, error) {
+	return rsyncFilterArgs(opt)
+}
+
 // rsyncFilterArgs translates a filter Option into native rsync arguments — the
-// (a) "native subset" strategy. A rules pipeline is translated in order via
+// (a) "native subset" strategy. The pipeline is translated in order via
 // RsyncTranslator; a matcher that cannot be expressed as native rsync flags
 // (e.g. custom types) returns an error, since rsync runs the transfer and
-// cannot evaluate arbitrary Go predicates. An Option carrying no rules is
-// translated from the simple Include/Exclude form instead.
+// cannot evaluate arbitrary Go predicates.
+//
+// The rules come from EffectiveRules, the same normalised list Option.Match
+// evaluates — including the traversal rule it inserts before a catch-all. That
+// is what keeps a filesystem transfer and the Go matcher judging it in step:
+// there is one pipeline, read twice, rather than two lists built side by side.
+// Building the order here independently is what let the simple Include/Exclude
+// form come out reversed against the matcher.
 //
 // Returned args are unquoted, suitable for exec.Command. For a remote shell
 // command the caller must quote each arg (see buildRemoteRsyncCommand).
@@ -573,24 +589,8 @@ func rsyncFilterArgs(opt *FilterOption) ([]string, error) {
 	if opt == nil {
 		return nil, nil
 	}
-	if len(opt.Rules) == 0 {
-		return simpleRsyncFilterArgs(opt), nil
-	}
-
 	var args []string
-	hasInclude := false
-	for _, r := range opt.Rules {
-		if r.Action == filter.ActionInclude {
-			hasInclude = true
-			break
-		}
-	}
-	// --include=*/ lets rsync descend into directories to reach included files
-	// when the pipeline whitelists (an include followed by a broad exclude).
-	if hasInclude {
-		args = append(args, "--include=*/")
-	}
-	for _, r := range opt.Rules {
+	for _, r := range opt.EffectiveRules() {
 		t, ok := r.Matcher.(filter.RsyncTranslator)
 		if !ok {
 			typ := "<nil>"
@@ -606,27 +606,6 @@ func rsyncFilterArgs(opt *FilterOption) ([]string, error) {
 		args = append(args, a...)
 	}
 	return args, nil
-}
-
-// simpleRsyncFilterArgs translates the simple Include/Exclude form: include-mode
-// wraps with --include=*/ ... --exclude=*, exclude-only emits bare excludes.
-func simpleRsyncFilterArgs(opt *FilterOption) []string {
-	var args []string
-	if len(opt.Include) > 0 {
-		args = append(args, "--include=*/")
-		for _, pattern := range opt.Include {
-			args = append(args, "--include="+pattern)
-		}
-		for _, pattern := range opt.Exclude {
-			args = append(args, "--exclude="+pattern)
-		}
-		args = append(args, "--exclude=*")
-	} else {
-		for _, pattern := range opt.Exclude {
-			args = append(args, "--exclude="+pattern)
-		}
-	}
-	return args
 }
 
 // isDirectoryPath returns true if path appears to be a directory (no file extension).

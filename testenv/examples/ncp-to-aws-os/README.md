@@ -328,8 +328,14 @@ decides, and anything no rule matches is kept. Two types:
 
 | Type | Field | Matches |
 |---|---|---|
-| `glob` | `pattern` | `*.zip` · `**/*.csv` (any depth) · `gendata/*` (an anchored path) |
+| `glob` | `pattern` | `*.zip` · `**/*.csv` (any depth) · `gendata/*` (a sub-path, at any depth — write `/gendata/*` to anchor it at the prefix) · `gendata` (a folder, and everything under it) |
 | `size` | `op` + `value` | `>` `>=` `<` `<=` `==` against a byte count |
+
+**A pattern is matched against the key with the migrated prefix removed**, which
+is the same thing the filesystem example matches a file path against: one pattern
+means one thing wherever it is attached. So a pattern naming a folder takes
+everything under it — `gendata` would drop `gendata/orders.csv` too — and a
+pattern carrying a `/` matches at any depth unless a leading `/` anchors it.
 
 The rule above drops the one `.zip` object and lets the other seven through.
 **Validation knows about it** — an excluded object is reported as skipped, not as

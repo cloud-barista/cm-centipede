@@ -265,7 +265,7 @@ func inspectLocalFilesystem(root string, flt *FilterOption, m fsMetricResolved) 
 			}
 			return filepath.SkipDir
 		}
-		if !flt.Match(filter.Item{Path: abs, Name: info.Name(), Size: info.Size(), ModTime: info.ModTime(), IsDir: true}) {
+		if !flt.MatchPath(filter.Rel(absRoot, abs), info.Size(), true) {
 			return nil
 		}
 
@@ -389,7 +389,7 @@ func scanSSHFilesystem(run sshRunner, root string, flt *FilterOption, m fsMetric
 	result := &FSInspectResult{Path: root}
 	for _, p := range order {
 		di := dirs[p]
-		if !flt.Match(filter.Item{Path: p, Name: filepath.Base(p), Size: di.size, ModTime: di.modTime, IsDir: true}) {
+		if !flt.MatchPath(filter.Rel(root, p), di.size, true) {
 			continue
 		}
 		entry := FSEntry{Path: p, IsMount: mountOf(p, di)}
@@ -764,7 +764,7 @@ func InspectObjectStorage(loc DataLocation) (*OSInspectResult, error) {
 
 	result := &OSInspectResult{Path: scanRoot}
 	for _, fp := range all {
-		if !loc.Filter.Match(filter.Item{Path: fp, IsDir: true}) {
+		if !loc.Filter.MatchPath(filter.Rel(scanRoot, fp), 0, true) {
 			continue
 		}
 		if loc.Filter != nil && loc.Filter.MaxDepth > 0 {
