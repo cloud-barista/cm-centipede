@@ -740,6 +740,7 @@ func buildDBEntry(
 //   - a target database that neither exists nor can be created
 //   - filesystem→objectstorage with an rsync-incompatible size filter
 //   - two entries writing to the same destination
+//   - a file system entry migrating "/" to "/"
 //
 // External-system errors (→ 500 in the controller) are wrapped and returned as-is.
 func BuildTargetDataMigrationModel(req model.TargetPlanReq) (targetmodel.TargetDataMigrationModel, error) {
@@ -808,6 +809,9 @@ func BuildTargetDataMigrationModel(req model.TargetPlanReq) (targetmodel.TargetD
 
 	out := targetmodel.TargetDataMigrationModel{TargetDataMigrationModel: result}
 	if msg := DuplicateDestination(out); msg != "" {
+		return targetmodel.TargetDataMigrationModel{}, validationErr("%s", msg)
+	}
+	if msg := RootToRoot(out); msg != "" {
 		return targetmodel.TargetDataMigrationModel{}, validationErr("%s", msg)
 	}
 	return out, nil

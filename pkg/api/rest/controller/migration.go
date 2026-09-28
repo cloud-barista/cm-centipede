@@ -73,6 +73,13 @@ func CreateMigration(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse("plan: "+msg))
 	}
 
+	// "/" → "/" copies the source host's system files over the target's. The
+	// plan layer refuses to build one, so this is again the edited or
+	// hand-written plan.
+	if msg := plan.RootToRoot(req.Plan); msg != "" {
+		return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse("plan: "+msg))
+	}
+
 	// Entry names have to be distinct before anything is written under them:
 	// they are what a log line, a validation detail and a partial retry identify
 	// an entry by, and two entries sharing one put all three on top of each other.

@@ -2,6 +2,8 @@ package plan
 
 import (
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -11,7 +13,7 @@ import (
 
 // entry.go holds what identifies a plan entry: the key a source connection is
 // matched by, the name an entry carries, and the two checks that a plan does not
-// name the same entry or the same destination twice.
+// name the same entry or the same destination twice, nor migrate "/" to "/".
 //
 // They live apart from the builder because CreateMigration needs them too. A
 // plan can arrive there without having been issued by POST /plans/target —
@@ -213,6 +215,35 @@ func DuplicateDestination(p targetmodel.TargetDataMigrationModel) string {
 		for _, d := range e.Databases {
 			if msg := claim(e.PlanEntryID, key, d.DstName, "target database"); msg != "" {
 				return msg
+			}
+		}
+	}
+	return ""
+}
+
+// RootToRoot returns a description of the first file system entry of p that
+// migrates "/" to "/", or "" when none does.
+//
+// That pair copies the source host's whole tree over the target's, /etc, /usr
+// and /boot included, and leaves a target that no longer matches its own
+// kernel, disks or network. There is no rollback for it, so it is refused
+// rather than run.
+func RootToRoot(p targetmodel.TargetDataMigrationModel) string {
+	isRoot := func(p string) bool {
+		trimmed := strings.TrimSpace(p)
+		return trimmed != "" && path.Clean(trimmed) == "/"
+	}
+
+	for _, e := range p.TargetDataMigrationModel.FileSystems {
+		// An empty DstType is a file system here, as MigrateFileSystem reads it.
+		if e.DstType != "" && e.DstType != commonmodel.StorageTypeFilesystem {
+			continue
+		}
+		for _, f := range e.Folders {
+			if isRoot(f.SrcPath) && isRoot(f.DstPath) {
+				return fmt.Sprintf("plan entry %q migrates %q to %q, which would overwrite the target's "+
+					"system files; choose a source or destination directory below the root",
+					e.PlanEntryID, f.SrcPath, f.DstPath)
 			}
 		}
 	}
