@@ -44,3 +44,28 @@ variable "aws_data_path" {
   type        = string
   default     = "/home/ubuntu/testdata"
 }
+
+variable "aws_nfs_enabled" {
+  description = "Create an EFS file system and mount it on the VM over NFS at aws_nfs_mount_path"
+  type        = bool
+  default     = false
+}
+
+variable "aws_nfs_mount_path" {
+  description = "Where the EFS file system is mounted on the VM. Independent of aws_data_path; ignored unless aws_nfs_enabled"
+  type        = string
+  default     = "/home/ubuntu/testdata"
+
+  # Mounting over /home/ubuntu hides .ssh/authorized_keys and locks every SSH client
+  # out, and mounting over a system directory breaks the OS, so both are refused.
+  validation {
+    condition = (
+      can(regex("^(/[A-Za-z0-9._-]+)+$", var.aws_nfs_mount_path))
+      && !can(regex("(^|/)\\.\\.?(/|$)", var.aws_nfs_mount_path))
+      && !contains(["/home", "/home/ubuntu"], var.aws_nfs_mount_path)
+      && !can(regex("^/home/ubuntu/\\.ssh(/|$)", var.aws_nfs_mount_path))
+      && !can(regex("^/(bin|boot|dev|etc|lib|lib32|lib64|libx32|proc|root|run|sbin|snap|sys|usr|var)(/|$)", var.aws_nfs_mount_path))
+    )
+    error_message = "aws_nfs_mount_path must be an absolute path without . or .. segments or a trailing slash, and must not be /, /home, /home/ubuntu, /home/ubuntu/.ssh or a system directory (/etc, /usr, /var, ...)."
+  }
+}

@@ -13,11 +13,13 @@ just a VM, or just the databases.
 
 | CSP | vm<br>(for filesystem testing) | objectStorage | mysql | mariadb | postgresql | mongodb |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| aws | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| aws | ✅<br>(+ NFS via EFS, optional) | ✅ | ✅ | ✅ | ✅ | — |
 | ncp | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 
 Every database is a managed service. Each CSP is left with the engines it offers:
 AWS has no managed MongoDB and NCP has no managed MariaDB, so those two cells are empty.
+The AWS VM can also mount an EFS file system over NFS, as an option of the `vm`
+resource rather than a resource of its own — see [Step 3](#step-3--provision-resources).
 
 ---
 
@@ -104,7 +106,7 @@ go version                  # only needed for Step 5 (test data)
 
 | CSP | Keys | Where to get them |
 |---|---|---|
-| AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | IAM user with S3, RDS and EC2 permissions |
+| AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | IAM user with S3, RDS and EC2 permissions (plus EFS for the VM's optional NFS) |
 | NCP | `NCP_ACCESS_KEY`, `NCP_SECRET_KEY` | Portal > My Page > Manage Authentication Key |
 
 NCP Object Storage uses the same key pair as the rest of NCP — there is no separate
@@ -310,6 +312,31 @@ see [Step 1](#step-1--create-env).
 ./scripts/provision.sh aws database    # RDS: MySQL + MariaDB + PostgreSQL
 ```
 
+**AWS vm with NFS (EFS)** — set `TF_VAR_aws_nfs_enabled=true` before `provision.sh aws vm`
+and the VM comes with an EFS file system, mounted over NFS (v4.1) on first boot:
+
+```dotenv
+TF_VAR_aws_nfs_enabled=true
+#TF_VAR_aws_nfs_mount_path=/home/ubuntu/testdata    # where EFS is mounted
+#TF_VAR_aws_data_path=/home/ubuntu/testdata         # where gendata writes (Step 5)
+```
+
+The two paths are **independent**; they just share a default. Left alone, the test
+data lands on the NFS mount, so a filesystem migration reads from NFS. Point either one
+elsewhere and the data stays on the local disk while EFS is mounted on its own.
+
+- The mount path must not be `/`, `/home`, `/home/ubuntu` or a system directory —
+  mounting over the home directory hides `.ssh/authorized_keys` and locks SSH out.
+  A violation is rejected at plan time.
+- EFS is reachable from inside the VPC only. A mount target goes into every default
+  subnet, and its security group accepts NFS (2049) from the VM alone.
+- The mount happens in cloud-init, **after** `provision.sh` returns — give it a couple of
+  minutes before Step 5. Check it with `ssh ... cloud-init status --wait` and
+  `ssh ... mountpoint <mount path>`.
+- **Fixed at creation time.** Changing either `aws_nfs_*` value on a provisioned VM
+  takes `provision.sh aws vm --force`, which **re-creates the VM** — anything on its local
+  disk is lost. EFS and everything on it are destroyed with `deprovision.sh aws vm`.
+
 **NCP** — the same three resources, in any order:
 
 ```bash
@@ -491,7 +518,7 @@ reading them stays CSP-agnostic:
 | Module | Outputs |
 |---|---|
 | bucket | `bucket_name`, `bucket_region`; AWS also `bucket_arn`, `bucket_domain_name`; NCP also `s3_endpoint`, `s3_signing_region` |
-| vm | `public_ip`, `ssh_user`, `key_file`, `ssh_command`, `data_path`; NCP also `private_ip`, `login_key_name` |
+| vm | `public_ip`, `ssh_user`, `key_file`, `ssh_command`, `data_path`; AWS also `nfs_enabled`, `nfs_file_system_id`, `nfs_dns_name`, `nfs_mount_path`; NCP also `private_ip`, `login_key_name` |
 | database | `db_name`, `db_username`, `db_password`; per engine `<engine>_host`, `<engine>_port`, `<engine>_connection_uri` where `<engine>` is `mysql`, `mariadb` or `postgres` on AWS, and `mysql`, `postgres` or `mongodb` on NCP |
 | database, NCP managed | `<engine>_public_domain`, `<engine>_private_domain`, `<engine>_acg_no` |
 

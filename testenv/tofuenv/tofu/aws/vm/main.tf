@@ -68,6 +68,63 @@ resource "aws_security_group" "vm" {
   }
 }
 
+# --- NFS (EFS), only when aws_nfs_enabled ---
+# A mount target goes into every default subnet, one per AZ, so the VM mounts it
+# wherever it lands. EFS is reachable from inside the VPC only.
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+  filter {
+    name   = "default-for-az"
+    values = ["true"]
+  }
+}
+
+resource "aws_efs_file_system" "nfs" {
+  count = var.aws_nfs_enabled ? 1 : 0
+
+  creation_token = "${var.aws_name_prefix}-nfs"
+  encrypted      = true
+
+  tags = {
+    Name      = "${var.aws_name_prefix}-nfs"
+    Project   = "cm-centipede"
+    ManagedBy = "opentofu"
+    Purpose   = "migration-test"
+  }
+}
+
+resource "aws_security_group" "nfs" {
+  count = var.aws_nfs_enabled ? 1 : 0
+
+  name        = "${var.aws_name_prefix}-nfs-sg"
+  description = "cm-centipede migration test NFS (EFS)"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    description     = "NFS from the VM"
+    from_port       = 2049
+    to_port         = 2049
+    protocol        = "tcp"
+    security_groups = [aws_security_group.vm.id]
+  }
+
+  tags = {
+    Project   = "cm-centipede"
+    ManagedBy = "opentofu"
+  }
+}
+
+resource "aws_efs_mount_target" "nfs" {
+  for_each = var.aws_nfs_enabled ? toset(data.aws_subnets.default.ids) : toset([])
+
+  file_system_id  = aws_efs_file_system.nfs[0].id
+  subnet_id       = each.value
+  security_groups = [aws_security_group.nfs[0].id]
+}
+
 # --- EC2 instance used as the filesystem migration test target ---
 resource "aws_instance" "vm" {
   ami                         = data.aws_ami.ubuntu.id
@@ -75,6 +132,19 @@ resource "aws_instance" "vm" {
   key_name                    = aws_key_pair.vm.key_name
   vpc_security_group_ids      = [aws_security_group.vm.id]
   associate_public_ip_address = true
+
+  # Mounts the EFS file system on first boot. null without NFS, so a VM provisioned
+  # before this option existed sees no change. cloud-init runs user_data only once,
+  # so a changed script has to come with a new instance to take effect at all.
+  user_data = var.aws_nfs_enabled ? templatefile("${path.module}/templates/vm-init.sh.tpl", {
+    nfs_dns_name = aws_efs_file_system.nfs[0].dns_name
+    mount_path   = var.aws_nfs_mount_path
+    ssh_user     = local.ssh_user
+  }) : null
+  user_data_replace_on_change = true
+
+  # The mount targets have to exist before the VM boots and tries to mount.
+  depends_on = [aws_efs_mount_target.nfs]
 
   root_block_device {
     volume_size = var.aws_vm_volume_size
