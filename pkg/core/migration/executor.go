@@ -122,9 +122,15 @@ func (e *Executor) Execute(migrationID string) {
 	log.Info().Str("migrationID", migrationID).Str("status", m.Status).Msg("migration execution finished")
 }
 
+// tickInterval is the shortest gap between two DB writes made for EventTick.
+//
+// An item streaming its progress can report thousands of times; the record only
+// has to be fresh enough for a screen polling it. EventDone is never throttled.
+const tickInterval = time.Second
+
 // drainProgress consumes all ProgressEvents from progressCh, writes a MigrationLog
-// per event, updates the in-memory migration counters, and saves progress to DB.
-// Returns true if any event carried status "failed".
+// per finished item, updates the in-memory migration counters, and saves progress
+// to DB. Returns true if any event carried status "failed".
 //
 // planEntryID is stamped on every log line the batch produces. It is passed in
 // rather than carried on ProgressEvent because the Migrate* functions are handed
@@ -133,9 +139,54 @@ func (e *Executor) Execute(migrationID string) {
 func (e *Executor) drainProgress(
 	m *model.Migration, migrationID, planEntryID string, progressCh <-chan ProgressEvent,
 ) (hadFailure bool) {
+	// What the items that have FINISHED moved, plus where each unfinished one has
+	// got to. A tick carries its own item's running total, so it REPLACES that
+	// item's entry rather than adding to a sum — adding would count the same bytes
+	// again on every observation. Kept per item because object storage migrates
+	// its buckets concurrently: several items report at once, and one running
+	// total cannot stand for all of them.
+	doneBytes := m.TransferredBytes
+	inflight := make(map[string]int64)
+	var lastTick time.Time
+
+	total := func() int64 {
+		sum := doneBytes
+		for _, b := range inflight {
+			sum += b
+		}
+		return sum
+	}
+
 	for ev := range progressCh {
+		if ev.Kind == EventTick {
+			if ev.SizeBytes < 0 {
+				continue
+			}
+			inflight[ev.ItemPath] = ev.SizeBytes
+			m.TransferredBytes = total()
+			if ev.Current != "" {
+				m.CurrentObject = ev.Current
+			}
+			if time.Since(lastTick) < tickInterval {
+				continue
+			}
+			lastTick = time.Now()
+			if err := dao.UpdateMigrationStatus(m); err != nil {
+				log.Error().Str("migrationID", migrationID).Err(err).Msg("execute: update progress failed")
+			}
+			continue
+		}
+
 		m.ProcessedItems++
-		m.TransferredBytes += ev.SizeBytes
+		delete(inflight, ev.ItemPath)
+		// Nothing is in flight for this item any more, and a finished migration
+		// must not still name a file it is working on.
+		m.CurrentObject = ""
+
+		if ev.SizeBytes > 0 {
+			doneBytes += ev.SizeBytes
+		}
+		m.TransferredBytes = total()
 		if ev.Status == "failed" {
 			m.FailedItems++
 			hadFailure = true

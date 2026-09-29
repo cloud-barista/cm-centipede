@@ -207,7 +207,20 @@ func (h *MigrationHandle) migrateViaPipe(dmm DBMSMigrationModel) error {
 	}
 	h.SetStatus(StatusDumping)
 	logger.Info("migration status changed", slog.String("status", string(StatusDumping)), slog.String("mode", "pipe"))
-	return pipeline.Execute(h.Context())
+
+	// The staging path counts through newCountingWriter; this one has no staging
+	// file to wrap, so PipeExecutor reports what crosses its pipe instead. Without
+	// it BytesTransferred stayed at zero for the whole migration.
+	//
+	// The total replaces rather than adds: the pipe reports its own running total,
+	// and this is a single-step pipeline, so there is no earlier step to carry.
+	ctx := core.WithReporter(h.Context(), core.ReporterFunc(func(u core.Update) {
+		if u.Bytes < 0 {
+			return
+		}
+		h.updateProgress(func(p *MigrationProgress) { p.BytesTransferred = u.Bytes })
+	}))
+	return pipeline.Execute(ctx)
 }
 
 // requireTargetDatabase returns *TargetDatabaseNotFoundError when the target

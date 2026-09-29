@@ -53,6 +53,38 @@ func newMigrationHandle(ctx context.Context, cancel context.CancelFunc) *Migrati
 	return &MigrationHandle{core.NewHandle[MigrationProgress, *MigrationProgress](ctx, cancel)}
 }
 
+// observe folds one observation from inside the transfer into the progress a
+// caller polls.
+//
+// The counts are a HIGH-WATER MARK, which is neither of the two obvious rules. A
+// relay moves the same data twice — source to staging, then staging to
+// destination — and each step counts from zero, so adding the steps reports
+// double what was migrated, while taking only the last leaves the whole staging
+// half reading zero. On a default filesystem transfer that half is most of the
+// wait, and a screen that shows nothing through it is the reason this is not
+// "last step wins".
+//
+// The mark never decreases and never exceeds what one leg moved, so it is a true
+// statement throughout: that many bytes have been moved. Its one imprecision is
+// a relay whose second leg moves less than its first, which is a failed transfer
+// either way.
+//
+// An unknown figure arrives as -1 and loses the comparison, which is what keeps
+// it from being read as zero.
+func (h *MigrationHandle) observe(u core.Update) {
+	h.Update(func(p *MigrationProgress) {
+		if u.Item != "" {
+			p.CurrentFile = u.Item
+		}
+		if u.Bytes > p.BytesTransferred {
+			p.BytesTransferred = u.Bytes
+		}
+		if int(u.Files) > p.FilesTransferred {
+			p.FilesTransferred = int(u.Files)
+		}
+	})
+}
+
 // run executes the full migration described by dmm.
 // It is launched as a goroutine by TransferAsync/MigrateDataAsync, which calls
 // Finish when it returns.
@@ -65,7 +97,8 @@ func (h *MigrationHandle) run(dmm DataMigrationModel) error {
 		return err
 	}
 
-	if err := pipeline.Execute(h.Context()); err != nil {
+	ctx := core.WithReporter(h.Context(), core.ReporterFunc(h.observe))
+	if err := pipeline.Execute(ctx); err != nil {
 		if ctxErr := h.Context().Err(); ctxErr != nil {
 			h.SetStatus(StatusCancelled)
 			h.SetErr(ctxErr)

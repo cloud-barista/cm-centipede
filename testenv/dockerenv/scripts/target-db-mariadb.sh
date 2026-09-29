@@ -24,6 +24,13 @@ ALTER USER 'root'@'localhost' IDENTIFIED BY 'testpass123';
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1');
 
+-- root from any host, so a direct connection through the published port can log
+-- in as root. The flush reloads the grant tables the DELETEs above edited
+-- directly; without it CREATE USER still sees the in-memory accounts.
+FLUSH PRIVILEGES;
+CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'testpass123';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+
 -- Migration destination account (may create and write to any database)
 CREATE USER IF NOT EXISTS 'centipede'@'%' IDENTIFIED BY 'centipede_pass';
 GRANT ALL PRIVILEGES ON *.* TO 'centipede'@'%' WITH GRANT OPTION;

@@ -584,48 +584,69 @@ func migrateOneDatabase(
 	done := make(chan error, 1)
 	go func() { done <- handle.Wait() }()
 
-	select {
-	case <-ctx.Done():
-		handle.Cancel()
-		<-done
-		dropIfOwned(m.DstConnection, dstLoc, created, itemPath)
-		progressCh <- ProgressEvent{
-			ItemPath:      itemPath,
-			Status:        "cancelled",
-			DurationMs:    time.Since(start).Milliseconds(),
-			TargetCreated: created,
-			Err:           ctx.Err(),
-		}
-		return ctx.Err()
+	// The handle already counts what the dump writes (dbmsx's countingWriter) and
+	// which table the restore is on. Nothing read it, so the record sat at zero
+	// until the database finished. Read on the same interval drainProgress writes
+	// on, so a tick is never dropped for being too early.
+	ticker := time.NewTicker(tickInterval)
+	defer ticker.Stop()
 
-	case migErr := <-done:
-		status := "success"
-		if migErr != nil {
-			status = "failed"
-			log.Error().
-				Str("dbType", dbType).
-				Str("srcName", d.SrcName).
-				Str("dstName", dstName).
-				Err(migErr).
-				Msg("DBMS migration failed")
-			if keep {
-				log.Warn().
-					Str("item", itemPath).
-					Str("database", dstLoc.Database).
-					Bool("targetCreated", created).
-					Msg("dbmsOnFailure=keep: leaving the failed target database in place")
-			} else {
-				dropIfOwned(m.DstConnection, dstLoc, created, itemPath)
+	for {
+		select {
+		case <-ticker.C:
+			p := handle.Progress()
+			progressCh <- ProgressEvent{
+				Kind:      EventTick,
+				ItemPath:  itemPath,
+				Current:   p.CurrentTable,
+				SizeBytes: p.BytesTransferred,
 			}
+
+		case <-ctx.Done():
+			handle.Cancel()
+			<-done
+			dropIfOwned(m.DstConnection, dstLoc, created, itemPath)
+			progressCh <- ProgressEvent{
+				ItemPath:      itemPath,
+				Status:        "cancelled",
+				DurationMs:    time.Since(start).Milliseconds(),
+				TargetCreated: created,
+				Err:           ctx.Err(),
+			}
+			return ctx.Err()
+
+		case migErr := <-done:
+			status := "success"
+			if migErr != nil {
+				status = "failed"
+				log.Error().
+					Str("dbType", dbType).
+					Str("srcName", d.SrcName).
+					Str("dstName", dstName).
+					Err(migErr).
+					Msg("DBMS migration failed")
+				if keep {
+					log.Warn().
+						Str("item", itemPath).
+						Str("database", dstLoc.Database).
+						Bool("targetCreated", created).
+						Msg("dbmsOnFailure=keep: leaving the failed target database in place")
+				} else {
+					dropIfOwned(m.DstConnection, dstLoc, created, itemPath)
+				}
+			}
+			progressCh <- ProgressEvent{
+				ItemPath:      itemPath,
+				Status:        status,
+				DurationMs:    time.Since(start).Milliseconds(),
+				TargetCreated: created,
+				Err:           migErr,
+				// What the dump actually wrote, read from the handle one last
+				// time: the ticks were observations, this is the item's figure.
+				SizeBytes: handle.Progress().BytesTransferred,
+			}
+			return migErr
 		}
-		progressCh <- ProgressEvent{
-			ItemPath:      itemPath,
-			Status:        status,
-			DurationMs:    time.Since(start).Milliseconds(),
-			TargetCreated: created,
-			Err:           migErr,
-		}
-		return migErr
 	}
 }
 

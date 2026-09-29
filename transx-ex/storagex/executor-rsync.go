@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cloud-barista/cm-centipede/transx-ex/core"
 	"github.com/cloud-barista/cm-centipede/transx-ex/storagex/filter"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -139,10 +140,8 @@ func (e *RsyncExecutor) executePull(ctx context.Context, source, destination Dat
 		return err
 	}
 
-	cmd := exec.Command("rsync", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("rsync pull failed: %w\nOutput: %s", err, string(output))
+	if err := e.runLocal(ctx, args, "pull"); err != nil {
+		return err
 	}
 
 	return nil
@@ -173,10 +172,8 @@ func (e *RsyncExecutor) executePush(ctx context.Context, source, destination Dat
 		return err
 	}
 
-	cmd := exec.Command("rsync", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("rsync push failed: %w\nOutput: %s", err, string(output))
+	if err := e.runLocal(ctx, args, "push"); err != nil {
+		return err
 	}
 
 	return nil
@@ -276,13 +273,65 @@ func (e *RsyncExecutor) executeAgentForward(ctx context.Context, source, destina
 		return err
 	}
 
-	// Execute rsync on source server
-	output, err := session.CombinedOutput(rsyncCmd)
+	// Execute rsync on source server, reading its progress as it goes.
+	stdout, err := session.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("rsync agent-forward failed: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("rsync agent-forward: open stdout: %w", err)
 	}
+	tail := newTailBuffer(rsyncTailBytes)
+	session.Stderr = tail
+
+	if err := session.Start(rsyncCmd); err != nil {
+		return fmt.Errorf("rsync agent-forward: start: %w", err)
+	}
+	// Read to EOF before Wait: the session's output has to be consumed for the
+	// remote command to finish writing it.
+	moved := streamRsync(ctx, stdout, tail)
+	if err := session.Wait(); err != nil {
+		return fmt.Errorf("rsync agent-forward failed: %w\nOutput: %s", err, tail.String())
+	}
+	e.reportFinal(ctx, moved, tail)
 
 	return nil
+}
+
+// runLocal runs rsync as a local process, reporting each file it sends.
+//
+// StdoutPipe rather than CombinedOutput: the output is read while rsync writes
+// it, which is the whole point. stderr is kept separately — it is where rsync
+// puts the failure, and with the streams split it would otherwise be discarded.
+func (e *RsyncExecutor) runLocal(ctx context.Context, args []string, mode string) error {
+	cmd := exec.Command("rsync", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("rsync %s: open stdout: %w", mode, err)
+	}
+	tail := newTailBuffer(rsyncTailBytes)
+	cmd.Stderr = tail
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("rsync %s: start: %w", mode, err)
+	}
+	moved := streamRsync(ctx, stdout, tail)
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("rsync %s failed: %w\nOutput: %s", mode, err, tail.String())
+	}
+	e.reportFinal(ctx, moved, tail)
+
+	return nil
+}
+
+// reportFinal settles the figure for a finished run.
+//
+// --stats is preferred over the streamed sum: the two agree file for file, but a
+// run that transferred nothing prints no progress lines at all, and the stats
+// block is then the only statement that the transfer moved nothing rather than
+// that nobody was counting.
+func (e *RsyncExecutor) reportFinal(ctx context.Context, moved int64, tail *tailBuffer) {
+	if stats := parseRsyncStats(tail.String()); stats >= 0 {
+		moved = stats
+	}
+	core.ReporterFrom(ctx).Report(core.Update{Bytes: moved, Files: -1})
 }
 
 // loadPrivateKeyData returns private key bytes from PrivateKey content or PrivateKeyPath file.
@@ -353,7 +402,9 @@ func (e *RsyncExecutor) ensureRemoteDir(cfg *SSHConfig, dirPath string) error {
 // buildRemoteRsyncCommand constructs the rsync command executed on the source server.
 func (e *RsyncExecutor) buildRemoteRsyncCommand(source, destination DataLocation, dstSSH *SSHConfig) (string, error) {
 	var parts []string
-	parts = append(parts, "rsync", "-avz")
+	// --stats as in buildLocalRsyncArgs: the transferred-bytes line comes back on
+	// the session output this executor already reads.
+	parts = append(parts, "rsync", "-avz", "--stats", shellQuote(rsyncOutFormat))
 
 	if e.DeleteExtraneous {
 		parts = append(parts, "--delete")
@@ -436,9 +487,40 @@ func (e *RsyncExecutor) buildRemoteSSHOptions(dstSSH *SSHConfig) string {
 // Common Helper Functions
 // ============================================================================
 
+// rsyncStatsLine is the line --stats prints for what actually crossed the wire,
+// as opposed to "Total file size", which is the size of everything considered.
+const rsyncStatsLine = "Total transferred file size:"
+
+// parseRsyncStats returns the bytes rsync --stats reported transferring, or -1
+// when the output does not carry the line.
+//
+// The output is already captured for the error message, so reading it costs
+// nothing. A format that does not match is reported as unknown rather than as
+// zero: rsync moved the data either way, and only the count is missing.
+func parseRsyncStats(output string) int64 {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), rsyncStatsLine) {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), rsyncStatsLine))
+		if len(fields) == 0 {
+			return -1
+		}
+		var n int64
+		if _, err := fmt.Sscanf(strings.ReplaceAll(fields[0], ",", ""), "%d", &n); err != nil {
+			return -1
+		}
+		return n
+	}
+	return -1
+}
+
 // buildLocalRsyncArgs constructs rsync command arguments for local execution.
 func (e *RsyncExecutor) buildLocalRsyncArgs(source, destination DataLocation) ([]string, error) {
-	args := []string{"-avz"} // archive, verbose, compress
+	// --stats for the transferred-bytes line. rsync prints it on the output this
+	// executor already captures, so it is the transfer's own figure rather than
+	// one assembled by walking the tree again.
+	args := []string{"-avz", "--stats", rsyncOutFormat} // archive, verbose, compress
 
 	if e.DeleteExtraneous {
 		args = append(args, "--delete")

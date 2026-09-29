@@ -35,8 +35,12 @@ type Migration struct {
 	TotalItems       int64 `gorm:"column:total_items"       json:"totalItems"`
 	ProcessedItems   int64 `gorm:"column:processed_items"   json:"processedItems"`
 	FailedItems      int64 `gorm:"column:failed_items"      json:"failedItems"`
-	TotalBytes       int64 `gorm:"column:total_bytes"       json:"totalBytes"`
 	TransferredBytes int64 `gorm:"column:transferred_bytes" json:"transferredBytes"`
+
+	// CurrentObject is the file, object or table being moved right now — one level
+	// below ItemPath, which names the folder, bucket or database. Empty when
+	// nothing is in flight.
+	CurrentObject string `gorm:"column:current_object" json:"currentObject,omitempty"`
 
 	ValidationStatus  string                 `gorm:"column:validation_status"              json:"validationStatus,omitempty"`
 	ValidationMessage string                 `gorm:"column:validation_message"             json:"validationMessage,omitempty"`
@@ -195,11 +199,11 @@ type MigrationSummary struct {
 	Status        string `json:"status"`
 	StatusMessage string `json:"statusMessage,omitempty"`
 
-	TotalItems       int64 `json:"totalItems"`
-	ProcessedItems   int64 `json:"processedItems"`
-	FailedItems      int64 `json:"failedItems"`
-	TotalBytes       int64 `json:"totalBytes"`
-	TransferredBytes int64 `json:"transferredBytes"`
+	TotalItems       int64  `json:"totalItems"`
+	ProcessedItems   int64  `json:"processedItems"`
+	FailedItems      int64  `json:"failedItems"`
+	TransferredBytes int64  `json:"transferredBytes"`
+	CurrentObject    string `json:"currentObject,omitempty"`
 
 	ValidationStatus  string                 `json:"validationStatus,omitempty"`
 	ValidationMessage string                 `json:"validationMessage,omitempty"`
@@ -233,8 +237,8 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 		TotalItems:        m.TotalItems,
 		ProcessedItems:    m.ProcessedItems,
 		FailedItems:       m.FailedItems,
-		TotalBytes:        m.TotalBytes,
 		TransferredBytes:  m.TransferredBytes,
+		CurrentObject:     m.CurrentObject,
 		ValidationStatus:  m.ValidationStatus,
 		ValidationMessage: m.ValidationMessage,
 		ValidationDetails: m.ValidationDetails,

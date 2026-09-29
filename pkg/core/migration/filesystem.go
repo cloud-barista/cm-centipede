@@ -187,11 +187,11 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 			continue
 		}
 
-		transferErr := transxex.TransferStorage(transxex.StorageMigrationModel{
+		movedBytes, transferErr := runStorageTransfer(ctx, transxex.StorageMigrationModel{
 			Source:      srcLoc,
 			Destination: dstLoc,
 			Strategy:    strategy,
-		})
+		}, folder.SrcPath, progressCh)
 		durationMs := time.Since(start).Milliseconds()
 
 		status := "success"
@@ -207,6 +207,7 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 		progressCh <- ProgressEvent{
 			ItemPath:   folder.SrcPath,
 			Status:     status,
+			SizeBytes:  movedBytes,
 			DurationMs: durationMs,
 			Err:        transferErr,
 		}

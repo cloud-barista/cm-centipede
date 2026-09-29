@@ -235,8 +235,12 @@ cp_poll() {
 	while :; do
 		cp_curl GET "/migration/$CP_MIGRATION_ID" "" "$tmp" >/dev/null
 		CP_STATUS="$(jq -r '.data.status // "unknown"' "$tmp" 2>/dev/null)"
-		line="$(jq -r '"    status=\(.data.status // "?")  done=\(.data.processedItems // 0)/\(.data.totalItems // 0)  failed=\(.data.failedItems // 0)  sent=\(.data.transferredBytes // 0)B"' "$tmp" 2>/dev/null)"
-		printf '\r%-100s' "$line" >&2
+		# at= is the file, object or table the server says it is on right now. It
+		# is the only part of this line that moves while one large item copies, and
+		# it is absent once nothing is in flight. Long paths keep their tail: the
+		# end is what tells two of them apart.
+		line="$(jq -r '"    status=\(.data.status // "?")  done=\(.data.processedItems // 0)/\(.data.totalItems // 0)  failed=\(.data.failedItems // 0)  sent=\(.data.transferredBytes // 0)B\(.data.currentObject // "" | if . == "" then "" else "  at=" + (if length > 40 then "..." + .[-37:] else . end) end)"' "$tmp" 2>/dev/null)"
+		printf '\r%-110s' "$line" >&2
 		case "$CP_STATUS" in
 		completed|failed|cancelled) break ;;
 		esac

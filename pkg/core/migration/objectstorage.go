@@ -355,6 +355,7 @@ func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStor
 	type result struct {
 		srcPath    string
 		durationMs int64
+		bytes      int64
 		err        error
 	}
 
@@ -401,14 +402,15 @@ func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStor
 				return
 			}
 
-			transferErr := transxex.TransferStorage(transxex.StorageMigrationModel{
+			movedBytes, transferErr := runStorageTransfer(ctx, transxex.StorageMigrationModel{
 				Source:      srcLoc,
 				Destination: dstLoc,
-			})
+			}, bucket.SrcPath, progressCh)
 
 			resultCh <- result{
 				srcPath:    bucket.SrcPath,
 				durationMs: time.Since(start).Milliseconds(),
+				bytes:      movedBytes,
 				err:        transferErr,
 			}
 		}(b)
@@ -431,6 +433,7 @@ func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStor
 		progressCh <- ProgressEvent{
 			ItemPath:   r.srcPath,
 			Status:     status,
+			SizeBytes:  r.bytes,
 			DurationMs: r.durationMs,
 			Err:        r.err,
 		}

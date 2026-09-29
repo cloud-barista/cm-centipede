@@ -5,7 +5,9 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
+	"github.com/cloud-barista/cm-centipede/transx-ex/core"
 	drvpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/driver"
 )
 
@@ -71,6 +73,12 @@ func (e *PipeExecutor) Execute(ctx context.Context, _, _ drvpkg.DBMSLocation) er
 	)
 	pr, pw := io.Pipe()
 
+	// Every byte of the dump crosses this pipe, which is the only place on this
+	// path that sees them: both commands run on remote hosts and report nothing.
+	// The raw pw is kept for CloseWithError below — the wrapper counts, it does
+	// not own the pipe.
+	counted := newPipeCounter(pw, core.ReporterFrom(ctx))
+
 	var (
 		wg         sync.WaitGroup
 		dumpErr    error
@@ -105,12 +113,13 @@ func (e *PipeExecutor) Execute(ctx context.Context, _, _ drvpkg.DBMSLocation) er
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		dumpErr = drvpkg.ExecuteViaSSH(e.srcSSH, e.dumpCmd, nil, pw)
+		dumpErr = drvpkg.ExecuteViaSSH(e.srcSSH, e.dumpCmd, nil, counted)
 		// Close the writer to signal EOF (or error) to the restore side.
 		pw.CloseWithError(dumpErr)
 	}()
 
 	wg.Wait()
+	counted.flush()
 
 	if dumpErr != nil {
 		logger.Error("pipe dump failed", slog.String("err", dumpErr.Error()))
@@ -122,4 +131,73 @@ func (e *PipeExecutor) Execute(ctx context.Context, _, _ drvpkg.DBMSLocation) er
 	}
 	logger.Info("pipe execute completed")
 	return nil
+}
+
+// =============================================================================
+// pipeCounter
+// =============================================================================
+
+// Reporting thresholds. A dump streams in 32 KB writes, and a reporter is called
+// on the transfer path — so observations are batched rather than made per write.
+// Either limit triggers one: the size keeps a fast dump from reporting thousands
+// of times, the interval keeps a slow one from reporting nothing at all.
+const (
+	pipeReportBytes    = 1 << 20
+	pipeReportInterval = 200 * time.Millisecond
+)
+
+// pipeCounter counts what passes through it and reports the running total.
+//
+// It wraps the pipe writer without owning it: Execute still closes the pipe
+// itself, because closing is how a failure on one side unblocks the other.
+type pipeCounter struct {
+	w        io.Writer
+	reporter core.Reporter
+
+	mu       sync.Mutex
+	total    int64
+	reported int64
+	lastAt   time.Time
+}
+
+func newPipeCounter(w io.Writer, reporter core.Reporter) *pipeCounter {
+	return &pipeCounter{w: w, reporter: reporter}
+}
+
+// Write implements io.Writer.
+func (c *pipeCounter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	if n > 0 {
+		c.add(int64(n))
+	}
+	return n, err
+}
+
+func (c *pipeCounter) add(n int64) {
+	c.mu.Lock()
+	c.total += n
+	total := c.total
+	due := total-c.reported >= pipeReportBytes || time.Since(c.lastAt) >= pipeReportInterval
+	if due {
+		c.reported = total
+		c.lastAt = time.Now()
+	}
+	c.mu.Unlock()
+
+	if due {
+		c.reporter.Report(core.Update{Bytes: total, Files: -1})
+	}
+}
+
+// flush reports the final total, which the thresholds above may have held back.
+func (c *pipeCounter) flush() {
+	c.mu.Lock()
+	total := c.total
+	pending := total != c.reported
+	c.reported = total
+	c.mu.Unlock()
+
+	if pending {
+		c.reporter.Report(core.Update{Bytes: total, Files: -1})
+	}
 }

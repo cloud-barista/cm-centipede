@@ -73,7 +73,10 @@ func (p *Pipeline[L]) Execute(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := step.Executor.Execute(ctx, step.Source, step.Destination); err != nil {
+		// The step's own context, so an observation says which step produced it
+		// without every executor having to be told where it sits.
+		stepCtx := withStepReporter(ctx, i+1, len(p.Steps))
+		if err := step.Executor.Execute(stepCtx, step.Source, step.Destination); err != nil {
 			return fmt.Errorf("step %d (%s) failed: %w", i+1, step.Name, err)
 		}
 	}

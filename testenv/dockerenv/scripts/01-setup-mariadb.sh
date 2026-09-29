@@ -26,6 +26,13 @@ DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1
 DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 
+-- root from any host, so a direct connection through the published port can log
+-- in as root. The flush reloads the grant tables the DELETEs above edited
+-- directly; without it CREATE USER still sees the in-memory accounts.
+FLUSH PRIVILEGES;
+CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'testpass123';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+
 -- Application account
 CREATE USER IF NOT EXISTS 'centipede'@'%' IDENTIFIED BY 'centipede_pass';
 GRANT ALL PRIVILEGES ON *.* TO 'centipede'@'%' WITH GRANT OPTION;

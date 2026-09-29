@@ -1079,6 +1079,12 @@ definitions:
           column the date filters compare against: without the index every list call
           is a full scan plus a sort.
         type: string
+      currentObject:
+        description: |-
+          CurrentObject is the file, object or table being moved right now — one level
+          below ItemPath, which names the folder, bucket or database. Empty when
+          nothing is in flight.
+        type: string
       dbmsOnFailure:
         description: |-
           DBMSOnFailure is carried on the record rather than only on the request
@@ -1103,8 +1109,6 @@ definitions:
         type: string
       statusMessage:
         type: string
-      totalBytes:
-        type: integer
       totalItems:
         type: integer
       transferredBytes:
@@ -1201,6 +1205,8 @@ definitions:
         type: string
       createdAt:
         type: string
+      currentObject:
+        type: string
       dbmsOnFailure:
         type: string
       description:
@@ -1221,8 +1227,6 @@ definitions:
         type: string
       statusMessage:
         type: string
-      totalBytes:
-        type: integer
       totalItems:
         type: integer
       transferredBytes:

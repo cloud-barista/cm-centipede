@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cloud-barista/cm-centipede/transx-ex/core"
 	"github.com/cloud-barista/cm-centipede/transx-ex/storagex/filter"
 )
 
@@ -61,6 +62,9 @@ func (e *S3Executor) upload(ctx context.Context, localPath, s3Path string, flt *
 		basePath = filepath.Dir(localPath)
 	}
 
+	reporter := core.ReporterFrom(ctx)
+	var sent int64
+
 	for i, file := range files {
 		select {
 		case <-ctx.Done():
@@ -84,6 +88,12 @@ func (e *S3Executor) upload(ctx context.Context, localPath, s3Path string, flt *
 		if err := e.uploadFile(file, s3Key); err != nil {
 			return item.Fail(ActionUpload, err)
 		}
+
+		// After the upload, not before: what is reported is what landed.
+		if info, statErr := os.Stat(file); statErr == nil {
+			sent += info.Size()
+		}
+		reporter.Report(core.Update{Bytes: sent, Files: int64(i + 1), Item: s3Key})
 	}
 
 	return nil
@@ -120,6 +130,10 @@ func (e *S3Executor) download(ctx context.Context, s3Path, localPath string, flt
 		return Obj{Kind: ObjectKindObject, Owner: keyPrefix}.Fail(ActionList, err)
 	}
 
+	reporter := core.ReporterFrom(ctx)
+	var received int64
+	var done int64
+
 	for i, obj := range objects {
 		select {
 		case <-ctx.Done():
@@ -147,6 +161,10 @@ func (e *S3Executor) download(ctx context.Context, s3Path, localPath string, flt
 		if err := e.downloadFile(obj.Key, localFile); err != nil {
 			return item.Fail(ActionDownload, err)
 		}
+
+		received += obj.Size
+		done++
+		reporter.Report(core.Update{Bytes: received, Files: done, Item: obj.Key})
 	}
 
 	return nil

@@ -1993,6 +1993,10 @@ const docTemplate = `{
                     "description": "CreatedAt is indexed because it is both the list ordering key and the only\ncolumn the date filters compare against: without the index every list call\nis a full scan plus a sort.",
                     "type": "string"
                 },
+                "currentObject": {
+                    "description": "CurrentObject is the file, object or table being moved right now — one level\nbelow ItemPath, which names the folder, bucket or database. Empty when\nnothing is in flight.",
+                    "type": "string"
+                },
                 "dbmsOnFailure": {
                     "description": "DBMSOnFailure is carried on the record rather than only on the request\nbecause execution is asynchronous and a retry re-reads the row: the policy\nhas to outlive the call that set it. Empty means DBMSOnFailureCleanup.",
                     "type": "string"
@@ -2023,9 +2027,6 @@ const docTemplate = `{
                 },
                 "statusMessage": {
                     "type": "string"
-                },
-                "totalBytes": {
-                    "type": "integer"
                 },
                 "totalItems": {
                     "type": "integer"
@@ -2111,6 +2112,9 @@ const docTemplate = `{
                 "createdAt": {
                     "type": "string"
                 },
+                "currentObject": {
+                    "type": "string"
+                },
                 "dbmsOnFailure": {
                     "type": "string"
                 },
@@ -2140,9 +2144,6 @@ const docTemplate = `{
                 },
                 "statusMessage": {
                     "type": "string"
-                },
-                "totalBytes": {
-                    "type": "integer"
                 },
                 "totalItems": {
                     "type": "integer"
