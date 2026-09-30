@@ -982,7 +982,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "useSSL": {
-                    "description": "UseSSL is honored only for user-supplied endpoints (openstack, onprem).\nThe other providers use the fixed value from the provider table.",
+                    "description": "UseSSL is honored only for user-supplied endpoints (openstack, onprem).\nThe other providers use the fixed value from the provider table. A scheme\non Endpoint (\"http://\" or \"https://\") overrides both.",
                     "type": "boolean"
                 }
             }

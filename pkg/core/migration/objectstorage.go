@@ -3,6 +3,7 @@ package migration
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -44,13 +45,15 @@ const defaultObjectConcurrency = 4
 func ToMinioS3Config(cfg honeybee.HoneybeeConnConfig) (*transxex.S3MinioConfig, error) {
 	var s3cfg *transxex.S3MinioConfig
 	if strings.TrimSpace(cfg.ProviderName) == "" {
-		endpoint := cfg.Endpoint
+		// cm-honeybee refuses such a group itself, so there is nothing of its to
+		// mirror here; the scheme rule is the one ResolveS3Endpoint applies.
+		endpoint, schemeSSL, schemeGiven, err := normalizeS3Endpoint(cfg.Endpoint)
+		if err != nil {
+			return nil, err
+		}
 		useSSL := cfg.UseSSL
-		if strings.HasPrefix(endpoint, "https://") {
-			endpoint = strings.TrimPrefix(endpoint, "https://")
-			useSSL = true
-		} else {
-			endpoint = strings.TrimPrefix(endpoint, "http://")
+		if schemeGiven {
+			useSSL = schemeSSL
 		}
 		s3cfg = &transxex.S3MinioConfig{
 			Endpoint:        endpoint,
@@ -172,6 +175,39 @@ func regionInHost(provider string) bool {
 	return false
 }
 
+// normalizeS3Endpoint splits an endpoint into the host[:port] that minio-go
+// accepts and, when the value carried a scheme, the TLS choice that scheme
+// states (sslFromScheme reports whether it did). minio-go rejects an endpoint
+// that keeps its scheme or a path, while the endpoint may be typed as a host or
+// a URL, so the URL form is unwrapped here. It mirrors cm-honeybee's
+// normalizeS3Endpoint; keep the two in sync.
+func normalizeS3Endpoint(raw string) (host string, useSSL, sslFromScheme bool, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.Contains(trimmed, "://") {
+		host = strings.TrimSuffix(trimmed, "/")
+		if strings.Contains(host, "/") {
+			return "", false, false, fmt.Errorf("endpoint must not contain a path: %s", raw)
+		}
+		return host, false, false, nil
+	}
+
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", false, false, fmt.Errorf("endpoint is not a valid URL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false, false, fmt.Errorf("endpoint scheme must be http or https: %s", raw)
+	}
+	if u.Host == "" {
+		return "", false, false, fmt.Errorf("endpoint has no host: %s", raw)
+	}
+	if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" {
+		return "", false, false, fmt.Errorf("endpoint must not contain a path: %s", raw)
+	}
+	return u.Host, scheme == "https", true, nil
+}
+
 // ResolveS3Endpoint derives the endpoint, signing region, TLS setting and bucket
 // addressing style from a connection's provider. It mirrors cm-honeybee's
 // resolveS3Endpoint so that the two systems address the same bucket the same
@@ -192,14 +228,15 @@ func ResolveS3Endpoint(cfg commonmodel.MinioConnConfig) (endpoint, region string
 	provider := strings.ToLower(strings.TrimSpace(cfg.ProviderName))
 
 	// A scheme typed into the endpoint is an explicit statement about TLS, so it
-	// wins over both the provider's fixed value and cfg.UseSSL.
-	given := strings.TrimSpace(cfg.Endpoint)
-	schemeGiven, schemeSSL := false, false
-	switch {
-	case strings.HasPrefix(given, "https://"):
-		given, schemeGiven, schemeSSL = strings.TrimPrefix(given, "https://"), true, true
-	case strings.HasPrefix(given, "http://"):
-		given, schemeGiven, schemeSSL = strings.TrimPrefix(given, "http://"), true, false
+	// wins over both the provider's fixed value and cfg.UseSSL. schemeSSL is only
+	// meaningful when schemeGiven.
+	var given string
+	var schemeSSL, schemeGiven bool
+	if strings.TrimSpace(cfg.Endpoint) != "" {
+		given, schemeSSL, schemeGiven, err = normalizeS3Endpoint(cfg.Endpoint)
+		if err != nil {
+			return "", "", false, "", err
+		}
 	}
 
 	useSSL = true
@@ -246,11 +283,12 @@ func ResolveS3Endpoint(cfg commonmodel.MinioConnConfig) (endpoint, region string
 		return account + ".blob.core.windows.net", region, true, "", nil
 	case commonmodel.ProviderOpenStack, commonmodel.ProviderOnPrem:
 		// The only providers where the user supplies both the host and whether to
-		// use TLS.
+		// use TLS. The override below still applies, so a scheme on the endpoint
+		// wins over cfg.UseSSL here as it does everywhere else.
 		if given == "" {
 			return "", "", false, "", fmt.Errorf("endpoint is required for provider %s", provider)
 		}
-		return given, region, cfg.UseSSL || (schemeGiven && schemeSSL), cfg.BucketLookup, nil
+		useSSL = cfg.UseSSL
 	default:
 		return "", "", false, "", fmt.Errorf("unsupported provider: %s", provider)
 	}

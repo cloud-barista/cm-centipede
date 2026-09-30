@@ -157,7 +157,8 @@ type MinioConnConfig struct {
 	Region string `json:"region,omitempty"`
 
 	// UseSSL is honored only for user-supplied endpoints (openstack, onprem).
-	// The other providers use the fixed value from the provider table.
+	// The other providers use the fixed value from the provider table. A scheme
+	// on Endpoint ("http://" or "https://") overrides both.
 	UseSSL       bool   `json:"useSSL,omitempty"`
 	BucketLookup string `json:"bucketLookup,omitempty"` // "" | "dns" | "path"
 }
