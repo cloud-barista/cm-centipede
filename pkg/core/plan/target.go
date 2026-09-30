@@ -768,15 +768,15 @@ func buildDBEntry(
 // BuildTargetDataMigrationModel validates the plan request and builds the
 // TargetDataMigrationModel from it.
 //
-// One plan entry produces one target model entry. The request pairs each entry
-// of the source model with its own destination and its own filter, so a
-// group-level source model — several connections discovered under one source
-// group — describes several migrations rather than several sources crowding
-// onto one destination.
+// One plan entry produces one target model entry. The request selects entries
+// of the source model and pairs each with its own destination and its own
+// filter, so a group-level source model — several connections discovered under
+// one source group — describes several migrations rather than several sources
+// crowding onto one destination. A source entry no plan entry names is not
+// migrated.
 //
 // Validation errors (→ 400 in the controller):
-//   - a srcConnection naming no entry of the source model, or a source entry no
-//     plan entry names
+//   - a srcConnection naming no entry of the source model
 //   - a filter or strategy that the entry's source domain gives no meaning to
 //   - unsupported source/target type combination (DBMS is same-type only;
 //     filesystem↔objectstorage cross-storage is allowed)
@@ -842,13 +842,13 @@ func BuildTargetDataMigrationModel(req model.TargetPlanReq) (targetmodel.TargetD
 		}
 	}
 
-	// A source entry nothing names is reported rather than skipped. Skipping it
-	// is what the previous shape did, and a source that was discovered, sent and
-	// then silently left behind is the failure this request shape exists to end.
+	// A source entry nothing names is left out: plans is the selection. It is
+	// logged so a discovered source the caller forgot to select can still be
+	// traced back to this request.
 	for key := range index {
 		if !referenced[key] {
-			return targetmodel.TargetDataMigrationModel{}, validationErr(
-				"source connection %q is in the source model but no plans entry names it", key)
+			log.Info().Str("srcConnection", key).
+				Msg("source connection is in the source model but no plans entry selects it; not migrating it")
 		}
 	}
 

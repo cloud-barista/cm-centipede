@@ -11,20 +11,21 @@ import (
 //
 // Source is the discovery result passed through verbatim — a cm-honeybee
 // refined response, group-level included, which is why it can hold several
-// entries. Plans pairs each of those entries with a destination: one entry per
-// (source entry, destination), so two sources never share a destination by
-// accident and the same source may appear twice to fan out.
+// entries. Plans selects which of those entries to migrate and pairs each with
+// a destination: one entry per (source entry, destination), so two sources
+// never share a destination by accident and the same source may appear twice
+// to fan out. A source entry no plan entry names is not migrated.
 //
 // Before this shape there was one dstConnection and one filter set for the
 // whole request, which a group-level source model had no way to use: every
-// entry was copied onto the same destination and the same mapping, and the
-// ones the mapping did not name were dropped without a word.
+// entry was copied onto the same destination and the same mapping.
 type TargetPlanReq struct {
 	Source sourcemodel.SourceDataMigrationModel `json:"source" validate:"required"`
 	Plans  []PlanEntry                          `json:"plans"  validate:"required,min=1"`
 }
 
-// PlanEntry pairs one entry of TargetPlanReq.Source with a destination.
+// PlanEntry selects one entry of TargetPlanReq.Source and pairs it with a
+// destination.
 //
 // SrcConnection names that entry. It is a ConnectionRef for symmetry with
 // DstConnection and with the target model this plan produces, but only a

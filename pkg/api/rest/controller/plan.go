@@ -151,12 +151,12 @@ func GetTargetPlan(c echo.Context) error {
 	// that migrates nothing.
 	if len(req.Plans) == 0 {
 		return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse(
-			"plans is required: name a destination for each entry of the source model"))
+			"plans is required: select at least one entry of the source model and name its destination"))
 	}
 
-	// Structural validation of every ConnectionRef in the request. Which entry a
-	// srcConnection resolves to, and whether one is left unpaired, is the
-	// builder's to answer — it is the side holding the source index.
+	// Structural validation of every ConnectionRef in the request, selected or
+	// not. Which entry a srcConnection resolves to is the builder's to answer —
+	// it is the side holding the source index.
 	src := req.Source.SourceDataMigrationModel
 	for _, fs := range src.FileSystems {
 		if msg := validateSourceConnectionRef(fs.Connection); msg != "" {
