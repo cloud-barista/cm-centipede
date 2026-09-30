@@ -17,6 +17,14 @@
 #     Credentials and settings come from /work/.env inside the container, with
 #     VAULT_ADDR overridden to the compose network address (http://openbao:8200).
 #
+#   One environment per prefix:
+#     Every module keeps one state per TF_VAR_<csp>_name_prefix (a tofu workspace,
+#     see scripts/lib/workspace.sh), and this script only ever applies the prefix
+#     .env sets. Changing the prefix starts a new environment next to the old one;
+#     the old one is not touched and keeps costing money - ./scripts/list.sh shows
+#     what is still provisioned. The bucket name is not derived from the prefix,
+#     so it is checked against every other prefix's bucket before the apply.
+#
 #   Repeated runs:
 #     A resource that already holds state is reported and skipped, so running the same
 #     command twice costs nothing and creates nothing. Pass --force to apply anyway -
@@ -27,11 +35,8 @@
 #     - NCP has no default VPC, so tofu/ncp/vm and tofu/ncp/database resolve the
 #       VPC/subnet/ACG by name from tofu/ncp/network. That module is handled
 #       automatically here and is not a resource you pass on the command line:
-#       it is applied first whenever vm or database needs it and is still missing.
-#       deprovision.sh destroys it once no module needs it any more.
-#     - Changing TF_VAR_ncp_name_prefix after tofu/ncp/network exists breaks that
-#       by-name lookup. It is detected here and reported with the way out, rather
-#       than left to fail as a bare "Invalid index" inside tofu.
+#       it is applied first whenever vm or database needs it and the prefix has
+#       none yet. deprovision.sh destroys it once no module of the prefix needs it.
 #     - Managed databases take roughly 30 minutes to create.
 #     - The tofu/ncp/versions module only holds data sources for looking up engine
 #       versions, images and specs. Use ./scripts/ncp-db-versions.sh for that.
@@ -96,74 +101,33 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${RUNNER}$"; then
     echo -e "${RED}The ${RUNNER} container is not running. Run ./scripts/up.sh first.${NC}" >&2; exit 1
 fi
 
-# has_managed_state <module> — true when the module tracks a real resource. Data sources
-#   are filtered out, and outputs are ignored: a module whose resources were removed from
-#   state can keep stale outputs, which would otherwise read as "already provisioned".
+# shellcheck source=./lib/workspace.sh
+. "$SCRIPT_DIR/lib/workspace.sh"
+ws_load "$CSP"
+
+# has_managed_state <module> — true when the prefix's workspace of the module tracks a
+#   real resource. Data sources are filtered out, and outputs are ignored: a module whose
+#   resources were removed from state can keep stale outputs, which would otherwise read
+#   as "already provisioned".
 has_managed_state() {
     local mod="$1" out
-    out="$(docker exec "$RUNNER" bash -c '
+    out="$(ws_exec bash -c '
         cd "/work/'"$mod"'" 2>/dev/null || exit 0
         tofu state list 2>/dev/null || true
     ' | grep -v '^data\.' || true)"
     [ -n "$(printf %s "$out" | tr -d '[:space:]')" ]
 }
 
-# ncp_name_prefix — the prefix the NCP modules will actually use: TF_VAR_ncp_name_prefix
-#   from .env, or the module default when .env does not set it.
-ncp_name_prefix() {
-    local p
-    p="$(docker exec "$RUNNER" bash -c '
-        set -a; . /work/.env 2>/dev/null; set +a
-        printf %s "${TF_VAR_ncp_name_prefix:-}"
-    ')"
-    if [ -z "$p" ]; then
-        p="$(sed -n '/variable "ncp_name_prefix"/,/^}/s/.*default *= *"\([^"]*\)".*/\1/p' \
-             "$ROOT_DIR/tofu/ncp/vm/variables.tf" | head -1)"
-    fi
-    printf %s "$p"
-}
-
-# ncp_network_vpc_name — the vpc_name output of tofu/ncp/network; empty when it holds
-#   no state.
-#   The result is shape-checked, because `tofu output -raw` prints a multi-line
-#   "No outputs found" warning on STDOUT and still exits 0 when the module has none.
-#   A VPC name is a single token of letters, digits and hyphens, so anything else is
-#   that warning and has to be read as "no network".
-ncp_network_vpc_name() {
-    local name
-    name="$(docker exec "$RUNNER" bash -c '
-        cd /work/tofu/ncp/network 2>/dev/null || exit 0
-        tofu output -raw vpc_name 2>/dev/null || true
-    ' | tr -d '[:space:]')"
-    case "$name" in
-        ''|*[!a-zA-Z0-9-]*) printf '' ;;
-        *)                  printf %s "$name" ;;
-    esac
-}
-
-# ncp_prefix_mismatch — true when tofu/ncp/network exists but was created under a
-#   different prefix than the one in effect now.
-#   This has to be caught up front. ncp/vm and ncp/database resolve the VPC, subnet and
-#   ACG BY NAME, so a changed prefix makes every lookup return an empty list and tofu
-#   fails with a bare "Invalid index ... vpcs is empty list of object" that says nothing
-#   about the real cause.
-NCP_PREFIX=""; NCP_NETWORK_VPC=""
-ncp_prefix_mismatch() {
-    NCP_PREFIX="$(ncp_name_prefix)"
-    NCP_NETWORK_VPC="$(ncp_network_vpc_name)"
-    [ -n "$NCP_NETWORK_VPC" ] && [ "$NCP_NETWORK_VPC" != "${NCP_PREFIX}-vpc" ]
-}
-
 # apply_module <module> [show_outputs] — init + validate + apply inside the runner
 apply_module() {
     local mod="$1" show="${2:-yes}"
-    docker exec "$RUNNER" bash -c '
+    ws_exec bash -c '
         set -euo pipefail
         set -a; . /work/.env; set +a
         export VAULT_ADDR=http://openbao:8200
         mkdir -p /work/.tofu-plugin-cache /work/ssh_keys
         cd "/work/'"$mod"'"
-        tofu init -input=false
+        '"$WS_INIT"'
         tofu validate
         tofu apply -auto-approve
         if [ "'"$show"'" = "yes" ]; then
@@ -174,13 +138,49 @@ apply_module() {
     '
 }
 
+# bucket_owners — "<prefix> <bucket_name>" for every OTHER prefix whose bucket module
+#   holds a bucket. Read straight from the state files: tofu can only read one
+#   workspace at a time, and this runs before any apply.
+bucket_owners() {
+    docker exec "$RUNNER" bash -c '
+        cd "/work/tofu/'"$CSP"'/bucket" 2>/dev/null || exit 0
+        for f in terraform.tfstate.d/*/terraform.tfstate; do
+            [ -f "$f" ] || continue
+            ws="${f#terraform.tfstate.d/}"; ws="${ws%/terraform.tfstate}"
+            [ "$ws" = "'"$WS_PREFIX"'" ] && continue
+            name="$(jq -r ".outputs.bucket_name.value // empty" "$f" 2>/dev/null || true)"
+            [ -n "$name" ] && printf "%s %s\n" "$ws" "$name"
+        done
+    ' || true
+}
+
+# check_bucket_name — refuse a bucket name another prefix already uses.
+#   The bucket is the one resource whose name is not derived from the prefix, so two
+#   environments share it unless .env is changed as well. Left to the apply, AWS
+#   answers BucketAlreadyOwnedByYou and NCP a conflict, neither of which says which
+#   environment owns it.
+check_bucket_name() {
+    local var="TF_VAR_${CSP}_bucket_name" name owner other
+    name="$( set -a; . "$ROOT_DIR/.env" 2>/dev/null; set +a; printf %s "${!var:-}" )"
+    [ -n "$name" ] || return 0
+    while read -r owner other; do
+        [ -n "$owner" ] || continue
+        if [ "$other" = "$name" ]; then
+            echo -e "${RED}=== bucket '${name}' already belongs to prefix '${owner}' ===${NC}" >&2
+            echo "  The bucket name is not derived from the prefix, so each environment needs" >&2
+            echo "  its own. Set another ${var} in .env for prefix '${WS_PREFIX}'." >&2
+            exit 1
+        fi
+    done <<< "$(bucket_owners)"
+}
+
 # Already provisioned? Report it and stop, so a repeated command is a no-op instead of
 # a fresh apply. Tracking a resource is the signal; it does not prove the module applied
 # cleanly to the end, which is why --force exists to re-apply and converge one that
 # stopped halfway.
 if [ "$FORCE" -eq 0 ] && has_managed_state "$MODULE"; then
-    echo -e "${YELLOW}=== ${CSP}/${RESOURCE} is already provisioned - nothing to do ===${NC}"
-    docker exec "$RUNNER" bash -c '
+    echo -e "${YELLOW}=== ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) is already provisioned - nothing to do ===${NC}"
+    ws_exec bash -c '
         cd "/work/'"$MODULE"'"
         tofu output 2>/dev/null || true
     ' | sed 's/^/  /'
@@ -191,25 +191,15 @@ if [ "$FORCE" -eq 0 ] && has_managed_state "$MODULE"; then
     exit 0
 fi
 
+if [ "$RESOURCE" = "bucket" ]; then
+    check_bucket_name
+fi
+
 # NCP vm/database resolve the VPC, subnet and ACG by name from tofu/ncp/network,
 # so it has to exist first. It is applied here rather than exposed as a command.
+# The network lives in the same prefix's workspace, which is what keeps the by-name
+# lookups matching: the names embed the prefix the workspace is named after.
 if [ "$CSP" = "ncp" ] && { [ "$RESOURCE" = "vm" ] || [ "$RESOURCE" = "database" ]; }; then
-    if ncp_prefix_mismatch; then
-        echo -e "${RED}=== TF_VAR_ncp_name_prefix does not match the existing ncp/network ===${NC}" >&2
-        echo "  ncp/network was created as : ${NCP_NETWORK_VPC}" >&2
-        echo "  ${CSP}/${RESOURCE} will look for : ${NCP_PREFIX}-vpc" >&2
-        echo >&2
-        echo "  ncp/vm and ncp/database resolve the VPC, subnet and ACG BY NAME, so the" >&2
-        echo "  lookup finds nothing and the apply fails on an empty list." >&2
-        echo >&2
-        echo "  Re-create the network under the new prefix (it holds no data):" >&2
-        echo "    ./scripts/deprovision.sh ncp ${RESOURCE}" >&2
-        echo "    ./scripts/provision.sh ncp ${RESOURCE}" >&2
-        echo >&2
-        echo "  Or keep what exists by putting TF_VAR_ncp_name_prefix back to" >&2
-        echo "  '${NCP_NETWORK_VPC%-vpc}' in .env." >&2
-        exit 1
-    fi
     if ! has_managed_state "tofu/ncp/network"; then
         echo -e "${YELLOW}=== prerequisite: creating ncp/network (VPC + PUBLIC subnet + ACG) ===${NC}"
         apply_module "tofu/ncp/network" no
@@ -218,15 +208,16 @@ if [ "$CSP" = "ncp" ] && { [ "$RESOURCE" = "vm" ] || [ "$RESOURCE" = "database" 
     fi
 fi
 
-echo -e "${CYAN}=== provision: ${CSP}/${RESOURCE} ===${NC}"
+echo -e "${CYAN}=== provision: ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
 if [ "$CSP" = "ncp" ] && [ "$RESOURCE" = "database" ]; then
     echo -e "${YELLOW}Managed DB creation takes ~30 minutes. Do not interrupt this command.${NC}"
 fi
 
 apply_module "$MODULE"
-echo -e "${GREEN}=== done: ${CSP}/${RESOURCE} ===${NC}"
+echo -e "${GREEN}=== done: ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
 echo "  Reveal a sensitive output (password, connection_uri, ...):"
-echo "    docker exec ${RUNNER} bash -c 'cd /work/${MODULE} && tofu output -raw <output_name>'"
+echo "    docker exec -e TF_WORKSPACE=${WS_PREFIX} ${RUNNER} bash -c 'cd /work/${MODULE} && tofu output -raw <output_name>'"
+echo "  Every provisioned environment, all prefixes:  ./scripts/list.sh"
 
 if [ "$CSP" = "ncp" ] && [ "$RESOURCE" = "database" ]; then
     echo

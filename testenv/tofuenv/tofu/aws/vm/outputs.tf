@@ -45,3 +45,8 @@ output "nfs_mount_path" {
   description = "Where the EFS file system is mounted on the VM; null without NFS"
   value       = var.aws_nfs_enabled ? var.aws_nfs_mount_path : null
 }
+
+output "name_prefix" {
+  description = "Name prefix, and the tofu workspace this environment lives in"
+  value       = var.aws_name_prefix
+}

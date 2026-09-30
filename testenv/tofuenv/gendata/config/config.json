@@ -1,5 +1,5 @@
 {
-  "layout":        { "folderDepth": 2, "folderBreadth": 2 },
+  "layout":        { "folderDepth": 3, "folderBreadth": 3, "maxFiles": 1000 },
   "objectStorage": { "basePrefix": "gendata/", "concurrency": 10, "endpointOverride": "", "bucketLookup": "auto" },
   "filesystem":    { "basePath": "/home/ubuntu/testdata", "concurrency": 10 },
   "dummy":         { "sizeCSV": 1, "sizeTXT": 1, "sizeSQL": 1, "sizeJSON": 1, "sizeXML": 1, "sizePNG": 1, "sizeGIF": 1, "sizeZIP": 1 },

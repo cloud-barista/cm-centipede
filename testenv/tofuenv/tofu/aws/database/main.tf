@@ -174,7 +174,7 @@ resource "aws_db_instance" "mysql" {
   engine                 = "mysql"
   engine_version         = var.aws_mysql_version
   instance_class         = var.aws_db_instance_class
-  allocated_storage      = var.db_allocated_storage
+  allocated_storage      = var.aws_db_allocated_storage
   db_name                = var.aws_db_name
   username               = var.aws_db_username
   password               = local.db_password
@@ -194,7 +194,7 @@ resource "aws_db_instance" "mariadb" {
   engine                 = "mariadb"
   engine_version         = var.aws_mariadb_version
   instance_class         = var.aws_db_instance_class
-  allocated_storage      = var.db_allocated_storage
+  allocated_storage      = var.aws_db_allocated_storage
   db_name                = var.aws_db_name
   username               = var.aws_db_username
   password               = local.db_password
@@ -214,7 +214,7 @@ resource "aws_db_instance" "postgres" {
   engine                 = "postgres"
   engine_version         = var.aws_postgres_version
   instance_class         = var.aws_db_instance_class
-  allocated_storage      = var.db_allocated_storage
+  allocated_storage      = var.aws_db_allocated_storage
   db_name                = var.aws_db_name
   username               = var.aws_db_username
   password               = local.db_password

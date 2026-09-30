@@ -100,6 +100,7 @@ every flag straight through, which is usually more convenient.
 | `--dry-run` | `false` | Generate dummy files only; skip upload, SFTP and DB load |
 | `--force` | `false` | Skip the pre-flight checks: existing data (allows overwrite and `DROP`) and capacity |
 | `--cleanup` | `false` | Delete data instead of generating it — see below. `--target bucket` only |
+| `--manifest` | `runs/last-run.json` | Where the run summary is written |
 | `--env-keys` | — | Print the environment variables gendata reads and exit; nothing else is required |
 
 ### `--cleanup` — emptying the bucket
@@ -156,8 +157,10 @@ make clean
    - `database` → load the `shop_db` fixture for each engine into the **provisioned**
      database (`tofu output db_name`, default `testdb`), then add the bulk rows if
      `GENDATA_DB_SIZE_MB` asks for any
-5. **Write `runs/last-run.json`** — a summary of the last run, with no secrets, plus a
-   console summary.
+5. **Write the run manifest** — a summary of the last run, with no secrets, plus a
+   console summary. `--manifest` sets the path, `runs/last-run.json` by default;
+   `../scripts/gen-data.sh` keeps one per environment,
+   `runs/<provider>-<prefix>-last-run.json`.
 
 Destination paths carry **no per-run identifier**. Re-running therefore overwrites the
 same locations instead of piling up copies, and step 3 notices the previous run.
@@ -227,8 +230,9 @@ variables and needs no plumbing of its own:
 
 | Variable | Sets |
 |---|---|
-| `GENDATA_DUMMY_SIZE_MB` | every dummy format, in MB |
-| `GENDATA_DUMMY_SIZES` | per format, applied on top: `csv=500,txt=500,sql=500,json=500,xml=500,png=100,gif=100,zip=0`. A format left out keeps the value above rather than being switched off; `0` switches it off |
+| `GENDATA_DUMMY_SIZE_MB` | the total over all dummy formats, in MB, split 1 MB at a time in `csv, txt, sql, json, xml, png, gif, zip` order |
+| `GENDATA_DUMMY_MAX_FILES` | the most dummy files to generate, overriding `layout.maxFiles`; `0` means no limit |
+| `GENDATA_DUMMY_SIZES` | per format, in MB: `png=0,gif=0,zip=100`. The named formats keep their size and the rest of the total is split over the others; `0` switches a format off. Without a total it overrides config.json format by format. Naming more than the total is an error |
 | `GENDATA_DB_SIZE_MB` | bulk rows added to each database after the fixture, in MB |
 
 They are **not** `TF_VAR_*`: OpenTofu never reads them. In tofuenv's `.env` that
@@ -249,7 +253,7 @@ catches that by comparing the `GENDATA_` keys in `.env` against `gendata
 --env-keys`, and warns.
 
 Every run logs the sizes in effect and where they came from, and
-`runs/last-run.json` records the same under `origins`.
+the run manifest records the same under `origins`.
 
 ### Capacity
 
@@ -260,7 +264,7 @@ of one:
 | Target | Limit | From |
 |---|---|---|
 | filesystem | VM root volume | `TF_VAR_aws_vm_volume_size` (20 GB); unknown on NCP, so the check is skipped |
-| database | instance storage | AWS `TF_VAR_db_allocated_storage` (20 GB); NCP a fixed 10 GB |
+| database | instance storage | AWS `TF_VAR_aws_db_allocated_storage` (20 GB); NCP a fixed 10 GB |
 
 This is not tidiness. A managed instance that fills its volume goes read-only or
 into `STORAGE_FULL`, and on both CSPs the way back is deprovision and provision
@@ -272,7 +276,7 @@ again. `--force` skips the check along with the existing-data one.
 
 ```json
 {
-  "layout":        { "folderDepth": 2, "folderBreadth": 2 },
+  "layout":        { "folderDepth": 3, "folderBreadth": 3, "maxFiles": 1000 },
   "objectStorage": { "basePrefix": "gendata/", "concurrency": 10, "endpointOverride": "", "bucketLookup": "auto" },
   "filesystem":    { "basePath": "/home/ubuntu/testdata", "concurrency": 10 },
   "dummy":         { "sizeCSV": 1, "sizeTXT": 1, "sizeSQL": 1, "sizeJSON": 1, "sizeXML": 1, "sizePNG": 1, "sizeGIF": 1, "sizeZIP": 1 },
@@ -283,13 +287,37 @@ again. `--force` skips the check along with the existing-data one.
 
 **`dummy`** — how much to generate per format, **in MB**. A value of `N` produces `N`
 files of about 1 MiB each, so roughly `N` MB in total; `"sizeCSV": 10` is about 10 MB
-of CSV. All eight formats ship as `1`; set one to `0` to skip that format entirely.
+of CSV — unless `layout.maxFiles` makes the files fewer and larger (below). All eight formats ship as `1`; set one to `0` to skip that format entirely.
 Text formats (csv, json, xml, sql, txt) are filled to the exact byte target, while the
 binary ones (png, gif, zip) are approximate.
 
 **`layout`** — the destination folder tree, `folderDepth` levels deep and
-`folderBreadth` wide. Folder names (`dir_n`) are deterministic and files are spread
-round-robin across the leaves. Shared by the bucket and filesystem targets.
+`folderBreadth` wide (3 × 3 = 27 leaf folders by default). Folder names (`dir_n`) are
+deterministic and files are spread round-robin across the leaves, so a run with fewer
+files than leaves leaves some folders out. Shared by the bucket and filesystem targets.
+
+`maxFiles` caps the number of dummy files; `0` means no limit. Under it every MB is one
+~1 MiB file. Over it the **total size is kept and the files grow instead**:
+
+1. More formats on than files allowed: the largest formats keep one file each, the
+   rest are skipped (a `[warn]` line names them) and their size moves to the kept ones.
+   Ties go csv, txt, sql, json, xml, png, gif, zip.
+2. png and gif are capped at **20 MiB a file** — their encoders hold the whole image in
+   memory — so they first get the files that keeps them under it, every other format
+   one. The files left are split in proportion to size.
+3. When the limit cannot cover what png and gif need, every format gets its
+   proportional share, png and gif are cut to share × 20 MiB, and what that cuts moves
+   to the other formats. With nothing else on, the total shrinks.
+
+| `maxFiles` 1000, dummy total | Files |
+|---|---|
+| 8 MB | 8 × 1 MiB |
+| 5000 MB | 125 per format, ~5 MiB each |
+| 50000 MB | png, gif 313 × ~20 MiB; the other six 62–63 × ~100 MiB |
+| 200000 MB | 125 per format; png, gif ~20 MiB, the other six ~260 MiB |
+
+The run log's `dummy` line and the manifest's `files` show the plan that was actually
+used.
 
 **`objectStorage`** — upload tuning. `endpointOverride` points at any S3-compatible
 endpoint, such as a local MinIO. `bucketLookup` is `auto`, `dns` or `path`.
@@ -340,7 +368,7 @@ Three things about it are worth knowing:
 - **The size you ask for is not the size you get.** Row counts come from per-table
   byte estimates, and every engine adds its own overhead on top. gendata measures
   what actually landed — `information_schema.TABLES`, `pg_total_relation_size()`,
-  `dbStats` — and reports it, `runs/last-run.json` included. That measured number,
+  `dbStats` — and reports it, the run manifest included. That measured number,
   not the requested one, is what the next run has to fit alongside.
 
 PostgreSQL is loaded with `COPY FROM STDIN` and MongoDB with unordered
@@ -353,26 +381,3 @@ anyway.
 > Database TLS has no config knob: every engine negotiates **opportunistically**.
 > mysql and mariadb use the driver's `TLSConfig=preferred`, postgres uses
 > `sslmode=prefer`. TLS is attempted first, and a server without it still connects.
-
----
-
-## What is inside
-
-| Path | Role |
-|---|---|
-| `config/` | `config.json` parsing, the `GENDATA_*` environment overlay, plus the `Inputs` contract read from `--inputs-file` |
-| `internal/generate/` | Dummy file generation in MB units, built on `gofakeit` |
-| `internal/layout/` | Deterministic destination folder tree, shared by bucket and filesystem |
-| `internal/bucket/` | S3 upload, listing and deletion through the MinIO client, with a per-CSP endpoint switch (the cb-spider `S3Manager` pattern) |
-| `internal/filesystem/` | SFTP transfer to the VM |
-| `internal/database/` | Fixture loading with native Go drivers, no CLI clients, plus the bulk phase (`bulk.go`, `bulkgen.go`) |
-
-The `shop_db` fixtures are **embedded into the binary** with `go:embed` from
-`internal/database/` (`shop_db_mysql.sql`, `shop_db_mariadb.sql`, `shop_db_pg.sql` and
-`shop_db_mongo.json`), so gendata reads nothing from disk at runtime. SQL is executed
-through engine-aware statement splitters; MongoDB is injected from Extended JSON.
-
-The fixtures deliberately contain no `CREATE DATABASE` or `USE`, so the target database
-must already exist — which it does, because tofu creates it. They carry no schema
-qualifier either, which is what lets the PostgreSQL loader place them through
-`search_path` (see above).

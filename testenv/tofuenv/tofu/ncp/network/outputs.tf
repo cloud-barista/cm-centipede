@@ -44,3 +44,8 @@ output "server_acg_no" {
 output "server_acg_name" {
   value = ncloud_access_control_group.server.name
 }
+
+output "name_prefix" {
+  description = "Name prefix, and the tofu workspace this environment lives in"
+  value       = var.ncp_name_prefix
+}

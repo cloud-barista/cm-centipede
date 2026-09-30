@@ -1,9 +1,10 @@
 // Package generate produces local dummy files at MB granularity using gofakeit,
 // which the bucket and filesystem targets then upload/transfer.
 //
-// Size unit: each config value is a count of megabytes (MiB). For a format with
-// value N, gendata writes N files of ~1 MiB each (total ≈ N MiB). Binary formats
-// (png/gif/zip) approximate the target size.
+// Size unit: each config value is a count of megabytes (MiB). Allocate turns
+// those into a file plan: N MiB is N files of ~1 MiB, unless a file limit makes
+// the files fewer and larger (see Allocate). Binary formats (png/gif/zip)
+// approximate the target size.
 package generate
 
 import (
@@ -37,57 +38,51 @@ type Options struct {
 	SizePNG  int
 	SizeGIF  int
 	SizeZIP  int
-}
 
-// Empty reports whether all formats are disabled.
-func (o Options) Empty() bool {
-	return o.SizeSQL == 0 && o.SizeCSV == 0 && o.SizeJSON == 0 && o.SizeXML == 0 &&
-		o.SizeTXT == 0 && o.SizePNG == 0 && o.SizeGIF == 0 && o.SizeZIP == 0
+	// MaxFiles caps the number of files; 0 means no limit.
+	MaxFiles int
 }
 
 // File is a generated file: absolute path plus its slash-relative path under the dir.
 type File struct {
-	Abs string
-	Rel string
+	Abs  string
+	Rel  string
+	Size int64
 }
 
 type writer func(path string, target int64, seed int64) error
 
-// Generate writes dummy files into a fresh temp directory and returns the dir and
-// a stably-sorted file list. The caller is responsible for removing the dir.
-func Generate(opts Options) (string, []File, error) {
+// writers maps a format to the function that writes one file of it.
+var writers = map[string]writer{
+	"csv": writeCSV, "txt": writeTXT, "sql": writeSQL, "json": writeJSON,
+	"xml": writeXML, "png": writePNG, "gif": writeGIF, "zip": writeZIP,
+}
+
+// Generate writes the files a planned into a fresh temp directory and returns
+// the dir and a stably-sorted file list. The caller is responsible for removing
+// the dir. onFile, when set, is called with the size of each file once it is
+// written, so the caller can report progress.
+func Generate(a Allocation, onFile func(size int64)) (string, []File, error) {
 	dir, err := os.MkdirTemp("", "gendata-")
 	if err != nil {
 		return "", nil, err
 	}
-	specs := []struct {
-		mb  int
-		typ string
-		fn  writer
-	}{
-		{opts.SizeCSV, "csv", writeCSV},
-		{opts.SizeJSON, "json", writeJSON},
-		{opts.SizeXML, "xml", writeXML},
-		{opts.SizeSQL, "sql", writeSQL},
-		{opts.SizeTXT, "txt", writeTXT},
-		{opts.SizePNG, "png", writePNG},
-		{opts.SizeGIF, "gif", writeGIF},
-		{opts.SizeZIP, "zip", writeZIP},
-	}
-	for _, s := range specs {
-		if s.mb <= 0 {
-			continue
-		}
-		typeDir := filepath.Join(dir, s.typ)
+	for _, f := range a.Formats {
+		typeDir := filepath.Join(dir, f.Format)
 		if err := os.MkdirAll(typeDir, 0o755); err != nil {
 			_ = os.RemoveAll(dir)
 			return "", nil, err
 		}
-		for i := 0; i < s.mb; i++ { // s.mb files of ~1 MiB each => total ≈ s.mb MiB
-			p := filepath.Join(typeDir, fmt.Sprintf("%s_%d.%s", s.typ, i, s.typ))
-			if err := s.fn(p, MiB, int64(i)); err != nil {
+		for i := 0; i < f.Files; i++ {
+			p := filepath.Join(typeDir, fmt.Sprintf("%s_%d.%s", f.Format, i, f.Format))
+			if err := writers[f.Format](p, f.FileBytes(i), int64(i)); err != nil {
 				_ = os.RemoveAll(dir)
-				return "", nil, fmt.Errorf("generate %s: %w", s.typ, err)
+				return "", nil, fmt.Errorf("generate %s: %w", f.Format, err)
+			}
+			if onFile != nil {
+				if fi, err := os.Stat(p); err == nil {
+					onFile(fi.Size())
+				}
 			}
 		}
 	}
@@ -306,7 +301,11 @@ func listFiles(dir string) ([]File, error) {
 		if err != nil {
 			return err
 		}
-		out = append(out, File{Abs: p, Rel: filepath.ToSlash(rel)})
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		out = append(out, File{Abs: p, Rel: filepath.ToSlash(rel), Size: fi.Size()})
 		return nil
 	})
 	if err != nil {

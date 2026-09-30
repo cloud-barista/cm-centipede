@@ -15,3 +15,8 @@ output "bucket_domain_name" {
   description = "Bucket regional domain name (endpoint)"
   value       = aws_s3_bucket.this.bucket_regional_domain_name
 }
+
+output "name_prefix" {
+  description = "Name prefix, and the tofu workspace this environment lives in"
+  value       = var.aws_name_prefix
+}

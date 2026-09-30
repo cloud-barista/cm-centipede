@@ -26,3 +26,8 @@ output "s3cmd_hint" {
   description = "Example command for checking the bucket with the AWS CLI"
   value       = "aws --endpoint-url https://${local.os_endpoint} s3 ls s3://${ncloud_objectstorage_bucket.this.bucket_name}"
 }
+
+output "name_prefix" {
+  description = "Name prefix, and the tofu workspace this environment lives in"
+  value       = var.ncp_name_prefix
+}

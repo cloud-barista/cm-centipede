@@ -39,7 +39,7 @@ variable "aws_name_prefix" {
   }
 }
 
-variable "db_allocated_storage" {
+variable "aws_db_allocated_storage" {
   description = "RDS allocated storage in GB"
   type        = number
   default     = 20

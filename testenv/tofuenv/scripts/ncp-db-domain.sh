@@ -17,6 +17,7 @@
 #     every managed engine has one.
 #
 #   Notes:
+#     - Acts on the workspace of the prefix .env sets (TF_VAR_ncp_name_prefix).
 #     - Only a refresh is performed (tofu apply -refresh-only), so no
 #       infrastructure is changed.
 #     - A public domain must be re-issued whenever the DB is re-created.
@@ -38,18 +39,22 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${RUNNER}$"; then
     echo -e "${RED}The ${RUNNER} container is not running. Run ./scripts/up.sh first.${NC}" >&2; exit 1
 fi
 
-echo -e "${CYAN}=== refreshing ncp/database state (refresh-only) ===${NC}"
-docker exec "$RUNNER" bash -c '
+# shellcheck source=./lib/workspace.sh
+. "$SCRIPT_DIR/lib/workspace.sh"
+ws_load ncp
+
+echo -e "${CYAN}=== refreshing ncp/database state, prefix ${WS_PREFIX} (refresh-only) ===${NC}"
+ws_exec bash -c '
     set -euo pipefail
     set -a; . /work/.env; set +a
     export VAULT_ADDR=http://openbao:8200
     mkdir -p /work/.tofu-plugin-cache /work/ssh_keys
     cd "/work/'"$MODULE"'"
-    tofu init -input=false >/dev/null
+    '"$WS_INIT"' >/dev/null
     tofu apply -refresh-only -auto-approve
 '
 
-JSON="$(docker exec "$RUNNER" bash -c '
+JSON="$(ws_exec bash -c '
     cd "/work/'"$MODULE"'" 2>/dev/null || exit 0
     tofu output -json 2>/dev/null || true
 ')"

@@ -13,11 +13,13 @@ resource "random_id" "key" {
   byte_length = 3
 }
 
+# The key file is named after the login key, random suffix included: every key the
+# module issues gets a file of its own, and the file is the one the console lists it as.
 locals {
   key_name           = "${var.ncp_name_prefix}-vm-${random_id.key.hex}"
   server_name        = "${var.ncp_name_prefix}-vm"
-  container_key_path = "${var.ssh_key_dir}/ncp-vm.pem"
-  host_key_path      = "ssh_keys/ncp-vm.pem" # Relative to the host-side tofuenv directory.
+  container_key_path = "${var.ssh_key_dir}/ncp-${local.key_name}.pem"
+  host_key_path      = "ssh_keys/ncp-${local.key_name}.pem" # Relative to the host-side tofuenv directory.
   ssh_user           = "root"                # AWS images use ubuntu; NCP-provided images use root.
 }
 

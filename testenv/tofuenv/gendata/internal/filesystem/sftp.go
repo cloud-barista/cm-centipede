@@ -28,6 +28,10 @@ type Params struct {
 	PrivateKeyPath string
 	BasePath       string // e.g. /home/ubuntu/testdata
 	Concurrency    int
+
+	// OnFile, when set, is called with the size of each file once it is
+	// transferred, so the caller can report progress. Called from the workers.
+	OnFile func(size int64)
 }
 
 func dial(p Params) (*ssh.Client, *sftp.Client, error) {
@@ -127,6 +131,9 @@ func Transfer(_ context.Context, p Params, files []generate.File, plan layout.Pl
 			err := ensureDir(path.Dir(remote))
 			if err == nil {
 				err = copyFile(fc, j.file.Abs, remote)
+			}
+			if err == nil && p.OnFile != nil {
+				p.OnFile(j.file.Size)
 			}
 			mu.Lock()
 			if err != nil {

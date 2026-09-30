@@ -18,7 +18,10 @@
 #     ./scripts/conn-info.sh ncp all --reveal       # all NCP resources + clear text
 #
 #   How it works:
-#     Reads `tofu output` for each module inside the tofuenv-runner container.
+#     Reads `tofu output` for each module inside the tofuenv-runner container, from
+#     the workspace of the prefix .env sets (TF_VAR_<csp>_name_prefix). To see an
+#     environment made under another prefix, put that prefix in .env; every
+#     environment is listed by ./scripts/list.sh.
 #     Resources that have no state yet are skipped. Sensitive outputs are only
 #     revealed with --reveal, using 'tofu output -raw'.
 # ==============================================================================
@@ -55,6 +58,10 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${RUNNER}$"; then
     exit 1
 fi
 
+# shellcheck source=./lib/workspace.sh
+. "$SCRIPT_DIR/lib/workspace.sh"
+ws_load "$CSP"
+
 # Sensitive output names per resource (revealed with -raw when --reveal is given).
 # The engine list differs per CSP: AWS serves mysql/mariadb/postgres through RDS, NCP
 # serves mysql/postgresql/mongodb as managed Cloud DB.
@@ -74,7 +81,7 @@ sensitive_outputs() {
 # NCP managed DBs need a public domain issued in the console; warn when it is missing.
 warn_missing_public_domain() {
     local module="$1" missing
-    missing="$(docker exec "$RUNNER" bash -c '
+    missing="$(ws_exec bash -c '
         cd "/work/'"$module"'" 2>/dev/null || exit 0
         tofu output -json 2>/dev/null || true
     ' | jq -r 'to_entries
@@ -98,13 +105,13 @@ show_resource() {
         return
     fi
 
-    echo -e "${CYAN}=== ${CSP}/${res} ===${NC}"
+    echo -e "${CYAN}=== ${CSP}/${res} (prefix ${WS_PREFIX}) ===${NC}"
 
     # No outputs means the module has not been provisioned yet.
     #   Detection uses -json: plain `tofu output` prints a "No outputs found"
     #   warning on stdout, so an empty state would not look empty here.
     local probe
-    probe="$(docker exec "$RUNNER" bash -c '
+    probe="$(ws_exec bash -c '
         cd "/work/'"$module"'" 2>/dev/null || exit 0
         tofu output -json 2>/dev/null || true
     ' | tr -d '[:space:]')"
@@ -116,7 +123,7 @@ show_resource() {
     fi
 
     local out
-    out="$(docker exec "$RUNNER" bash -c '
+    out="$(ws_exec bash -c '
         set -euo pipefail
         cd "/work/'"$module"'" 2>/dev/null || exit 0
         tofu output 2>/dev/null || true
@@ -133,7 +140,7 @@ show_resource() {
             echo -e "  ${YELLOW}--- sensitive values (reveal) ---${NC}"
             for name in $names; do
                 local val
-                val="$(docker exec "$RUNNER" bash -c '
+                val="$(ws_exec bash -c '
                     cd "/work/'"$module"'" 2>/dev/null || exit 0
                     tofu output -raw '"$name"' 2>/dev/null || true
                 ')"

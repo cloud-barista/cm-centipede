@@ -27,6 +27,10 @@ type Params struct {
 	BucketLookup     string
 	BasePrefix       string // e.g. "gendata/"
 	Concurrency      int
+
+	// OnFile, when set, is called with the size of each object once it is
+	// uploaded, so the caller can report progress. Called from the workers.
+	OnFile func(size int64)
 }
 
 func (p Params) client() (Client, error) {
@@ -88,6 +92,9 @@ func Upload(ctx context.Context, p Params, files []generate.File, plan layout.Pl
 		for j := range jobs {
 			key := p.BasePrefix + plan.Rel(j.idx, j.file.Rel)
 			err := uploadOne(ctx, up, p.Bucket, key, j.file.Abs)
+			if err == nil && p.OnFile != nil {
+				p.OnFile(j.file.Size)
+			}
 			mu.Lock()
 			if err != nil {
 				if firstErr == nil {

@@ -64,6 +64,7 @@ and the [AWS vs NCP](#aws-vs-ncp-at-a-glance) table.
             |
  Step 7  Destroy           ./scripts/deprovision.sh aws bucket
             |                └ for NCP, the network module is removed once nothing needs it
+            |                └ ./scripts/list.sh shows what is still provisioned, under every prefix
             |
  Step 8  Shut down         ./scripts/down.sh
 ```
@@ -185,11 +186,10 @@ Keep some room below those limits: NCP login keys append a role and a random suf
 top of the prefix (`cptf-vm-a1b2c3`), and the longest generated name is the prefix plus
 11 characters (`-postgresql`, `-server-acg`).
 
-Set the prefix **before** the first provisioning. Changing it later renames resources,
-which for RDS and EC2 means **replacement, and the data in them is lost**. On NCP it also
-breaks the `vm` and `database` modules, which look the VPC, subnet and ACG up **by name**.
-To change it on an already provisioned environment, see
-[Changing the NCP name prefix afterwards](#changing-the-ncp-name-prefix-afterwards).
+**The prefix is also the environment.** Every module keeps one tofu state per prefix,
+and every script acts on the prefix `.env` sets and no other. Changing it starts a
+**new environment next to the old one**; the old one is left as it is — and keeps
+costing money. See [Multiple environments](#multiple-environments-one-per-prefix).
 
 Five things reliably go wrong here:
 
@@ -289,7 +289,7 @@ re-running `up.sh` is safe.
 reported and skipped, so nothing is created and nothing is charged:
 
 ```
-=== aws/bucket is already provisioned - nothing to do ===
+=== aws/bucket (prefix cptf) is already provisioned - nothing to do ===
   bucket_name = "cptf-aws-bucket-test"
   ...
   Connection info  :  ./scripts/conn-info.sh aws bucket
@@ -349,7 +349,7 @@ elsewhere and the data stays on the local disk while EFS is mounted on its own.
 NCP has no default VPC, so `vm` and `database` resolve a VPC, PUBLIC subnet and ACG
 **by name** from the `network` module. You never provision that module yourself:
 whichever of the two you run first creates it, and Step 7 removes it once nothing
-needs it any more.
+needs it any more. Each prefix gets a network of its own.
 
 Connection info is printed automatically when an apply finishes.
 
@@ -448,17 +448,76 @@ what lets gendata have a single input path.
 | `--force` | off | Skip the existing-data check (allows overwrite and `DROP`) |
 | `--cleanup` | off | Delete instead of generate. `--target bucket` only, and it empties the **whole** bucket |
 
-**How much data** — [`gendata/config/config.json`](gendata/config/config.json), the
-`dummy` block. Sizes are **in MB** and ship as `1` (roughly one 1 MiB file per format).
-`N` means `N` files of about 1 MiB each, so `"sizeCSV": 10` is about 10 MB of CSV.
-Set a format to `0` to skip it. `layout` controls folder depth and breadth;
+**How much data** — set it in `.env`, under **gendata test data size**. These values
+override [`gendata/config/config.json`](gendata/config/config.json), which only holds
+the defaults:
+
+```dotenv
+GENDATA_DUMMY_SIZE_MB=8          # bucket + filesystem: total MB over all eight formats
+#GENDATA_DUMMY_SIZES=png=0,gif=0,zip=100
+#GENDATA_DUMMY_MAX_FILES=1000    # at most this many dummy files; 0 = no limit
+GENDATA_DB_SIZE_MB=0             # database: bulk rows added after the shop_db fixture, in MB
+```
+
+| Variable | Sets |
+|---|---|
+| `GENDATA_DUMMY_SIZE_MB` | Dummy files for `bucket` and `filesystem`: the **total** in MB over all eight formats (csv, txt, sql, json, xml, png, gif, zip). It is split 1 MB at a time in that order — `8` is 1 MB of each, `10` gives csv and txt 2 MB and the rest 1 MB |
+| `GENDATA_DUMMY_SIZES` | Per-format sizes in MB. The formats named keep their size, and what is left of the total is split over the others; `0` switches a format off. With a total of `1000`, `png=0,gif=0,zip=100` gives zip 100 MB and the five text formats 180 MB each. Naming more than the total is an error |
+| `GENDATA_DUMMY_MAX_FILES` | The most dummy files to generate, `1000` by default (`layout.maxFiles` in `config.json`); `0` means no limit. Over it the total size is kept and the files grow instead — see below |
+| `GENDATA_DB_SIZE_MB` | Bulk rows added to each database after the `shop_db` fixture, in MB. `0` loads the fixture only |
+
+- Sizes are **in MB**, and each MB is one file of about 1 MiB.
+- They are **not** `TF_VAR_*`, since OpenTofu never reads them. `gen-data.sh` sources
+  `.env`, so gendata picks them up. A `GENDATA_*` key gendata does not recognise is
+  reported when `gen-data.sh` runs. A value it cannot parse, such as `1G`, fails the run.
+- **Mind the capacity.** The dummy files have to fit on the VM's volume
+  (`TF_VAR_aws_vm_volume_size`, 20 GB), and the bulk rows have to fit in the database
+  storage (AWS 20 GB, NCP a fixed 10 GB). gendata refuses a request over 80% of either.
+  A `data_path` on the VM's EFS mount (`TF_VAR_aws_nfs_enabled=true`) is not checked:
+  EFS grows with what is written.
+- The database size is an estimate of rows, and each engine adds its own overhead.
+  gendata reports what actually landed, and the run summary records it.
+
+**The file limit.** Under `GENDATA_DUMMY_MAX_FILES` every MB is one ~1 MiB file. Over it
+the total size stays and the files get larger:
+
+- With more formats on than files allowed, the largest formats keep one file each and
+  the rest are skipped (a `[warn]` line names them); their size moves to the others.
+- png and gif stay at **20 MiB a file** at most. When the limit cannot hold them at
+  that size, their file count is reduced and the size they lose moves to the other
+  formats.
+
+| `GENDATA_DUMMY_MAX_FILES=1000`, `GENDATA_DUMMY_SIZE_MB=` | Files |
+|---|---|
+| `8` | 8 × 1 MiB |
+| `5000` | 125 per format, ~5 MiB each |
+| `50000` | png, gif 313 × ~20 MiB; the other six 62–63 × ~100 MiB |
+| `200000` | 125 per format; png, gif ~20 MiB, the other six ~260 MiB |
+
+The `dummy` line of the run log shows the plan actually used:
+`dummy : 200 MB in 20 files (max 20 from env, sizes from env): csv=3×~8.3 MiB ...`.
+
+Everything else stays in `config.json`: `layout` controls the folder tree — 3 levels
+deep and 3 wide by default, 27 leaf folders the files are spread over — and
 `objectStorage` and `filesystem` control paths and concurrency.
+
+**Progress** — generating the dummy files, uploading them to the bucket and
+transferring them to the VM each report files and bytes done, throughput and time
+left, then a summary line:
+
+```
+bucket: 120/800 files (15%), 120.0 MiB / 800.0 MiB, 12.3 MiB/s, 55s left
+bucket: 800/800 files, 800.0 MiB in 1m5s (12.3 MiB/s)
+```
+
+On a terminal the line is redrawn in place; piped into a file or `tee`, a line is
+written at every 10% instead.
 
 **Safety** — gendata refuses to run if the target already holds data, because the
 database fixtures are destructive (they include `DROP`). Use `--force` to override.
 Paths are fixed rather than per-run, so re-running overwrites the same location instead
-of accumulating copies. A summary of the last run is written to
-`gendata/runs/last-run.json`.
+of accumulating copies. A summary of the last run is written per environment, to
+`gendata/runs/<csp>-<prefix>-last-run.json`.
 
 ---
 
@@ -494,12 +553,13 @@ scrollback, logs and screen sharing.
 Copy the `ssh_command` output and run it from the `tofuenv` directory:
 
 ```bash
-ssh -i ssh_keys/aws-vm.pem ubuntu@3.35.xxx.xxx     # AWS: user is ubuntu
-ssh -i ssh_keys/ncp-vm.pem root@223.130.xxx.xxx    # NCP: user is root
+ssh -i ssh_keys/aws-cptf-vm.pem ubuntu@3.35.xxx.xxx          # AWS: user is ubuntu
+ssh -i ssh_keys/ncp-cptf-vm-a1b2c3.pem root@223.130.xxx.xxx  # NCP: user is root
 ```
 
 The private key is generated by tofu and written to `ssh_keys/` with mode 600. It is
-gitignored; never commit it.
+gitignored; never commit it. The file name carries the prefix — on NCP the whole login
+key name, random suffix included — so environments never overwrite each other's key.
 
 ### Reading one output directly
 
@@ -507,17 +567,20 @@ gitignored; never commit it.
 value yourself:
 
 ```bash
-docker exec tofuenv-runner bash -c \
+docker exec -e TF_WORKSPACE=cptf tofuenv-runner bash -c \
   'cd /work/tofu/aws/database && tofu output -raw mysql_connection_uri'
 ```
 
-Replace `aws` with `ncp`, and `database` with `bucket`, `vm` or `network`. Drop `-raw`
+`TF_WORKSPACE` is the prefix — every module keeps one state per prefix, and without it
+tofu reads the empty `default` workspace. Replace `aws` with `ncp`, and `database` with
+`bucket`, `vm` or `network`. Drop `-raw`
 for non-sensitive outputs. Output names are the **same on both CSPs**, so anything
 reading them stays CSP-agnostic:
 
 | Module | Outputs |
 |---|---|
 | bucket | `bucket_name`, `bucket_region`; AWS also `bucket_arn`, `bucket_domain_name`; NCP also `s3_endpoint`, `s3_signing_region` |
+| every module | `name_prefix` — the prefix, and so the workspace, the environment lives in |
 | vm | `public_ip`, `ssh_user`, `key_file`, `ssh_command`, `data_path`; AWS also `nfs_enabled`, `nfs_file_system_id`, `nfs_dns_name`, `nfs_mount_path`; NCP also `private_ip`, `login_key_name` |
 | database | `db_name`, `db_username`, `db_password`; per engine `<engine>_host`, `<engine>_port`, `<engine>_connection_uri` where `<engine>` is `mysql`, `mariadb` or `postgres` on AWS, and `mysql`, `postgres` or `mongodb` on NCP |
 | database, NCP managed | `<engine>_public_domain`, `<engine>_private_domain`, `<engine>_acg_no` |
@@ -571,12 +634,16 @@ in 60s`). NCP answers some delete calls with a 500 while the resource is still b
 released, and the same call then goes through. If the retry fails too, the error is
 printed again at the end and the command exits non-zero.
 
-A module that tracks no resource is reported and skipped rather than destroyed —
-`ncp/database holds no resources - nothing to destroy.` The plan alone would still read
-the by-name lookups, and those are exactly what fails after a prefix change.
+**Only the prefix `.env` sets is destroyed.** To remove an environment made under
+another prefix, put that prefix back in `.env` and run the same commands. A workspace
+the destroy empties is deleted with it.
 
-Because only `vm` and `database` reference the VPC, the script destroys the `network`
-module for you as soon as **neither of them is left**. Destroy them in either order;
+A module that tracks no resource is reported and skipped rather than destroyed —
+`ncp/database (prefix cptf) holds no resources - nothing to destroy.` The destroy would
+be a no-op that still costs a full plan.
+
+Because only `vm` and `database` reference the VPC, the script destroys the prefix's
+`network` module for you as soon as **neither of them is left in that prefix**. Destroy them in either order;
 whichever goes last takes the VPC, subnet and ACG with it. While one of them is still
 provisioned, you will see `Keeping ncp/network: another module still uses it.`
 
@@ -588,44 +655,6 @@ If an NCP managed database destroy ends in `WAITING FOR DELETE ERROR`, the delet
 request already went through — **run the same command again** and it will finish. The
 provider's delete wait is hard-coded (5 minutes for MySQL, 10 for PostgreSQL and
 MongoDB) and sometimes expires first.
-
-### Changing the NCP name prefix afterwards
-
-`TF_VAR_ncp_name_prefix` is baked into the names `vm` and `database` search for, so
-changing it once `ncp/network` exists makes every lookup come back empty. Both scripts
-detect this and say so up front instead of letting tofu fail on an `Invalid index`:
-
-```
-=== TF_VAR_ncp_name_prefix does not match the existing ncp/network ===
-  ncp/network was created as : cmcp-vpc
-  ncp/vm will look for       : cptf-vpc
-```
-
-What to do depends on whether anything is still provisioned:
-
-**Nothing left but the network** — destroy it and let the next provisioning rebuild it
-under the new name. The VPC, subnet and ACG hold no data, so this costs about a minute:
-
-```bash
-./scripts/deprovision.sh ncp vm       # vm holds nothing, so this only clears the network
-./scripts/provision.sh ncp vm         # re-creates the network under the new prefix
-```
-
-**A VM or database is still provisioned** — the destroy is planned against the very same
-by-name lookups, so it cannot run while the names disagree. Put the **old** prefix back in
-`.env` first, destroy everything, then set the new one:
-
-```bash
-# .env: TF_VAR_ncp_name_prefix=<the old value the script printed>
-./scripts/deprovision.sh ncp database
-./scripts/deprovision.sh ncp vm
-# .env: TF_VAR_ncp_name_prefix=<the new value>
-./scripts/provision.sh ncp vm
-```
-
-On AWS there is no such lookup — the modules only *name* resources — so changing
-`TF_VAR_aws_name_prefix` never blocks a destroy. It does replace the RDS instances and
-EC2 machines on the next apply, and their data goes with them.
 
 ### NCP login keys that will not delete
 
@@ -670,13 +699,55 @@ To tell which key belongs to a live resource, read the output rather than guessi
 name:
 
 ```bash
-docker exec tofuenv-runner bash -c \
+docker exec -e TF_WORKSPACE=cptf tofuenv-runner bash -c \
   'cd /work/tofu/ncp/vm && tofu output -raw login_key_name'
 ```
 
-The matching `ssh_keys/ncp-vm.pem` is a `local_sensitive_file` resource, so a destroy
-already removed it — if the file is still there, delete it, because a re-created key
-issues a new private key.
+The matching `ssh_keys/ncp-<login key name>.pem` is a `local_sensitive_file` resource, so
+a destroy already removed it — if the file is still there, delete it: the key it belongs
+to is gone.
+
+---
+
+## Multiple environments (one per prefix)
+
+`TF_VAR_aws_name_prefix` and `TF_VAR_ncp_name_prefix` do more than name resources: each
+prefix is an environment of its own. Every module — `bucket`, `vm`, `database` and
+`ncp/network` — keeps one tofu state per prefix, as a
+[workspace](https://opentofu.org/docs/language/state/workspaces/) named after it:
+
+```
+tofu/<csp>/<module>/terraform.tfstate.d/<prefix>/terraform.tfstate
+```
+
+**Every script acts on the prefix `.env` sets, and only on it** — `provision.sh`,
+`deprovision.sh`, `conn-info.sh`, `gen-data.sh` and `ncp-db-domain.sh` alike. The rest of
+`.env` (bucket name, engine versions, NFS, ...) describes that one environment too.
+
+So changing a prefix does not rename, replace or break anything:
+
+```bash
+# .env: TF_VAR_aws_name_prefix=cptf
+./scripts/provision.sh aws vm         # cptf-vm, key in ssh_keys/aws-cptf-vm.pem
+# .env: TF_VAR_aws_name_prefix=cptf2
+./scripts/provision.sh aws vm         # a second VM, cptf2-vm - cptf-vm keeps running
+```
+
+**See every environment** — the one command that looks past `.env`:
+
+```bash
+./scripts/list.sh
+```
+
+```
+=== provisioned environments ===
+  CSP   PREFIX        bucket  vm   database  network
+  aws   cptf          yes     yes  -
+  aws   cptf2 *       -       yes  yes
+  ncp   cptf *        -       yes  -         yes
+
+  * the prefix .env selects - the environment every other script acts on.
+```
 
 ---
 

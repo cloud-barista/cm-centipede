@@ -1,7 +1,10 @@
+# The key file carries the prefix: each prefix is an environment of its own (a tofu
+# workspace), and a fixed name would let the next one overwrite this VM's key.
 locals {
   key_name           = "${var.aws_name_prefix}-vm"
-  container_key_path = "${var.ssh_key_dir}/aws-vm.pem"
-  host_key_path      = "ssh_keys/aws-vm.pem" # Relative to the host-side tofuenv directory.
+  key_file_name      = "aws-${var.aws_name_prefix}-vm.pem"
+  container_key_path = "${var.ssh_key_dir}/${local.key_file_name}"
+  host_key_path      = "ssh_keys/${local.key_file_name}" # Relative to the host-side tofuenv directory.
   ssh_user           = "ubuntu"
 }
 

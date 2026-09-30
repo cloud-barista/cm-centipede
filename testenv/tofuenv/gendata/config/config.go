@@ -9,10 +9,14 @@ import (
 	"strings"
 )
 
-// LayoutConfig controls the destination folder tree shared by bucket and filesystem targets.
+// LayoutConfig controls the destination folder tree shared by bucket and filesystem
+// targets, and how many dummy files go into it.
 type LayoutConfig struct {
 	FolderDepth   int `json:"folderDepth"`
 	FolderBreadth int `json:"folderBreadth"`
+	// MaxFiles caps the number of dummy files; 0 means no limit. Over it the
+	// total size is kept and the files grow instead (generate.Allocate).
+	MaxFiles int `json:"maxFiles"`
 }
 
 // ObjectStorageConfig tunes S3 upload behavior (cb-spider S3Manager style).
@@ -65,37 +69,19 @@ func (d *DummyConfig) Set(format string, mb int) bool {
 	return true
 }
 
-// SetAll assigns every format the same size.
-func (d *DummyConfig) SetAll(mb int) {
-	for _, p := range d.dummyFields() {
-		*p = mb
-	}
-}
-
-// TotalMB is the size of one generation pass across all formats. The bucket and
-// filesystem targets share that pass, so it is also what the VM has to hold.
-func (d DummyConfig) TotalMB() int {
-	total := 0
-	for _, p := range (&d).dummyFields() {
-		total += *p
-	}
-	return total
-}
-
-// String renders the per-format sizes for the run log, skipping the formats that
-// are switched off. A single total would hide a lopsided GENDATA_DUMMY_SIZES.
-func (d DummyConfig) String() string {
-	fields := (&d).dummyFields()
-	var parts []string
-	for _, name := range DummyFormats() {
-		if mb := *fields[name]; mb > 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", name, mb))
+// Split spreads totalMB over the given formats, 1 MB at a time in DummyFormats
+// order, so the sizes add up to exactly totalMB: 10 over eight formats gives csv
+// and txt 2 MB each and the other six 1 MB. A size is a count of ~1 MiB files, so
+// an even split in fractions of a MB is not something gendata could generate.
+func (d *DummyConfig) Split(totalMB int, formats []string) {
+	fields := d.dummyFields()
+	for i, name := range formats {
+		mb := totalMB / len(formats)
+		if i < totalMB%len(formats) {
+			mb++
 		}
+		*fields[name] = mb
 	}
-	if len(parts) == 0 {
-		return "all formats off"
-	}
-	return strings.Join(parts, " ")
 }
 
 // DatabaseConfig controls the bulk data phase that follows the shop_db fixture
@@ -168,6 +154,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Layout.FolderDepth < 0 {
 		c.Layout.FolderDepth = 0
+	}
+	if c.Layout.MaxFiles < 0 {
+		c.Layout.MaxFiles = 0
 	}
 	if c.Database.BatchSize < 1 {
 		c.Database.BatchSize = 1000

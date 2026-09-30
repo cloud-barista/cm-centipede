@@ -25,6 +25,7 @@
 #     gendata itself looks nothing up - it is told where the resources are:
 #
 #       tofu output -json   through the tofuenv-runner container   addresses, DB password
+#                           (the workspace of the prefix .env sets)
 #       OpenBao             secret/csp/<provider>                   object-storage key pair
 #       .env                VAULT_ADDR, VAULT_TOKEN, region fallback
 #
@@ -34,6 +35,10 @@
 #
 #     Only the modules the requested --target needs are read, so asking for one
 #     target does not require the other two to be provisioned.
+#
+#     The resources are those of the prefix .env sets (TF_VAR_<provider>_name_prefix),
+#     and the run summary is written per environment:
+#     gendata/runs/<provider>-<prefix>-last-run.json.
 #
 #   Why stdin rather than a file:
 #     The assembled JSON carries the database password and the object-storage
@@ -144,6 +149,11 @@ check_env_perm "$ENV_FILE" || exit 1
 set -a; . "$ENV_FILE"; set +a
 VAULT_ADDR="${VAULT_ADDR:-http://localhost:38200}"
 
+# shellcheck source=./lib/workspace.sh
+. "$SCRIPT_DIR/lib/workspace.sh"
+ws_load "$PROVIDER"
+MANIFEST="runs/${PROVIDER}-${WS_PREFIX}-last-run.json"
+
 # Built before the lookups rather than after, so a compile error or a misspelled
 # GENDATA_ key is reported now instead of a minute of tofu and OpenBao calls later.
 build_gendata
@@ -176,17 +186,17 @@ check_gendata_env
 
 # --- Readers ------------------------------------------------------------------
 
-# tofu_output <module> — the module's outputs as JSON.
+# tofu_output <module> — the module's outputs as JSON, from the prefix's workspace.
 tofu_output() {
     local module="$1" out compact
-    if ! out="$(docker exec "$RUNNER" bash -c "cd /work/tofu/${PROVIDER}/${module} && tofu output -json" 2>&1)"; then
+    if ! out="$(ws_exec bash -c "cd /work/tofu/${PROVIDER}/${module} && tofu output -json" 2>&1)"; then
         die "cannot read ${PROVIDER}/${module} outputs:
   ${out}
   Is ${RUNNER} running (./scripts/up.sh) and ${PROVIDER}/${module} provisioned?"
     fi
     compact="${out//[[:space:]]/}"
     if [ -z "$compact" ] || [ "$compact" = "{}" ]; then
-        die "${PROVIDER}/${module} has no outputs - run ./scripts/provision.sh ${PROVIDER} ${module} first"
+        die "${PROVIDER}/${module} (prefix ${WS_PREFIX}) has no outputs - run ./scripts/provision.sh ${PROVIDER} ${module} first"
     fi
     printf '%s' "$out"
 }
@@ -268,8 +278,23 @@ if want filesystem; then
     # How much the volume holds, so gendata can refuse a dummy size that would
     # fill it. Only AWS sizes its root volume from .env; on NCP it comes with the
     # server image, so 0 is sent and gendata skips the check rather than guessing.
+    #
+    # A data path on the VM's EFS mount does not touch the root volume at all, and
+    # EFS grows with what is written, so there is no size to check it against:
+    # 0 is sent then as well. The mount path comes from the vm module's outputs,
+    # which is what the VM was built with - .env may have changed since.
     if [ "$PROVIDER" = "aws" ]; then
         VM_VOLUME_GB="${TF_VAR_aws_vm_volume_size:-20}"
+        NFS_PATH="$(out_val "$VO" nfs_mount_path)"
+        if [ "$(out_val "$VO" nfs_enabled)" = "true" ] && [ -n "$NFS_PATH" ]; then
+            NFS_PATH="${NFS_PATH%/}"
+            case "${VM_PATH%/}/" in
+                "${NFS_PATH}/"*)
+                    VM_VOLUME_GB=0
+                    echo -e "${CYAN}filesystem: ${VM_PATH} is on the EFS mount (${NFS_PATH}) - no volume size limit${NC}"
+                    ;;
+            esac
+        fi
     fi
 fi
 
@@ -288,11 +313,11 @@ if want database; then
     # fills its volume goes read-only, and on both CSPs the way back is
     # deprovision + provision, not a delete.
     #
-    #   aws  var.db_allocated_storage, 20 GB unless .env overrides it
+    #   aws  var.aws_db_allocated_storage, 20 GB unless .env overrides it
     #   ncp  fixed - the managed instances come with 10 GB and the module has no
     #        knob for it, which is the tighter of the two limits
     case "$PROVIDER" in
-        aws) DB_STORAGE_GB="${TF_VAR_db_allocated_storage:-20}" ;;
+        aws) DB_STORAGE_GB="${TF_VAR_aws_db_allocated_storage:-20}" ;;
         ncp) DB_STORAGE_GB=10 ;;
     esac
 fi
@@ -347,10 +372,10 @@ echo -e "${CYAN}=== run: gendata ${*:-} ===${NC}"
 # pipefail is off for this one pipeline: when gendata exits early - a rejected
 # flag, say - printf dies of EPIPE, and 141 would then mask gendata's own status.
 set +e +o pipefail
-( cd "$GENDATA_DIR" && printf '%s' "$INPUTS" | ./gendata --inputs-file - "$@" )
+( cd "$GENDATA_DIR" && printf '%s' "$INPUTS" | ./gendata --inputs-file - --manifest "$MANIFEST" "$@" )
 RC=$?
 set -e -o pipefail
 [ "$RC" -eq 0 ] || exit "$RC"
 
 echo -e "${GREEN}=== Done ===${NC}"
-echo "  Run summary (manifest): $GENDATA_DIR/runs/last-run.json"
+echo "  Run summary (manifest): $GENDATA_DIR/$MANIFEST"

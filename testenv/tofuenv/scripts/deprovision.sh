@@ -10,6 +10,12 @@
 #     ./scripts/deprovision.sh aws database
 #     ./scripts/deprovision.sh ncp database
 #
+#   One environment per prefix:
+#     Only the workspace of the prefix .env sets is destroyed (see
+#     scripts/lib/workspace.sh). To remove an environment made under another prefix,
+#     put that prefix in .env and run this again. A workspace the destroy empties is
+#     deleted, so ./scripts/list.sh stops listing it.
+#
 #   Retries:
 #     A failed destroy is retried once, 60 seconds later (2 attempts in total). NCP
 #     answers some delete calls with 500 / returnCode 1300 while the server the
@@ -37,12 +43,10 @@
 #       first (./scripts/gen-data.sh --target bucket --cleanup, needs go).
 #     - tofu/ncp/network is handled automatically, mirroring provision.sh. Only
 #       tofu/ncp/vm and tofu/ncp/database resolve it by name, so once neither of
-#       them holds state any more this script destroys the network too.
-#     - A module that tracks no resource is skipped rather than destroyed. The plan
-#       alone would read the by-name lookups, which fail after a prefix change and
-#       would then block the network cleanup that fixes exactly that situation.
-#       A leftover VPC is the one NCP resource that silently keeps costing nothing
-#       but blocks the next run's name lookups, which is why it is not left behind.
+#       them holds state in the prefix any more this script destroys its network too.
+#     - A module that tracks no resource is skipped rather than destroyed: the
+#       destroy would be a no-op that still costs a full plan, and on NCP that plan
+#       reads the by-name lookups.
 #     - If NCP has not finished releasing the servers yet, destroying the network
 #       can fail. That is reported as a warning, not an error: the requested
 #       resource is already gone, and re-running this command converges.
@@ -91,67 +95,27 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${RUNNER}$"; then
     echo -e "${RED}The ${RUNNER} container is not running. Run ./scripts/up.sh first.${NC}" >&2; exit 1
 fi
 
+# shellcheck source=./lib/workspace.sh
+. "$SCRIPT_DIR/lib/workspace.sh"
+ws_load "$CSP"
+
 # has_managed_state <module> — true when the module still tracks a real resource.
 #   Data sources are filtered out: a module can hold nothing but its vault lookup, and
 #   destroying that is a no-op that still costs a full plan. Outputs alone are not a
 #   reliable signal here, since a half-destroyed module keeps resources without them.
 has_managed_state() {
     local mod="$1" out
-    out="$(docker exec "$RUNNER" bash -c '
+    out="$(ws_exec bash -c '
         cd "/work/'"$mod"'" 2>/dev/null || exit 0
         tofu state list 2>/dev/null || true
     ' | grep -v '^data\.' || true)"
     [ -n "$(printf %s "$out" | tr -d '[:space:]')" ]
 }
 
-# ncp_name_prefix — the prefix the NCP modules will actually use: TF_VAR_ncp_name_prefix
-#   from .env, or the module default when .env does not set it.
-ncp_name_prefix() {
-    local p
-    p="$(docker exec "$RUNNER" bash -c '
-        set -a; . /work/.env 2>/dev/null; set +a
-        printf %s "${TF_VAR_ncp_name_prefix:-}"
-    ')"
-    if [ -z "$p" ]; then
-        p="$(sed -n '/variable "ncp_name_prefix"/,/^}/s/.*default *= *"\([^"]*\)".*/\1/p' \
-             "$ROOT_DIR/tofu/ncp/vm/variables.tf" | head -1)"
-    fi
-    printf %s "$p"
-}
-
-# ncp_network_vpc_name — the vpc_name output of tofu/ncp/network; empty when it holds
-#   no state.
-#   The result is shape-checked, because `tofu output -raw` prints a multi-line
-#   "No outputs found" warning on STDOUT and still exits 0 when the module has none.
-#   A VPC name is a single token of letters, digits and hyphens, so anything else is
-#   that warning and has to be read as "no network".
-ncp_network_vpc_name() {
-    local name
-    name="$(docker exec "$RUNNER" bash -c '
-        cd /work/tofu/ncp/network 2>/dev/null || exit 0
-        tofu output -raw vpc_name 2>/dev/null || true
-    ' | tr -d '[:space:]')"
-    case "$name" in
-        ''|*[!a-zA-Z0-9-]*) printf '' ;;
-        *)                  printf %s "$name" ;;
-    esac
-}
-
-# ncp_prefix_mismatch — true when tofu/ncp/network exists but was created under a
-#   different prefix than the one in effect now. A destroy is planned against the same
-#   by-name data sources as an apply, so a module that still holds servers cannot be
-#   destroyed while the prefix disagrees.
-NCP_PREFIX=""; NCP_NETWORK_VPC=""
-ncp_prefix_mismatch() {
-    NCP_PREFIX="$(ncp_name_prefix)"
-    NCP_NETWORK_VPC="$(ncp_network_vpc_name)"
-    [ -n "$NCP_NETWORK_VPC" ] && [ "$NCP_NETWORK_VPC" != "${NCP_PREFIX}-vpc" ]
-}
-
 # managed_state <module> — the module's managed resource addresses, one per line.
 managed_state() {
     local mod="$1"
-    docker exec "$RUNNER" bash -c '
+    ws_exec bash -c '
         cd "/work/'"$mod"'" 2>/dev/null || exit 0
         tofu state list 2>/dev/null || true
     ' | grep -v '^data\.' || true
@@ -186,7 +150,7 @@ login_key_addrs() {
 # login_key_name <module> <address> — the key_name NCP knows this resource by.
 login_key_name() {
     local mod="$1" addr="$2"
-    docker exec "$RUNNER" bash -c "
+    ws_exec bash -c "
         cd /work/${mod}
         tofu state show -no-color '${addr}' 2>/dev/null || true
     " | sed -n 's/^ *key_name *= *"\(.*\)"$/\1/p' | head -1
@@ -200,7 +164,7 @@ drop_login_keys() {
         [ -n "$addr" ] || continue
         key="$(login_key_name "$mod" "$addr")"
         echo "  tofu state rm ${addr}${key:+   (${key})}"
-        docker exec "$RUNNER" bash -c '
+        ws_exec bash -c '
             cd "/work/'"$mod"'"
             tofu state rm "'"$addr"'"
         ' >/dev/null
@@ -245,13 +209,13 @@ manual_empty_hint() {
 # destroy_module <module> — init + destroy inside the runner
 destroy_module() {
     local mod="$1"
-    docker exec "$RUNNER" bash -c '
+    ws_exec bash -c '
         set -euo pipefail
         set -a; . /work/.env; set +a
         export VAULT_ADDR=http://openbao:8200
         mkdir -p /work/.tofu-plugin-cache /work/ssh_keys
         cd "/work/'"$mod"'"
-        tofu init -input=false
+        '"$WS_INIT"'
         tofu destroy -auto-approve
     '
 }
@@ -302,26 +266,10 @@ destroy_with_retry() {
     done
 }
 
-echo -e "${CYAN}=== deprovision(destroy): ${CSP}/${RESOURCE} ===${NC}"
-
-# An NCP module that still holds servers cannot be destroyed while the prefix disagrees
-# with the network it was built against: tofu evaluates the by-name data sources to plan
-# the destroy, and they resolve to nothing. Say so instead of failing inside tofu.
-if [ "$CSP" = "ncp" ] && has_managed_state "$MODULE" && ncp_prefix_mismatch; then
-    echo -e "${RED}=== TF_VAR_ncp_name_prefix does not match the existing ncp/network ===${NC}" >&2
-    echo "  ncp/network was created as : ${NCP_NETWORK_VPC}" >&2
-    echo "  ${CSP}/${RESOURCE} now looks for : ${NCP_PREFIX}-vpc" >&2
-    echo >&2
-    echo "  Destroying ${CSP}/${RESOURCE} plans against the same by-name lookups, so it" >&2
-    echo "  cannot run until they match again. Put the old prefix back in .env:" >&2
-    echo "    TF_VAR_ncp_name_prefix=${NCP_NETWORK_VPC%-vpc}" >&2
-    echo "  then re-run this command, and set the new prefix once everything is gone." >&2
-    exit 1
-fi
+echo -e "${CYAN}=== deprovision(destroy): ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
 
 # Skip a module that tracks nothing but data sources. Destroying it is a no-op that
-# still runs a full plan - and on NCP that plan reads the by-name lookups, which is
-# exactly what fails after a prefix change, blocking the network cleanup below.
+# still runs a full plan - and on NCP that plan reads the by-name lookups.
 if has_managed_state "$MODULE"; then
     if [ "$CSP" = "ncp" ] && [ "$RESOURCE" = "bucket" ]; then
         empty_bucket
@@ -363,13 +311,15 @@ if has_managed_state "$MODULE"; then
     fi
 
     [ "$RC" -eq 0 ] || exit "$RC"
-    echo -e "${GREEN}=== deleted: ${CSP}/${RESOURCE} ===${NC}"
+    echo -e "${GREEN}=== deleted: ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
 else
-    echo -e "${YELLOW}${CSP}/${RESOURCE} holds no resources - nothing to destroy.${NC}"
+    echo -e "${YELLOW}${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) holds no resources - nothing to destroy.${NC}"
 fi
+ws_drop "$MODULE"
 
 # tofu/ncp/network is only referenced by ncp/vm and ncp/database. Once neither of
-# them holds state, nothing needs the VPC any more, so clean it up as well.
+# them holds state in this prefix, nothing needs its VPC any more, so clean it up as
+# well. Other prefixes have networks of their own and are not looked at.
 if [ "$CSP" = "ncp" ] && { [ "$RESOURCE" = "vm" ] || [ "$RESOURCE" = "database" ]; }; then
     if has_managed_state "tofu/ncp/network"; then
         if has_csp_state "tofu/ncp/vm" || has_csp_state "tofu/ncp/database"; then
@@ -389,7 +339,8 @@ if [ "$CSP" = "ncp" ] && { [ "$RESOURCE" = "vm" ] || [ "$RESOURCE" = "database" 
             # needs a moment before it lets the subnet or VPC go. The error is not
             # reported twice - the warning below says what to do about it.
             if destroy_with_retry "tofu/ncp/network" no; then
-                echo -e "${GREEN}=== deleted: ncp/network ===${NC}"
+                ws_drop "tofu/ncp/network"
+                echo -e "${GREEN}=== deleted: ncp/network (prefix ${WS_PREFIX}) ===${NC}"
             else
                 echo -e "${YELLOW}Warning: ncp/network could not be destroyed yet.${NC}" >&2
                 echo "  NCP may still be releasing the servers. Re-run this command in a few minutes:" >&2

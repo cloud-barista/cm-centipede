@@ -21,6 +21,7 @@ import (
 	"github.com/cloud-barista/cm-centipede/testenv/tofuenv/gendata/internal/filesystem"
 	"github.com/cloud-barista/cm-centipede/testenv/tofuenv/gendata/internal/generate"
 	"github.com/cloud-barista/cm-centipede/testenv/tofuenv/gendata/internal/layout"
+	"github.com/cloud-barista/cm-centipede/testenv/tofuenv/gendata/internal/progress"
 )
 
 func main() {
@@ -41,6 +42,7 @@ func run() error {
 		force      = flag.Bool("force", false, "skip the pre-flight checks: existing data (allow overwrite/DROP) and capacity")
 		cleanup    = flag.Bool("cleanup", false, "delete data instead of generating it; --target bucket only, and it empties the whole bucket")
 		envKeys    = flag.Bool("env-keys", false, "print the environment variables gendata reads, one per line, and exit")
+		manifestTo = flag.String("manifest", filepath.Join("runs", "last-run.json"), "where the run summary is written")
 	)
 	flag.Parse()
 
@@ -98,7 +100,7 @@ func run() error {
 
 	// Emptying a target is the opposite of the run below, not a step in it: there
 	// is nothing to generate, no pre-flight to pass - it exists to find data - and
-	// no manifest to write, since runs/last-run.json records what was put in place.
+	// no manifest to write, since the run manifest records what was put in place.
 	if *cleanup {
 		return runCleanup(ctx, cfg, inputs, targets, prov, *dryRun)
 	}
@@ -114,8 +116,22 @@ func run() error {
 	// line each: with config.json, .env and flags all able to set a size, "what
 	// is actually in effect" is otherwise only answerable by replaying the
 	// precedence rules by hand.
+	//
+	// The dummy line reports the file plan after the file limit has had its say,
+	// not the sizes asked for: over the limit files grow, formats can be skipped
+	// and png/gif cut, and only the plan says what will actually be written.
+	alloc := generate.Allocate(dummyOptions(cfg.Dummy, cfg.Layout.MaxFiles))
 	if targets["bucket"] || targets["filesystem"] {
-		log.Printf("dummy   : %d MB total in MB/format — %s (from %s)", cfg.Dummy.TotalMB(), cfg.Dummy, origins.Dummy)
+		maxFiles := "no limit"
+		if alloc.MaxFiles > 0 {
+			maxFiles = fmt.Sprintf("max %d", alloc.MaxFiles)
+		}
+		log.Printf("dummy   : %d MB in %d files (%s from %s, sizes from %s): %s",
+			alloc.TotalBytes()/generate.MiB, alloc.TotalFiles(), maxFiles, origins.MaxFiles, origins.Dummy, alloc)
+		if len(alloc.Skipped) > 0 {
+			log.Printf("[warn] dummy: max %d files is fewer than the formats on - skipped %s, their size moved to the others",
+				alloc.MaxFiles, strings.Join(alloc.Skipped, ", "))
+		}
 	}
 	bulkPlan := database.BulkPlan{}
 	if targets["database"] {
@@ -131,7 +147,7 @@ func run() error {
 
 	// ---- pre-flight ----
 	if !*force {
-		if err := capacityPreflight(cfg, inputs, targets); err != nil {
+		if err := capacityPreflight(cfg, inputs, targets, alloc); err != nil {
 			return err
 		}
 		if err := preflight(ctx, cfg, inputs, targets, engines, prov); err != nil {
@@ -142,6 +158,7 @@ func run() error {
 	}
 
 	man := newManifest(prov, targets, cfg, origins, *dryRun)
+	man.Files = alloc
 
 	// ---- generate dummy files once (shared by bucket + filesystem) ----
 	var (
@@ -149,13 +166,14 @@ func run() error {
 		files  []generate.File
 	)
 	needGen := targets["bucket"] || targets["filesystem"]
-	opts := dummyOptions(cfg.Dummy)
 	if needGen {
-		if opts.Empty() {
+		if alloc.TotalFiles() == 0 {
 			log.Printf("[warn] dummy sizes are all 0; nothing to generate for bucket/filesystem")
 		} else {
 			log.Printf("generating dummy files...")
-			genDir, files, err = generate.Generate(opts)
+			pg := progress.New("generate", alloc.TotalFiles(), alloc.TotalBytes())
+			genDir, files, err = generate.Generate(alloc, pg.Add)
+			pg.Finish()
 			if err != nil {
 				return err
 			}
@@ -182,7 +200,7 @@ func run() error {
 	}
 
 	// ---- manifest ----
-	manPath, err := writeManifest(man)
+	manPath, err := writeManifest(*manifestTo, man)
 	if err != nil {
 		log.Printf("[warn] failed to write manifest: %v", err)
 	} else {
@@ -300,12 +318,15 @@ func doBucket(ctx context.Context, cfg *config.Config, in *config.Inputs, provid
 		return nil
 	}
 	log.Printf("bucket: uploading %d objects to s3://%s/%s ...", len(files), in.BucketName, prefix)
-	n, err := bucket.Upload(ctx, bucketParams(cfg, in, provider), files, plan)
+	p := bucketParams(cfg, in, provider)
+	pg := progress.New("bucket", len(files), totalSize(files))
+	p.OnFile = pg.Add
+	n, err := bucket.Upload(ctx, p, files, plan)
+	pg.Finish()
 	man.Bucket.Objects = n
 	if err != nil {
 		return fmt.Errorf("bucket upload (%d/%d ok): %w", n, len(files), err)
 	}
-	log.Printf("bucket: uploaded %d objects", n)
 	return nil
 }
 
@@ -321,13 +342,25 @@ func doFilesystem(ctx context.Context, cfg *config.Config, in *config.Inputs, fi
 		return nil
 	}
 	log.Printf("filesystem: transferring %d files to %s@%s:%s ...", len(files), in.VMUser, in.VMHost, base)
-	n, err := filesystem.Transfer(ctx, fsParams(cfg, in), files, plan)
+	p := fsParams(cfg, in)
+	pg := progress.New("filesystem", len(files), totalSize(files))
+	p.OnFile = pg.Add
+	n, err := filesystem.Transfer(ctx, p, files, plan)
+	pg.Finish()
 	man.Filesystem.Files = n
 	if err != nil {
 		return fmt.Errorf("filesystem transfer (%d/%d ok): %w", n, len(files), err)
 	}
-	log.Printf("filesystem: transferred %d files", n)
 	return nil
+}
+
+// totalSize is the bytes a bucket upload or a filesystem transfer has to move.
+func totalSize(files []generate.File) int64 {
+	var n int64
+	for _, f := range files {
+		n += f.Size
+	}
+	return n
 }
 
 func doDatabase(ctx context.Context, cfg *config.Config, in *config.Inputs, engines []database.Engine,
@@ -405,10 +438,10 @@ const capacityHeadroom = 0.8
 // limits come from the connection info, because they are facts about the
 // infrastructure; when the provisioning environment does not know one it sends 0
 // and the check is skipped rather than guessed at.
-func capacityPreflight(cfg *config.Config, in *config.Inputs, targets map[string]bool) error {
+func capacityPreflight(cfg *config.Config, in *config.Inputs, targets map[string]bool, alloc generate.Allocation) error {
 	var problems []string
 	if targets["filesystem"] && in.VMVolumeGB > 0 {
-		want := cfg.Dummy.TotalMB()
+		want := int(alloc.TotalBytes() / generate.MiB)
 		if limit := int(float64(in.VMVolumeGB) * 1024 * capacityHeadroom); want > limit {
 			problems = append(problems, fmt.Sprintf(
 				"filesystem: %d MB of dummy files on a %d GB volume (max %d MB, %.0f%% of the volume)",
@@ -500,8 +533,9 @@ func dbConfig(in *config.Inputs, e database.Engine) (database.Config, bool) {
 	return c, true
 }
 
-func dummyOptions(d config.DummyConfig) generate.Options {
+func dummyOptions(d config.DummyConfig, maxFiles int) generate.Options {
 	return generate.Options{
+		MaxFiles: maxFiles,
 		SizeSQL:  d.SizeSQL,
 		SizeCSV:  d.SizeCSV,
 		SizeJSON: d.SizeJSON,
@@ -593,7 +627,10 @@ type manifest struct {
 	Targets   []string           `json:"targets"`
 	Layout    layoutManifest     `json:"layout"`
 	Dummy     config.DummyConfig `json:"dummy"`
-	BulkMB    int                `json:"bulkMB"`
+	// Files is the plan the sizes above turned into once the file limit applied:
+	// files and bytes per format, and any format the limit skipped.
+	Files  generate.Allocation `json:"files"`
+	BulkMB int                 `json:"bulkMB"`
 	// Origins says whether the sizes above came from config.json or from .env,
 	// which the numbers alone cannot.
 	Origins    config.Origins  `json:"origins"`
@@ -606,6 +643,7 @@ type manifest struct {
 type layoutManifest struct {
 	FolderDepth   int `json:"folderDepth"`
 	FolderBreadth int `json:"folderBreadth"`
+	MaxFiles      int `json:"maxFiles"`
 }
 type bucketManifest struct {
 	Name    string `json:"name"`
@@ -636,7 +674,7 @@ func newManifest(provider string, targets map[string]bool, cfg *config.Config, o
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Provider:  provider,
 		Targets:   sortedKeys(targets),
-		Layout:    layoutManifest{cfg.Layout.FolderDepth, cfg.Layout.FolderBreadth},
+		Layout:    layoutManifest{cfg.Layout.FolderDepth, cfg.Layout.FolderBreadth, cfg.Layout.MaxFiles},
 		Dummy:     cfg.Dummy,
 		BulkMB:    cfg.Database.SizeMB,
 		Origins:   origins,
@@ -644,11 +682,10 @@ func newManifest(provider string, targets map[string]bool, cfg *config.Config, o
 	}
 }
 
-func writeManifest(m *manifest) (string, error) {
-	if err := os.MkdirAll("runs", 0o755); err != nil {
+func writeManifest(p string, m *manifest) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return "", err
 	}
-	p := filepath.Join("runs", "last-run.json")
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return "", err

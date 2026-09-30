@@ -59,7 +59,7 @@ data "aws_rds_engine_version" "postgres_latest" {
 # aws_rds_orderable_db_instance returns ONE class: the first entry of
 # preferred_instance_classes that the engine actually offers in this region. It is a
 # check of whether TF_VAR_aws_db_instance_class is orderable, with fallbacks listed
-# after it. The storage bounds also tell you what TF_VAR_db_allocated_storage allows.
+# after it. The storage bounds also tell you what TF_VAR_aws_db_allocated_storage allows.
 locals {
   preferred_db_classes = [
     var.aws_db_instance_class,

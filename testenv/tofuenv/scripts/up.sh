@@ -66,3 +66,4 @@ echo "  Provision  :  ./scripts/provision.sh <csp> <resource>   # csp: aws|ncp, 
 echo "  Examples   :  ./scripts/provision.sh aws bucket"
 echo "                ./scripts/provision.sh ncp database"
 echo "  Deprovision:  ./scripts/deprovision.sh <csp> <resource>"
+echo "  List       :  ./scripts/list.sh            # every environment, all prefixes"

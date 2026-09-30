@@ -62,3 +62,8 @@ output "parameter_groups" {
     postgres = aws_db_parameter_group.postgres[0].name
   } : {}
 }
+
+output "name_prefix" {
+  description = "Name prefix, and the tofu workspace this environment lives in"
+  value       = var.aws_name_prefix
+}

@@ -24,6 +24,7 @@ const (
 	EnvDummySizeMB = "GENDATA_DUMMY_SIZE_MB"
 	EnvDummySizes  = "GENDATA_DUMMY_SIZES"
 	EnvDBSizeMB    = "GENDATA_DB_SIZE_MB"
+	EnvMaxFiles    = "GENDATA_DUMMY_MAX_FILES"
 )
 
 // EnvKeys lists every recognized variable, in the order they are documented.
@@ -35,7 +36,7 @@ const (
 // Having the list come from the binary keeps the script from growing a second
 // copy that drifts.
 func EnvKeys() []string {
-	return []string{EnvDummySizeMB, EnvDummySizes, EnvDBSizeMB}
+	return []string{EnvDummySizeMB, EnvDummySizes, EnvMaxFiles, EnvDBSizeMB}
 }
 
 // Origins records where each group of settings ended up coming from, so that the
@@ -43,6 +44,7 @@ func EnvKeys() []string {
 // having to replay the config/env precedence by hand.
 type Origins struct {
 	Dummy    string `json:"dummy"`
+	MaxFiles string `json:"maxFiles"`
 	Database string `json:"database"`
 }
 
@@ -57,23 +59,56 @@ type Origins struct {
 // all and say nothing about why - and the failure would surface minutes later as
 // an empty database rather than immediately as a typo.
 func ApplyEnv(c *Config) (Origins, error) {
-	o := Origins{Dummy: "config", Database: "config"}
+	o := Origins{Dummy: "config", MaxFiles: "config", Database: "config"}
 
+	var sizes map[string]int
+	if v, ok := envValue(EnvDummySizes); ok {
+		var err error
+		if sizes, err = parseDummySizes(v); err != nil {
+			return o, err
+		}
+		o.Dummy = "env"
+	}
+	// GENDATA_DUMMY_SIZE_MB is the total over all formats. The formats
+	// GENDATA_DUMMY_SIZES names keep their own size, and what is left of the total
+	// is spread over the rest - so png=0,gif=0 moves their share to the other six
+	// rather than shrinking the total.
 	if v, ok := envValue(EnvDummySizeMB); ok {
-		mb, err := envInt(EnvDummySizeMB, v)
+		total, err := envInt(EnvDummySizeMB, v)
 		if err != nil {
 			return o, err
 		}
-		c.Dummy.SetAll(mb)
-		o.Dummy = "env"
-	}
-	// Applied after the blanket value so that the two compose: a size for every
-	// format, then the handful that differ.
-	if v, ok := envValue(EnvDummySizes); ok {
-		if err := applyDummySizes(&c.Dummy, v); err != nil {
-			return o, err
+		listed := 0
+		var rest []string
+		for _, name := range DummyFormats() {
+			if mb, named := sizes[name]; named {
+				listed += mb
+			} else {
+				rest = append(rest, name)
+			}
+		}
+		if listed > total {
+			return o, fmt.Errorf("%s names %d MB, more than the %s=%d total", EnvDummySizes, listed, EnvDummySizeMB, total)
+		}
+		if len(rest) == 0 && listed != total {
+			return o, fmt.Errorf("%s names every format, %d MB in all, which is not the %s=%d total", EnvDummySizes, listed, EnvDummySizeMB, total)
+		}
+		if len(rest) > 0 {
+			c.Dummy.Split(total-listed, rest)
 		}
 		o.Dummy = "env"
+	}
+	// Without a total, the named formats override config.json one by one.
+	for name, mb := range sizes {
+		c.Dummy.Set(name, mb)
+	}
+	if v, ok := envValue(EnvMaxFiles); ok {
+		n, err := envInt(EnvMaxFiles, v)
+		if err != nil {
+			return o, err
+		}
+		c.Layout.MaxFiles = n
+		o.MaxFiles = "env"
 	}
 	if v, ok := envValue(EnvDBSizeMB); ok {
 		mb, err := envInt(EnvDBSizeMB, v)
@@ -108,8 +143,13 @@ func envInt(key, v string) (int, error) {
 	return n, nil
 }
 
-// applyDummySizes parses the per-format form: "csv=100,json=50,zip=0".
-func applyDummySizes(d *DummyConfig, v string) error {
+// parseDummySizes parses the per-format form: "csv=100,json=50,zip=0".
+func parseDummySizes(v string) (map[string]int, error) {
+	known := map[string]bool{}
+	for _, name := range DummyFormats() {
+		known[name] = true
+	}
+	sizes := map[string]int{}
 	for _, part := range strings.Split(v, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -117,17 +157,18 @@ func applyDummySizes(d *DummyConfig, v string) error {
 		}
 		name, size, found := strings.Cut(part, "=")
 		if !found {
-			return fmt.Errorf("%s: %q is not format=size (e.g. csv=100)", EnvDummySizes, part)
+			return nil, fmt.Errorf("%s: %q is not format=size (e.g. csv=100)", EnvDummySizes, part)
 		}
 		name = strings.ToLower(strings.TrimSpace(name))
 		mb, err := envInt(EnvDummySizes, strings.TrimSpace(size))
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if !d.Set(name, mb) {
-			return fmt.Errorf("%s: unknown format %q (%s)", EnvDummySizes, name,
+		if !known[name] {
+			return nil, fmt.Errorf("%s: unknown format %q (%s)", EnvDummySizes, name,
 				strings.Join(DummyFormats(), ", "))
 		}
+		sizes[name] = mb
 	}
-	return nil
+	return sizes, nil
 }

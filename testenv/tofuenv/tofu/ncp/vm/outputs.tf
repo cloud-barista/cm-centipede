@@ -58,3 +58,8 @@ output "vpc_no" {
 output "subnet_no" {
   value = local.subnet_no
 }
+
+output "name_prefix" {
+  description = "Name prefix, and the tofu workspace this environment lives in"
+  value       = var.ncp_name_prefix
+}
