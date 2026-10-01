@@ -371,6 +371,11 @@ func validateLocation(loc DataLocation, context string) error {
 		return validateFilesystemAccess(loc.Filesystem, context)
 
 	case StorageTypeObjectStorage:
+		// Commands run on the location's host, and a bucket has none. Refusing
+		// here keeps a PostCmd from failing only after the whole transfer.
+		if strings.TrimSpace(loc.PreCmd) != "" || strings.TrimSpace(loc.PostCmd) != "" {
+			return fmt.Errorf("%s: preCmd/postCmd are not supported for object storage", context)
+		}
 		return validateObjectStorageAccess(loc.ObjectStorage, context)
 
 	default:

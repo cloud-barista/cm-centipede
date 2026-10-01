@@ -13,60 +13,16 @@ import (
 // Main Entry Points
 // ============================================================================
 
-// Transfer runs the data transfer as defined by the given DataMigrationModel.
-// It automatically selects the appropriate transfer strategy based on source/destination types.
-func Transfer(dmm DataMigrationModel) error {
-	if err := Validate(dmm); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
-	}
-
-	// Plan the transfer pipeline
-	pipeline, err := Plan(dmm)
-	if err != nil {
-		return fmt.Errorf("planning failed: %w", err)
-	}
-
-	// Execute the pipeline
-	return pipeline.Execute(context.Background())
-}
-
-// MigrateData manages the complete data migration workflow:
-// 1. If Source.PreCmd is defined, perform pre-processing (e.g., backup)
-// 2. Always perform Transfer
-// 3. If Destination.PostCmd is defined, perform post-processing (e.g., restore)
+// MigrateData runs the complete data migration workflow and blocks until it
+// ends:
+//  1. If Source.PreCmd is defined, perform pre-processing (e.g., backup)
+//  2. Always perform the transfer
+//  3. If Destination.PostCmd is defined, perform post-processing (e.g., restore)
+//
+// Leave both commands empty to transfer only. A failure is a *MigrationError
+// naming the stage. It is MigrateDataAsync waited on, so the two cannot drift.
 func MigrateData(dmm DataMigrationModel) error {
-	// Step 1: Pre-processing (optional, e.g., backup)
-	if strings.TrimSpace(dmm.Source.PreCmd) != "" {
-		if err := executePreCommand(dmm.Source); err != nil {
-			return &MigrationError{Stage: StageBackup, Err: err}
-		}
-	}
-
-	// Step 2: Transfer (core)
-	if err := Transfer(dmm); err != nil {
-		return &MigrationError{Stage: StageTransfer, Err: err}
-	}
-
-	// Step 3: Post-processing (optional, e.g., restore)
-	if strings.TrimSpace(dmm.Destination.PostCmd) != "" {
-		if err := executePostCommand(dmm.Destination); err != nil {
-			return &MigrationError{Stage: StageRestore, Err: err}
-		}
-	}
-
-	return nil
-}
-
-// TransferAsync starts Transfer in a background goroutine and returns a handle
-// for monitoring progress and cancellation.
-func TransferAsync(dmm DataMigrationModel) *MigrationHandle {
-	ctx, cancel := context.WithCancel(context.Background())
-	h := newMigrationHandle(ctx, cancel)
-	go func() {
-		h.run(dmm) //nolint:errcheck — the error is recorded in the handle, returned by Wait()
-		h.Finish()
-	}()
-	return h
+	return MigrateDataAsync(dmm).Wait()
 }
 
 // MigrateDataAsync starts MigrateData in a background goroutine and returns a
@@ -238,18 +194,3 @@ func withSSHClient(cfg *SSHConfig, fn func(run sshRunner) error) error {
 func normalizePrivateKey(key string) string {
 	return core.NormalizePrivateKey(key)
 }
-
-// ============================================================================
-// Pre/Post Command Execution
-// ============================================================================
-
-// RunPreCommand executes src.PreCmd, the hook that prepares data for transfer —
-// dumping a database into the directory about to be copied, for instance.
-// MigrateData calls it automatically; call it directly only to run that step on
-// its own. It returns an error when PreCmd is empty.
-func RunPreCommand(src DataLocation) error { return executePreCommand(src) }
-
-// RunPostCommand executes dst.PostCmd, the hook that consumes transferred data
-// at the destination. MigrateData calls it automatically; call it directly only
-// to run that step on its own. It returns an error when PostCmd is empty.
-func RunPostCommand(dst DataLocation) error { return executePostCommand(dst) }

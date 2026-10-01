@@ -2,6 +2,8 @@ package storagex
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cloud-barista/cm-centipede/transx-ex/core"
@@ -40,7 +42,7 @@ func (p *MigrationProgress) SetElapsed(seconds float64) { p.ElapsedSec = seconds
 func (p *MigrationProgress) SetError(msg string)        { p.ErrMessage = msg }
 
 // MigrationHandle provides async control over a running migration.
-// Obtain one via TransferAsync or MigrateDataAsync; poll with Status()/Progress(); block with Wait().
+// Obtain one via MigrateDataAsync; poll with Status()/Progress(); block with Wait().
 //
 // The embedded core.Handle supplies the lifecycle — Status, Progress, Wait,
 // Cancel — shared with the DBMS domain.
@@ -85,29 +87,77 @@ func (h *MigrationHandle) observe(u core.Update) {
 	})
 }
 
-// run executes the full migration described by dmm.
-// It is launched as a goroutine by TransferAsync/MigrateDataAsync, which calls
-// Finish when it returns.
+// run executes the full migration described by dmm:
+//  1. validation, before anything runs — it only inspects fields, so a bad
+//     model fails here without having touched either side
+//  2. Source.PreCmd, if set (e.g., a backup into the directory about to move)
+//  3. the transfer
+//  4. Destination.PostCmd, if set (e.g., a restore from what just arrived)
+//
+// A failure is returned as a *MigrationError naming the stage it stopped at. A
+// cancellation is returned as the bare context error, and skips every step
+// after it; a command already running is not interrupted, so it takes effect
+// once that command returns.
+//
+// It is launched as a goroutine by MigrateDataAsync, which calls Finish when it
+// returns.
 func (h *MigrationHandle) run(dmm DataMigrationModel) error {
 	h.SetStatus(StatusRunning)
 
+	if err := Validate(dmm); err != nil {
+		return h.fail(&MigrationError{Stage: StageTransfer, Err: fmt.Errorf("validation failed: %w", err)})
+	}
+
+	if strings.TrimSpace(dmm.Source.PreCmd) != "" {
+		if err := executePreCommand(dmm.Source); err != nil {
+			return h.fail(&MigrationError{Stage: StageBackup, Err: err})
+		}
+	}
+	if err := h.cancelled(); err != nil {
+		return err
+	}
+
 	pipeline, err := Plan(dmm)
 	if err != nil {
-		h.Fail(err)
-		return err
+		return h.fail(&MigrationError{Stage: StageTransfer, Err: fmt.Errorf("planning failed: %w", err)})
 	}
 
 	ctx := core.WithReporter(h.Context(), core.ReporterFunc(h.observe))
 	if err := pipeline.Execute(ctx); err != nil {
-		if ctxErr := h.Context().Err(); ctxErr != nil {
-			h.SetStatus(StatusCancelled)
-			h.SetErr(ctxErr)
-			return ctxErr
+		if cerr := h.cancelled(); cerr != nil {
+			return cerr
 		}
-		h.Fail(err)
+		return h.fail(&MigrationError{Stage: StageTransfer, Err: err})
+	}
+	if err := h.cancelled(); err != nil {
 		return err
+	}
+
+	if strings.TrimSpace(dmm.Destination.PostCmd) != "" {
+		if err := executePostCommand(dmm.Destination); err != nil {
+			return h.fail(&MigrationError{Stage: StageRestore, Err: err})
+		}
 	}
 
 	h.SetStatus(StatusDone)
 	return nil
+}
+
+// fail records err as the migration's failure and returns it.
+func (h *MigrationHandle) fail(err error) error {
+	h.Fail(err)
+	return err
+}
+
+// cancelled reports whether the migration was cancelled. If it was, it records
+// StatusCancelled and returns the context error unwrapped, so callers can still
+// match it with errors.Is(err, context.Canceled).
+func (h *MigrationHandle) cancelled() error {
+	ctxErr := h.Context().Err()
+	if ctxErr == nil {
+		return nil
+	}
+	h.SetStatus(StatusCancelled)
+	h.SetErr(ctxErr)
+	return ctxErr
 }

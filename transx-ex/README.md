@@ -109,8 +109,7 @@ Operations that exist in both domains carry the domain in their name; unambiguou
 |                    | Storage                                                | Database                                              |
 | ------------------ | ------------------------------------------------------ | ----------------------------------------------------- |
 | **Migrate**        | `MigrateStorage` · `MigrateStorageAsync`                | `MigrateDBMS` · `MigrateDBMSAsync`                    |
-| **Transfer only**  | `TransferStorage` · `TransferStorageAsync`              | —                                                     |
-| **Single op**      | `RunStoragePreCommand` · `RunStoragePostCommand`        | `DumpDBMS` · `RestoreDBMS` · `RollbackDropDBMS`       |
+| **Single op**      | —                                                       | `DumpDBMS` · `RestoreDBMS` · `RollbackDropDBMS`       |
 | **Database DDL**   | —                                                       | `CreateDatabase` · `DropDatabase`                     |
 | **Inspect**        | `InspectFilesystem` · `InspectObjectStorage`            | `InspectDBMS` · `InspectDBMSAll` · `ListDatabases` · `ListSchemas` · `DescribeTable` · `ServerVersion` |
 | **Plan / Validate**| `PlanStorage` · `ValidateStorage`                       | `PlanDBMS` · `ValidateDBMS` · `CheckCharset` · `CheckVersion` |
@@ -119,6 +118,8 @@ Operations that exist in both domains carry the domain in their name; unambiguou
 | **Handle**         | `StorageHandle` · `StorageProgress`                     | `DBMSHandle` · `DBMSProgress`                         |
 | **Filter**         | `PathFilterOption`                                      | `DBMSFilterOption`                                    |
 | **Shared**         | `SSHConfig` · `MigrationStatus` · `MigrationError` · `OperationError` |                                    |
+
+A storage migration runs `Source.PreCmd` (if set), the transfer, then `Destination.PostCmd` (if set); leave both empty to transfer only. Object storage locations accept neither command — validation refuses them before anything runs.
 
 ## Layout
 

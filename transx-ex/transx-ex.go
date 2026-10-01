@@ -14,20 +14,21 @@ import (
 // Migration — Storage
 // ============================================================================
 
-// TransferStorage moves the data described by m from source to destination.
-// Unlike MigrateStorage it runs no pre- or post-commands.
-func TransferStorage(m StorageMigrationModel) error { return storagex.Transfer(m) }
-
-// TransferStorageAsync starts TransferStorage in the background and returns a
-// handle for progress and cancellation.
-func TransferStorageAsync(m StorageMigrationModel) *StorageHandle { return storagex.TransferAsync(m) }
-
 // MigrateStorage runs the complete storage migration: Source.PreCmd if set, the
-// transfer, then Destination.PostCmd if set.
+// transfer, then Destination.PostCmd if set. Leave both commands empty to
+// transfer only; object storage locations accept neither, and validation
+// refuses them before anything runs.
+//
+// A failure is a *MigrationError whose Stage is StageBackup, StageTransfer or
+// StageRestore.
 func MigrateStorage(m StorageMigrationModel) error { return storagex.MigrateData(m) }
 
 // MigrateStorageAsync starts MigrateStorage in the background and returns a
 // handle for progress and cancellation.
+//
+// A cancelled migration's Wait returns the bare context error and skips the
+// steps after it. A pre- or post-command already running is not interrupted:
+// the cancellation takes effect once it returns.
 func MigrateStorageAsync(m StorageMigrationModel) *StorageHandle {
 	return storagex.MigrateDataAsync(m)
 }
@@ -320,17 +321,3 @@ func ParseBucketAndKey(path string) (bucket, key string) { return storagex.Parse
 //
 //	transxex.SetLogger(slog.New(zerologHandler))
 func SetLogger(l *slog.Logger) { dbmsx.SetLogger(l) }
-
-// ============================================================================
-// Storage Pre/Post Commands
-// ============================================================================
-
-// RunStoragePreCommand executes loc.PreCmd, the hook that prepares data before
-// a transfer. MigrateStorage runs it automatically; use this only to perform
-// that step alone.
-func RunStoragePreCommand(loc StorageLocation) error { return storagex.RunPreCommand(loc) }
-
-// RunStoragePostCommand executes loc.PostCmd, the hook that consumes data after
-// a transfer. MigrateStorage runs it automatically; use this only to perform
-// that step alone.
-func RunStoragePostCommand(loc StorageLocation) error { return storagex.RunPostCommand(loc) }

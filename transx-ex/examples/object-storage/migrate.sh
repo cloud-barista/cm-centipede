@@ -26,7 +26,6 @@ Object Storage Migration with transx-ex
 Options:
   -c, --config FILE    Migration configuration file (required)
   -v, --verbose        Enable verbose logging
-  -s, --step STEP      Execute specific step: 'backup', 'transfer', 'restore'
   -h, --help           Show this help message
 
 Available Configurations:
@@ -60,7 +59,6 @@ EOF
 # Default values
 CONFIG=""
 VERBOSE=""
-STEP_ARG=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -72,18 +70,6 @@ while [[ $# -gt 0 ]]; do
         -v|--verbose)
             VERBOSE="-verbose"
             shift
-            ;;
-        -s|--step)
-            case "$2" in
-                backup)   STEP_ARG="-backup" ;;
-                transfer) STEP_ARG="-transfer" ;;
-                restore)  STEP_ARG="-restore" ;;
-                *)
-                    print_error "Invalid step: $2 (use: backup, transfer, restore)"
-                    exit 1
-                    ;;
-            esac
-            shift 2
             ;;
         -h|--help)
             show_usage
@@ -126,7 +112,6 @@ cd "$SCRIPT_DIR"
 
 CMD_ARGS=("-config" "$CONFIG")
 [[ -n "$VERBOSE" ]] && CMD_ARGS+=("$VERBOSE")
-[[ -n "$STEP_ARG" ]] && CMD_ARGS+=("$STEP_ARG")
 
 ./main "${CMD_ARGS[@]}"
 
