@@ -3,7 +3,7 @@
 # lib/common.sh — shared helpers for every beetleenv entry point
 # ------------------------------------------------------------------------------
 #   preflight()   environment checks every script runs before doing anything
-#   state_*       state/<csp>/*.json read, atomic write, incremental merge
+#   state_*       state/<ns>/<prefix>/<csp>/*.json read, atomic write
 #   poll_for      polling with an interval and a timeout
 #   csp_*         CSP name handling and per-CSP .env lookup
 #
@@ -232,9 +232,17 @@ validate_name_prefix() {
     # alphanumeric and hyphens after. Lower case and a 10 char ceiling are ours:
     # the longest name built from it is <prefix>-subnet-1 and CSP id limits start
     # at 30, and a mixed-case seed produces resource names some CSPs reject.
-    if ! printf '%s' "$BEETLEENV_NAME_PREFIX" | grep -Eq '^[a-z][a-z0-9-]{1,9}$'; then
+    #
+    # No hyphen is ours too, and it is what makes name_prefix_of an exact match.
+    # Every "is this ours" test is startswith("<prefix>-<csp>-"), and with a
+    # hyphen allowed one prefix can be the start of another's names: "cp" would
+    # claim everything "cp-aws-x" created, since "cp-aws-x-aws-vnet" starts with
+    # "cp-aws-". Without one, the first segment of a name is its prefix, whole.
+    if ! printf '%s' "$BEETLEENV_NAME_PREFIX" | grep -Eq '^[a-z][a-z0-9]{1,9}$'; then
         die "BEETLEENV_NAME_PREFIX='${BEETLEENV_NAME_PREFIX}' is invalid.
-       Expected ^[a-z][a-z0-9-]{1,9}\$ - 2 to 10 chars, starting with a lower-case letter."
+       Expected ^[a-z][a-z0-9]{1,9}\$ - 2 to 10 lower-case letters and digits,
+       starting with a letter. No hyphen: names are matched on <prefix>-<csp>-,
+       and a hyphenated prefix can match another prefix's resources."
     fi
 }
 
@@ -280,6 +288,70 @@ preflight_env() {
 
     validate_name_prefix
     validate_ns
+    warn_legacy_layout
+}
+
+# warn_legacy_layout — files left in the old state/<csp>/ and keys/<csp>/ layout,
+#   from before the namespace and prefix were part of the path.
+#
+#   Nothing reads them any more, so they are harmless - but a key there is the
+#   only saved copy, and a deprovision no longer cleans them up. Warned about
+#   rather than moved: the files say which prefix made them but not which
+#   namespace, and a guess would file them under the wrong one.
+#
+#   A file whose name carries this setup's <prefix>-<csp>- gets the command that
+#   moves it under the current namespace; anything else is only listed.
+#
+#   An old-layout directory holds files directly, and a new-layout one holds only
+#   directories, so the two cannot be mistaken for each other even when a
+#   namespace is named like a CSP.
+warn_legacy_layout() {
+    local csp root f owner dest rel moves="" others="" keys=0
+
+    for csp in $BEETLEENV_ALL_CSPS; do
+        for root in "$STATE_ROOT" "$KEYS_ROOT"; do
+            for f in "${root}/${csp}"/*.json "${root}/${csp}"/*.pem; do
+                [ -f "$f" ] || continue
+                case "$f" in
+                    *.json)
+                        # network.json has no name, only the ids it records.
+                        owner="$(jq -r '.name // .vNetId // empty' "$f" 2>/dev/null || true)"
+                        dest="$(state_dir "$csp")" ;;
+                    *)
+                        owner="$(basename "$f" .pem)"
+                        dest="$(keys_dir "$csp")"
+                        keys=1 ;;
+                esac
+                rel="${f#"${BEETLEENV_ROOT}/"}"
+                case "$owner" in
+                    "$(name_prefix_of "$csp")"*)
+                        moves="${moves}
+         mkdir -p ${dest#"${BEETLEENV_ROOT}/"} && mv ${rel} ${dest#"${BEETLEENV_ROOT}/"}/" ;;
+                    *)
+                        others="${others}
+         ${rel}  (${owner:-unidentified})" ;;
+                esac
+            done
+        done
+    done
+
+    if [ -z "$moves" ] && [ -z "$others" ]; then
+        return 0
+    fi
+
+    log_warn "files in the old state/<csp>/ or keys/<csp>/ layout, which nothing reads now.
+       Records and keys live under <dir>/<ns>/<prefix>/<csp>/ instead."
+    if [ -n "$moves" ]; then
+        printf '       Made by prefix %s - if in namespace %s, run from %s:%s\n' \
+            "$BEETLEENV_NAME_PREFIX" "$BEETLEENV_NS" "$BEETLEENV_ROOT" "$moves" >&2
+    fi
+    if [ -n "$others" ]; then
+        printf '       Made by another prefix - move them with that prefix'"'"'s .env, or delete them:%s\n' \
+            "$others" >&2
+    fi
+    if [ "$keys" -eq 1 ]; then
+        printf '       Keys under keys/ are also recreated by ./scripts/conn-info.sh <csp> --ssh.\n' >&2
+    fi
 }
 
 # require_csp_env <csp> — the keys a CSP cannot be used without. Returns 1 rather
@@ -350,7 +422,7 @@ preflight() {
 }
 
 # ------------------------------------------------------------------------------
-# state/<csp>/*.json
+# state/<ns>/<prefix>/<csp>/*.json
 # ------------------------------------------------------------------------------
 # cb-tumblebug owns the real state, and beetleenv reads it back through the list
 # APIs rather than trusting a local file. These files hold what the APIs do not
@@ -362,9 +434,17 @@ preflight() {
 #     rather than stored in the recommendation on disk.
 #   - Advisory only. A missing state file never blocks a deprovision; the list
 #     APIs are the source of truth for what exists.
+#
+# The namespace and the prefix are in the path because the file names are not
+# theirs: vm.json, network.json and db-mysql.json are the same for every setup,
+# and two setups - a changed prefix, or the same prefix in another namespace -
+# would otherwise overwrite and delete each other's records. Needs .env loaded,
+# which every caller has done through preflight by the time it gets here.
 
-state_dir()    { printf '%s/%s' "$STATE_ROOT" "$1"; }
-state_path()   { printf '%s/%s/%s.json' "$STATE_ROOT" "$1" "$2"; }
+setup_subdir() { printf '%s/%s/%s' "$BEETLEENV_NS" "$BEETLEENV_NAME_PREFIX" "$1"; }
+
+state_dir()    { printf '%s/%s' "$STATE_ROOT" "$(setup_subdir "$1")"; }
+state_path()   { printf '%s/%s.json' "$(state_dir "$1")" "$2"; }
 state_exists() { [ -f "$(state_path "$1" "$2")" ]; }
 
 state_read() {
@@ -393,7 +473,10 @@ state_write() {
     mv -f "$tmp" "$file"
 }
 
-state_delete() { rm -f "$(state_path "$1" "$2")"; }
+state_delete() {
+    rm -f "$(state_path "$1" "$2")"
+    prune_empty_dirs "$(state_dir "$1")" "$STATE_ROOT"
+}
 
 # state_list <csp> [glob] — base names of the state files a CSP holds.
 state_list() {
@@ -421,11 +504,14 @@ state_list() {
 #
 # Written by conn-info.sh --ssh and removed by deprovision.sh along with the
 # infrastructure the key opens.
+#
+# Laid out as keys/<ns>/<prefix>/<csp>/, the same as state/. The file name is
+# the sshKeyId and already carries the prefix, but not the namespace.
 
 KEYS_ROOT="${BEETLEENV_ROOT}/keys"
 
-keys_dir()  { printf '%s/%s' "$KEYS_ROOT" "$1"; }
-key_path()  { printf '%s/%s/%s.pem' "$KEYS_ROOT" "$1" "$2"; }
+keys_dir()  { printf '%s/%s' "$KEYS_ROOT" "$(setup_subdir "$1")"; }
+key_path()  { printf '%s/%s.pem' "$(keys_dir "$1")" "$2"; }
 
 # key_write <csp> <keyId> <pem> — write the key 0600, and report what happened on
 #   stdout: "written" | "unchanged". The mode is set before the content is, so
@@ -433,7 +519,9 @@ key_path()  { printf '%s/%s/%s.pem' "$KEYS_ROOT" "$1" "$2"; }
 key_write() {
     local dir file tmp
     dir="$(keys_dir "$1")"
-    mkdir -p "$dir"
+    # umask rather than chmod: mkdir -p creates <ns>/ and <prefix>/ on the way,
+    # and those should be 0700 too.
+    (umask 077 && mkdir -p "$dir")
     chmod 700 "$dir" 2>/dev/null || true
     file="$(key_path "$1" "$2")"
 
@@ -451,14 +539,33 @@ key_write() {
     printf 'written'
 }
 
-# key_delete_csp <csp> — remove every key of one CSP, and the directory when it
-#   is left empty. Silent when there was nothing to remove.
-key_delete_csp() {
-    local dir="$(keys_dir "$1")"
-    if [ ! -d "$dir" ]; then return 0; fi
-    rm -f "$dir"/*.pem "$dir"/.*.pem.tmp 2>/dev/null || true
-    rmdir "$dir" 2>/dev/null || true
-    rmdir "$KEYS_ROOT" 2>/dev/null || true
+# key_delete <csp> <keyId> — remove one key, and every directory up to keys/ that
+#   it leaves empty. Prints "removed" when there was a file to remove.
+#
+#   One key, not the CSP's whole directory: a key of another prefix can sit
+#   beside it, and deleting this setup's VM must not lock anyone out of that one.
+key_delete() {
+    local dir file
+    dir="$(keys_dir "$1")"
+    file="$(key_path "$1" "$2")"
+    rm -f "${dir}/.${2}.pem.tmp" 2>/dev/null || true
+    if [ -f "$file" ]; then
+        rm -f "$file"
+        printf 'removed'
+    fi
+    prune_empty_dirs "$dir" "$KEYS_ROOT"
+}
+
+# prune_empty_dirs <dir> <root> — rmdir <dir> and its parents while they are
+#   empty, stopping after <root>. rmdir refuses a non-empty directory, which is
+#   the whole test.
+prune_empty_dirs() {
+    local dir="$1" root="$2"
+    while :; do
+        rmdir "$dir" 2>/dev/null || return 0
+        [ "$dir" = "$root" ] && return 0
+        dir="$(dirname "$dir")"
+    done
 }
 
 # ------------------------------------------------------------------------------

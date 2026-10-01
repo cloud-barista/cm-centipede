@@ -28,7 +28,7 @@
 #   never print either, whatever else is passed.
 #
 # LOGGING IN — --ssh
-#   --ssh writes each node's private key to keys/<csp>/<sshKeyId>.pem (0600) and
+#   --ssh writes each node's private key to keys/<ns>/<prefix>/<csp>/<sshKeyId>.pem (0600) and
 #   prints the ssh, scp and rsync commands for that node with every value filled
 #   in. The key goes to a file rather than to stdout on purpose: --reveal leaves
 #   it in the terminal scrollback, and in anything that tees the output, on disk
@@ -52,7 +52,7 @@ usage() {
 Usage: ./scripts/conn-info.sh <csp> [--reveal] [--ssh] [--ids] [--json]
 
   --reveal   print the RDBMS password and the VM private key in full
-  --ssh      save each node's private key to keys/<csp>/ (0600) and print the
+  --ssh      save each node's private key under keys/ (0600) and print the
              ssh / scp / rsync commands for it, with every value filled in
   --ids      just the cm-beetle API identifiers, for pasting into a call
   --json     machine-readable output, with all three identifier layers

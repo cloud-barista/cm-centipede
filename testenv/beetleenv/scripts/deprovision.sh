@@ -356,9 +356,13 @@ deprovision_vm() {
     # A key file conn-info.sh --ssh saved opens nothing now, and leaving it would
     # have the next provision's ssh command silently offer the old key. It goes
     # here rather than with the network because it is the key pair's own copy.
-    if [ -d "$(keys_dir "$CSP")" ]; then
-        key_delete_csp "$CSP"
-        log_ok "removed the saved private key(s) under keys/${CSP}/"
+    #
+    # Only this setup's key: the file is named after the sshKeyId, which carries
+    # the prefix, and another prefix's key can sit in the same directory.
+    local key_file
+    key_file="$(key_path "$CSP" "$(resource_name "$CSP" sshkey)")"
+    if [ "$(key_delete "$CSP" "$(resource_name "$CSP" sshkey)")" = "removed" ]; then
+        log_ok "removed the saved private key ${key_file#"${BEETLEENV_ROOT}/"}"
     fi
 }
 
@@ -409,8 +413,18 @@ network_dependents() {
 #   database that state never recorded is still a database in that vNet, and
 #   deleting the vNet around it would either be refused by the CSP or strand it.
 release_network_if_unused() {
-    if ! load_network "$CSP"; then
-        return 0        # no network of ours; nothing to release
+    local rc=0
+    load_network "$CSP" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        log_warn "keeping the network record - could not list vNets - $(bt_message)"
+        return 0
+    fi
+    if [ "$rc" -ne 0 ]; then
+        # No vNet of ours - removed outside beetleenv, or by a tumblebug reset.
+        # The record describes nothing now, so it goes like any other resource
+        # found already gone.
+        state_delete "$CSP" network
+        return 0
     fi
 
     network_dependents

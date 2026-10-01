@@ -111,13 +111,15 @@ firewall_rules() {
 # ------------------------------------------------------------------------------
 
 # find_vnet <csp> — publish NET_VNET_ID and NET_SUBNET_IDS when the vNet exists.
-#   Returns 1 when it does not.
+#   Returns 1 when it does not, and 2 when the list itself could not be read - an
+#   unread list is not an empty one. Callers that only test success see both as
+#   "not found".
 find_vnet() {
     local name subnets
     name="$(vnet_name "$1")"
 
     if ! bt_get "$(_res_path vNet)"; then
-        return 1
+        return 2
     fi
     NET_VNET_ID="$(bt_jq -r --arg n "$name" '.vNet[]? | select(.name == $n) | .id // empty')"
     if [ -z "$NET_VNET_ID" ]; then
@@ -143,10 +145,10 @@ find_sg() {
 }
 
 # load_network <csp> — read the ids without creating anything. Returns 1 when the
-#   network is not there, which is what deprovision and conn-info want.
+#   network is not there and 2 when the vNet list could not be read, as find_vnet.
 load_network() {
     NET_VNET_ID=""; NET_SUBNET_IDS=""; NET_SG_ID=""
-    find_vnet "$1" || return 1
+    find_vnet "$1" || return $?
     find_sg "$1" || true
     return 0
 }

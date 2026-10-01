@@ -21,6 +21,10 @@
 #   The labels are the cm-beetle API parameter names, the same ones conn-info.sh
 #   uses, so a resource is recognisable across both.
 #
+#   Resources another prefix created in the same namespace are not listed, but
+#   are counted at the end: after a prefix change they are the old setup, still
+#   running, and nothing else would show them.
+#
 #   The list calls are made once and filtered per CSP, rather than once per CSP:
 #   cm-beetle paces its calls to cb-tumblebug, and one namespace holds every
 #   CSP's resources anyway.
@@ -145,6 +149,47 @@ for CSP in $CSPS; do
         fi
     done
 done
+
+# ------------------------------------------------------------------------------
+# Other prefixes
+# ------------------------------------------------------------------------------
+# Resources in the namespace named <x>-<csp>-* for some other prefix x. Nothing
+# above shows them and deprovision.sh never touches them, so after a prefix
+# change this is the only place the old setup is still visible - and it is still
+# running, and still billing.
+#
+# Counted, not listed: which setup they belong to is the news, and switching to
+# that prefix gives the full view. The capture is greedy so that a hyphenated
+# prefix from before hyphens were refused still comes out whole - no suffix
+# beetleenv uses contains -<csp>-, so the last match is the right one.
+
+CSP_ALT="$(for CSP in $CSPS; do csp_lower "$CSP"; printf '|'; done)"
+CSP_ALT="${CSP_ALT%|}"
+
+OTHERS="$(jq -rn \
+    --argjson r "$RDBMS_ALL" --argjson b "$BUCKETS_ALL" \
+    --argjson i "$INFRA_ALL" --argjson v "$VNETS_ALL" \
+    --arg re "^(?<p>[a-z][a-z0-9-]*)-(?<c>${CSP_ALT})-" \
+    --arg mine "$BEETLEENV_NAME_PREFIX" '
+    [ ($r.rdbms[]?         | {k: "rdbmsId", n: (.id // .name)}),
+      ($b.objectStorage[]? | {k: "osId",    n: (.id // .name)}),
+      ($i.infra[]?         | {k: "infraId", n: (.id // .name)}),
+      ($v.vNet[]?          | {k: "vNetId",  n: (.id // .name)}) ]
+    | map(. as $x | ($x.n // "" | capture($re)) | {p, c, k: $x.k})
+    | map(select(.p != $mine))
+    | group_by(.p)[]
+    | "    \(.[0].p | . + " " * ([11 - length, 1] | max))"
+      + (group_by(.c) | map("\(.[0].c): "
+            + (group_by(.k) | map("\(length) \(.[0].k)") | join(", ")))
+         | join("; "))' 2>/dev/null || true)"
+
+if [ -n "$OTHERS" ]; then
+    printf '\n'
+    log_step "other prefixes in ${BEETLEENV_NS} - not shown above, never touched by deprovision.sh"
+    printf '%s\n' "$OTHERS"
+    printf '  set BEETLEENV_NAME_PREFIX to one of these - in .env, or in a copy passed as\n'
+    printf '  ENV_FILE=... - to see them in full or delete them.\n'
+fi
 
 printf '\n'
 if [ "$TOTAL" -eq 0 ]; then

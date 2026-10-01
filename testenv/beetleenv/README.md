@@ -212,7 +212,7 @@ value with spaces in it is read as a command.
 ### Resource names
 
 ```dotenv
-BEETLEENV_NAME_PREFIX=cpbt      # "centipede beetle". No hyphen at either end.
+BEETLEENV_NAME_PREFIX=cpbt      # "centipede beetle". Letters and digits, no hyphen.
 ```
 
 Everything is `<prefix>-<csp>-<what>`:
@@ -236,7 +236,10 @@ the CSP sees from a uid of its own, so no CSP id length limit applies here — a
 there is no globally unique bucket name to pick either, which is why `.env` has
 no bucket name key.
 
-`preflight()` enforces `^[a-z][a-z0-9-]{1,9}$` on the prefix.
+`preflight()` enforces `^[a-z][a-z0-9]{1,9}$` on the prefix. **No hyphen**,
+because ownership is a `startswith("<prefix>-<csp>-")` test: with a hyphen
+allowed, `cp` would claim what `cp-aws-x` created (`cp-aws-x-aws-vnet` starts
+with `cp-aws-`). Without one, a name's first segment is its prefix, whole.
 
 ---
 
@@ -499,7 +502,7 @@ $ ./scripts/conn-info.sh aws --ssh
 ==> aws — SSH access, nsId cpbt01
 
   nodeId        vm-beetleenv-source-01-1   (infraId cpbt-aws-infra, Running)
-    key         …/beetleenv/keys/aws/cpbt-aws-sshkey.pem  (0600, written)
+    key         …/beetleenv/keys/cpbt01/cpbt/aws/cpbt-aws-sshkey.pem  (0600, written)
     ssh         ssh -i …/cpbt-aws-sshkey.pem -o StrictHostKeyChecking=accept-new cb-user@52.78.182.93
     look        ssh -i … cb-user@52.78.182.93 'ls -al /home/cb-user'
     copy up     scp -i … ./file cb-user@52.78.182.93:/home/cb-user/
@@ -508,14 +511,14 @@ $ ./scripts/conn-info.sh aws --ssh
 
 **The key goes to a file, not to stdout.** That is the point of the mode rather
 than a detail of it: `--reveal` leaves the key in the terminal scrollback, and in
-anything that tees its output, in a log file on disk. `keys/<csp>/<sshKeyId>.pem`
+anything that tees its output, in a log file on disk. `keys/<ns>/<prefix>/<csp>/<sshKeyId>.pem`
 is written 0600 inside a 0700 directory, and rewritten only when the content
 differs — a second run says `unchanged`.
 
 **`keys/` is not `state/`.** `state/` is documented as holding no secrets, and a
 private key sitting there would quietly end that. `keys/` is its own directory,
-gitignored, and `deprovision.sh <csp> vm` removes it along with the key pair it
-came from — a leftover file would otherwise have the next provision's `ssh`
+gitignored, and `deprovision.sh <csp> vm` removes this setup's key file along
+with the key pair it came from — a leftover file would otherwise have the next provision's `ssh`
 command offering a key that opens nothing.
 
 **One call per key, matched per node.** The key is fetched from each node's own
@@ -680,6 +683,18 @@ IP, no CSP resource id, no per-node rows. That is `conn-info.sh`, one CSP at a
 time. Keeping the split visible in the output is what stops the two from becoming
 the same command printed twice.
 
+**Other prefixes are counted, not hidden.** Everything above is filtered on
+`<prefix>-<csp>-`, so after `BEETLEENV_NAME_PREFIX` changes the old setup drops
+out of every script's view while it keeps running. `status.sh` ends with what
+other prefixes still hold in the namespace:
+
+```
+==> other prefixes in cpbt01 - not shown above, never touched by deprovision.sh
+    cpbt       aws: 1 infraId, 1 osId, 1 vNetId
+  set BEETLEENV_NAME_PREFIX to one of these - in .env, or in a copy passed as
+  ENV_FILE=... - to see them in full or delete them.
+```
+
 | | `status.sh` | `conn-info.sh` |
 |---|---|---|
 | Scope | every CSP by default | one CSP, required |
@@ -769,9 +784,9 @@ hung.
 
 ## `state/`
 
-`state/<csp>/*.json` holds the recommendation each resource was created from —
-what the APIs cannot give back. It is advisory: a missing state file never blocks
-a deprovision.
+`state/<ns>/<prefix>/<csp>/*.json` holds the recommendation each resource was
+created from — what the APIs cannot give back. It is advisory: a missing state
+file never blocks a deprovision.
 
 **No secrets.** The password is injected after the recommendation is written to
 disk, exactly so that a leaked state file grants nothing.
@@ -780,15 +795,17 @@ disk, exactly so that a leaked state file grants nothing.
 
 ## `keys/`
 
-`keys/<csp>/<sshKeyId>.pem` holds the VM private keys `conn-info.sh --ssh` saved,
-0600 inside a 0700 directory. Gitignored, like `.env`.
+`keys/<ns>/<prefix>/<csp>/<sshKeyId>.pem` holds the VM private keys
+`conn-info.sh --ssh` saved, 0600 inside 0700 directories. Laid out like `state/`,
+so another setup's keys are never in the way. Gitignored, like `.env`.
 
 **This is the one place besides `.env` where a secret sits at rest**, which is
 why it is a directory of its own rather than a corner of `state/`. cb-tumblebug
 generates the key pair and hands the private half over only when asked, so a file
 here is the only copy outside tumblebug — and the only way into the node.
 
-`deprovision.sh <csp> vm` deletes these along with the key pair itself. Nothing
+`deprovision.sh <csp> vm` deletes this setup's key file along with the key pair
+itself, and nothing else in the directory. Nothing
 else writes to the directory, and `conn-info.sh --ssh` recreates whatever is
 missing.
 
