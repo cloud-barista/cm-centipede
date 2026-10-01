@@ -1,0 +1,28 @@
+[Unit]
+Description=MinIO Object Storage Server
+After=network.target
+Documentation=https://min.io/docs/minio/linux/index.html
+
+[Service]
+Type=notify
+User=root
+Group=root
+
+Environment="MINIO_ROOT_USER=minioadmin"
+Environment="MINIO_ROOT_PASSWORD=minioadmin123"
+Environment="MINIO_VOLUMES=/data/minio"
+Environment="MINIO_OPTS=--console-address :9001"
+
+ExecStartPre=/bin/mkdir -p /data/minio
+ExecStart=/usr/local/bin/minio server $MINIO_VOLUMES $MINIO_OPTS
+
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minio
+
+[Install]
+WantedBy=multi-user.target

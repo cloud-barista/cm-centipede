@@ -1,0 +1,18 @@
+[Unit]
+Description=beetle-fs-test source initialisation (SSH key + dataset)
+After=network.target
+Wants=network.target
+
+[Service]
+# Type=oneshot with RemainAfterExit=yes keeps the unit "active" after the script
+# returns, which is what lets `systemctl is-active matrix-init.service` stand for
+# "this source is ready" rather than "this source is still running something".
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/matrix/init-fs.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

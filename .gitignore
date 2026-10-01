@@ -16,7 +16,9 @@ log/
 __pycache__/
 *.pyc
 *.pyo
-deployments/docker-compose/cb-tumblebug/init/__pycache__/
+
+# Go build output
+bin/
 
 # Database & Runtime Data
 *.db
@@ -30,7 +32,6 @@ meta_db/
 # Deployment & Docker
 .env
 deployments/docker-compose/data
-!deployments/docker-compose/cb-tumblebug/
 
 **/secrets/*
 !**/secrets/.gitkeep
@@ -38,3 +39,6 @@ deployments/docker-compose/data
 
 # Backup Files
 *_backup
+
+# Dummy Files
+dummy/

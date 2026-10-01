@@ -1,0 +1,28 @@
+# OpenTofu runner (a long-lived container)
+#   Ships tofu, curl, jq, git, openssh-client, psql and bash.
+#   lib/tofu.sh runs its tofu commands in this container through docker exec.
+#
+#   psql is here for one job: the privilege pre-flight that decides whether a
+#   PostgreSQL column has to grant on schema public. It runs once per column,
+#   before any source container exists, so it cannot borrow one's client.
+FROM debian:12-slim
+
+# Override the version at build time if needed: --build-arg TOFU_VERSION=1.9.1
+ARG TOFU_VERSION=1.9.1
+ARG TARGETARCH=amd64
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl unzip ca-certificates bash jq git openssh-client postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install OpenTofu by extracting just the tofu binary from the release zip.
+RUN curl -fsSL "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_${TARGETARCH}.zip" -o /tmp/tofu.zip \
+    && unzip -o /tmp/tofu.zip tofu -d /usr/local/bin \
+    && chmod +x /usr/local/bin/tofu \
+    && rm /tmp/tofu.zip \
+    && tofu version
+
+# Provider plugin cache, reused across modules to speed up init.
+ENV TF_PLUGIN_CACHE_DIR=/work/.tofu-plugin-cache
+
+WORKDIR /work

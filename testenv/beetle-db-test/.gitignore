@@ -1,0 +1,13 @@
+# Credentials - never committed.
+#   This file holds the managed instance's master password in plain text; the
+#   file mode is the only thing protecting it. chmod 600.
+.env
+.env.bak
+
+# The SSH key pair generated for MODE=ssh.
+.matrix-ssh/
+
+# Run output. The directory is created at run time (db-matrix.sh mkdir -p's it
+# outside the NO_LOG check, because the result JSON is written there either way),
+# so there is nothing to keep in git.
+logs/

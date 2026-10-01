@@ -1,0 +1,2311 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Cloud-Barista cm-centipede — Multi-cloud filesystem, object storage, and DBMS data migration subsystem.",
+        "title": "cm-centipede API",
+        "contact": {
+            "name": "Cloud-Barista Community",
+            "url": "https://github.com/cloud-barista/cm-centipede"
+        },
+        "version": "1.0.0"
+    },
+    "host": "localhost:8085",
+    "basePath": "/",
+    "paths": {
+        "/centipede/migration": {
+            "get": {
+                "description": "Returns a paginated list of migration summaries ordered by created_at DESC.\nThe response carries planSummary (unit counts per category) in place of the plan itself.\nDate filters compare against created_at and are interpreted in the server's local time zone.\ndateFrom and dateTo may each be used alone for an open-ended range; dateTo includes its own day.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "migration"
+                ],
+                "summary": "List migrations (paginated)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by status (pending|running|completed|failed|cancelled)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inclusive lower bound on created_at (yyyy-mm-dd)",
+                        "name": "dateFrom",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inclusive upper bound on created_at (yyyy-mm-dd)",
+                        "name": "dateTo",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Last N calendar days including today (0-3650; 0 means no limit). Cannot be combined with dateFrom or dateTo",
+                        "name": "lastDays",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 100)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Creates a Migration record from the given plan and immediately starts execution asynchronously.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "migration"
+                ],
+                "summary": "Create and start a migration",
+                "parameters": [
+                    {
+                        "description": "Migration creation request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.CreateMigrationReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_Migration"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        },
+        "/centipede/migration/all": {
+            "get": {
+                "description": "Returns every matching migration summary ordered by created_at DESC.\nThe response carries planSummary (unit counts per category) in place of the plan itself.\nWhen none of dateFrom, dateTo and lastDays is given, the last 7 calendar days are applied and the response message says so; pass lastDays=0 to lift the limit.\nDate filters compare against created_at and are interpreted in the server's local time zone.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "migration"
+                ],
+                "summary": "List all migrations without pagination",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by status (pending|running|completed|failed|cancelled)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inclusive lower bound on created_at (yyyy-mm-dd)",
+                        "name": "dateFrom",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inclusive upper bound on created_at (yyyy-mm-dd)",
+                        "name": "dateTo",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Last N calendar days including today (0-3650; 0 means no limit, default 7). Cannot be combined with dateFrom or dateTo",
+                        "name": "lastDays",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-array_github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        },
+        "/centipede/migration/{migrationId}": {
+            "get": {
+                "description": "Returns the Migration record for the given ID.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "migration"
+                ],
+                "summary": "Get a single migration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Migration ID",
+                        "name": "migrationId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_Migration"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Deletes a migration record. Returns 409 if the migration is currently running — cancel it first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "migration"
+                ],
+                "summary": "Delete a migration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Migration ID",
+                        "name": "migrationId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        },
+        "/centipede/migration/{migrationId}/cancel": {
+            "post": {
+                "description": "Signals the running migration to stop after the current item finishes. Returns 404 if the migration is not currently running.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "migration"
+                ],
+                "summary": "Cancel a running migration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Migration ID",
+                        "name": "migrationId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_Migration"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        },
+        "/centipede/migration/{migrationId}/logs": {
+            "get": {
+                "description": "Returns paginated MigrationLog entries for the given migration ID, optionally filtered by status.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "migration"
+                ],
+                "summary": "List logs for a migration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Migration ID",
+                        "name": "migrationId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status (success|failed|skipped)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 100)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationLog"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        },
+        "/centipede/migration/{migrationId}/retry": {
+            "post": {
+                "description": "Creates a new Migration that re-runs items from the original according to retryMode. DBMS destination tables are DROP-ped before re-execution.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "migration"
+                ],
+                "summary": "Retry a failed or cancelled migration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Original Migration ID",
+                        "name": "migrationId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Retry options (retryMode: partial|full, default: partial)",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.RetryReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_RetryResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        },
+        "/centipede/migration/{migrationId}/validation": {
+            "get": {
+                "description": "Returns the current validation status, summary message, and per-item detail list for the given migration.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "validation"
+                ],
+                "summary": "Get validation result for a migration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Migration ID",
+                        "name": "migrationId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ValidationResultResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed, 409 if validation is already running.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "validation"
+                ],
+                "summary": "Start validation for a completed migration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Migration ID",
+                        "name": "migrationId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_SimpleMessageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        },
+        "/centipede/plans/target": {
+            "post": {
+                "description": "Validates source/destination connections, checks DBMS compatibility and version, and returns a TargetDataMigrationModel ready for CreateMigration.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "plan"
+                ],
+                "summary": "Analyse target migration plan",
+                "parameters": [
+                    {
+                        "description": "Target plan request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.TargetPlanReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_dmdl_target-model_TargetDataMigrationModel"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        },
+        "/centipede/readyz": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "utility"
+                ],
+                "summary": "Server readiness check",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-pkg_api_rest_controller_ReadyzResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleDBRef": {
+            "type": "object",
+            "required": [
+                "nsId",
+                "password",
+                "rdbmsId"
+            ],
+            "properties": {
+                "nsId": {
+                    "type": "string"
+                },
+                "password": {
+                    "description": "AES-encrypted on store",
+                    "type": "string"
+                },
+                "rdbmsId": {
+                    "type": "string"
+                },
+                "tlsCAPem": {
+                    "description": "TLSCAPEM is the PEM root that verify-ca and verify-full check against.\nEmpty means the system trust store, which carries only publicly trusted\nCAs — and managed RDBMS services commonly sign with their own, so those two\nmodes usually need the CSP's root supplied here.",
+                    "type": "string"
+                },
+                "tlsMode": {
+                    "description": "TLSMode selects transport security; the empty value is \"disable\". It means\nthe same thing here as on DBConnConfig — see the table in transx-ex's\ndbmsx/driver/base/tls.go.",
+                    "type": "string",
+                    "enum": [
+                        "disable",
+                        "prefer",
+                        "require",
+                        "verify-ca",
+                        "verify-full"
+                    ]
+                },
+                "username": {
+                    "description": "defaults to the looked-up AdminUsername",
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleOSRef": {
+            "type": "object",
+            "required": [
+                "nsId",
+                "osId"
+            ],
+            "properties": {
+                "nsId": {
+                    "type": "string"
+                },
+                "osId": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleSSHRef": {
+            "type": "object",
+            "required": [
+                "infraId",
+                "nodeId",
+                "nsId"
+            ],
+            "properties": {
+                "infraId": {
+                    "type": "string"
+                },
+                "nodeId": {
+                    "type": "string"
+                },
+                "nsId": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef": {
+            "type": "object",
+            "required": [
+                "source"
+            ],
+            "properties": {
+                "beetleDb": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleDBRef"
+                },
+                "beetleObjectStorage": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleOSRef"
+                },
+                "beetleSsh": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleSSHRef"
+                },
+                "db": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBConnConfig"
+                },
+                "honeybee": {
+                    "description": "Reference types",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.HoneybeeRef"
+                        }
+                    ]
+                },
+                "minio": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.MinioConnConfig"
+                },
+                "source": {
+                    "enum": [
+                        "honeybee",
+                        "beetleSsh",
+                        "beetleObjectStorage",
+                        "beetleDb",
+                        "ssh",
+                        "minio",
+                        "db"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionSource"
+                        }
+                    ]
+                },
+                "ssh": {
+                    "description": "Inline types",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.SSHConnConfig"
+                        }
+                    ]
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionSource": {
+            "type": "string",
+            "enum": [
+                "honeybee",
+                "beetleSsh",
+                "beetleObjectStorage",
+                "beetleDb",
+                "ssh",
+                "minio",
+                "db"
+            ],
+            "x-enum-varnames": [
+                "ConnectionSourceHoneybee",
+                "ConnectionSourceBeetleSSH",
+                "ConnectionSourceBeetleObjectStorage",
+                "ConnectionSourceBeetleDB",
+                "ConnectionSourceSSH",
+                "ConnectionSourceMinio",
+                "ConnectionSourceDB"
+            ]
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.DBConnConfig": {
+            "type": "object",
+            "required": [
+                "accessType",
+                "dbmsType",
+                "providerName"
+            ],
+            "properties": {
+                "accessType": {
+                    "type": "string",
+                    "enum": [
+                        "direct",
+                        "sshTunnel"
+                    ]
+                },
+                "authSource": {
+                    "description": "AuthSource selects the authentication database. MongoDB only; ignored by\nother drivers. When empty and credentials are given, MongoDB defaults to\n\"admin\" (where users are usually created) rather than the target database.",
+                    "type": "string"
+                },
+                "connectTimeout": {
+                    "type": "integer"
+                },
+                "dbmsType": {
+                    "type": "string",
+                    "enum": [
+                        "mysql",
+                        "mariadb",
+                        "postgresql",
+                        "mongodb"
+                    ]
+                },
+                "host": {
+                    "description": "DB endpoint (the direct connection target, or the target reached through\nthe SSH tunnel)",
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "providerName": {
+                    "description": "ProviderName records where the database is hosted. transx-ex carries it\nthrough to DBMSLocation.ProviderName but never reads it: no routing,\nvalidation or connection decision depends on it. It is required all the\nsame, so that \"where does this data live\" has an answer for every\nconnection that holds data. A database the operator runs themselves is\nProviderOnPrem, spelled out rather than left blank.",
+                    "type": "string",
+                    "enum": [
+                        "aws",
+                        "alibaba",
+                        "tencent",
+                        "ncp",
+                        "nhn",
+                        "ibm",
+                        "gcp",
+                        "kt",
+                        "azure",
+                        "openstack",
+                        "onprem"
+                    ]
+                },
+                "sshTunnel": {
+                    "description": "Jump host used when accessType=sshTunnel (inline SSH).",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.SSHConnConfig"
+                        }
+                    ]
+                },
+                "tlsCAPem": {
+                    "description": "TLSCAPem is the PEM root that verify-ca and verify-full check against.\nEmpty means the system trust store, which carries only publicly trusted\nCAs, so a server using a private CA needs its root supplied here.\n\ntransx-ex also accepts a path to a CA file, but that path would name a\nfile on the centipede server rather than on the caller's machine, so it\nis deliberately not part of this API.",
+                    "type": "string"
+                },
+                "tlsMode": {
+                    "description": "TLSMode selects transport security; the empty value is \"disable\". The\nmodes mean the same thing on every engine — see transx-ex's\ndbmsx/driver/base/tls.go for the table that defines them.",
+                    "type": "string",
+                    "enum": [
+                        "disable",
+                        "prefer",
+                        "require",
+                        "verify-ca",
+                        "verify-full"
+                    ]
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilter": {
+            "type": "object",
+            "properties": {
+                "databases": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterEntry"
+                    }
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterEntry": {
+            "type": "object",
+            "required": [
+                "targetMapping"
+            ],
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterRule"
+                    }
+                },
+                "targetMapping": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterRule": {
+            "type": "object",
+            "properties": {
+                "columns": {
+                    "description": "type=table_column (empty =\u003e whole table)",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "kind": {
+                    "description": "type=object_exclude (view|index|function|...)",
+                    "type": "string"
+                },
+                "match": {
+                    "description": "type=row_exclude",
+                    "type": "string"
+                },
+                "name": {
+                    "description": "type=object_exclude",
+                    "type": "string"
+                },
+                "table": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSType": {
+            "type": "string",
+            "enum": [
+                "mysql",
+                "mariadb",
+                "postgresql",
+                "mongodb"
+            ],
+            "x-enum-varnames": [
+                "DBMSTypeMySQL",
+                "DBMSTypeMariaDB",
+                "DBMSTypePostgreSQL",
+                "DBMSTypeMongoDB"
+            ]
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.FileSystemFilter": {
+            "type": "object",
+            "required": [
+                "targetMapping"
+            ],
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule"
+                    }
+                },
+                "targetMapping": {
+                    "description": "selects the single folder to migrate",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping"
+                        }
+                    ]
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.HoneybeeRef": {
+            "type": "object",
+            "required": [
+                "connectionId"
+            ],
+            "properties": {
+                "connectionId": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.MinioConnConfig": {
+            "type": "object",
+            "required": [
+                "accessKeyId",
+                "providerName",
+                "secretAccessKey"
+            ],
+            "properties": {
+                "accessKeyId": {
+                    "description": "AccessKeyId doubles as the storage account name on azure, where it is also\nthe endpoint source.",
+                    "type": "string"
+                },
+                "bucketLookup": {
+                    "description": "\"\" | \"dns\" | \"path\"",
+                    "type": "string"
+                },
+                "endpoint": {
+                    "description": "Endpoint is required for the openstack and onprem providers, where the\nuser supplies the host. For the others it is an optional override of the\nderived host — except azure, whose host is derived from AccessKeyId.",
+                    "type": "string"
+                },
+                "providerName": {
+                    "description": "ProviderName decides the endpoint, region, TLS and bucket addressing style\n(see ResolveS3Endpoint in core/migration). transxex.S3MinioConfig has no\nprovider field: it receives the resolved values.",
+                    "type": "string",
+                    "enum": [
+                        "aws",
+                        "alibaba",
+                        "tencent",
+                        "ncp",
+                        "nhn",
+                        "ibm",
+                        "gcp",
+                        "kt",
+                        "azure",
+                        "openstack",
+                        "onprem"
+                    ]
+                },
+                "region": {
+                    "description": "Region is the region this store lives in. Required for the providers whose\nhostname contains it (aws, alibaba, tencent, ncp, nhn, ibm) and for gcp,\nwhich has a region-less host but still signs with a region.\n\nIt is NOT unconditionally the signing region: NCP serves\n\"kr.object.ncloudstorage.com\" and signs \"kr-standard\", so ResolveS3Endpoint\nsigns with this value only where the two are spelled the same and otherwise\nleaves the signing region to be discovered.",
+                    "type": "string"
+                },
+                "secretAccessKey": {
+                    "type": "string"
+                },
+                "useSSL": {
+                    "description": "UseSSL is honored only for user-supplied endpoints (openstack, onprem).\nThe other providers use the fixed value from the provider table. A scheme\non Endpoint (\"http://\" or \"https://\") overrides both.",
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.ObjectStorageFilter": {
+            "type": "object",
+            "required": [
+                "targetMapping"
+            ],
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule"
+                    }
+                },
+                "targetMapping": {
+                    "description": "selects the single bucket to migrate",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping"
+                        }
+                    ]
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "description": "include | exclude. An item no rule matched is kept, so an include only\nnarrows the transfer when an exclude below it would otherwise have\ndropped the item: end a whitelist with {\"action\":\"exclude\",\"type\":\"glob\",\"pattern\":\"*\"}.",
+                    "type": "string"
+                },
+                "op": {
+                    "description": "type=size (\u003e \u003e= \u003c \u003c= ==). On a filesystem source the bound is applied\nglobally by rsync, so a size rule must sit above every include rule.",
+                    "type": "string"
+                },
+                "pattern": {
+                    "description": "type=glob; matched against the path relative to the migrated folder or key\nprefix: \"*.log\" (base name, any depth), \"src/*.go\" (path tail, so\n\"a/src/main.go\" matches too; \"/src/*.go\" anchors at the root), \"a/**\"\n(crosses directories), \"logs\" (a folder and everything under it).",
+                    "type": "string"
+                },
+                "type": {
+                    "description": "glob | size",
+                    "type": "string"
+                },
+                "value": {
+                    "description": "type=size (bytes)",
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.PgSchemaMapping": {
+            "type": "object",
+            "required": [
+                "srcName"
+            ],
+            "properties": {
+                "dstName": {
+                    "type": "string"
+                },
+                "srcName": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.SSHConnConfig": {
+            "type": "object",
+            "required": [
+                "host",
+                "privateKey",
+                "username"
+            ],
+            "properties": {
+                "host": {
+                    "type": "string"
+                },
+                "port": {
+                    "description": "defaults to 22",
+                    "type": "integer"
+                },
+                "privateKey": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping": {
+            "type": "object",
+            "required": [
+                "srcName"
+            ],
+            "properties": {
+                "dstName": {
+                    "type": "string"
+                },
+                "pgSchemas": {
+                    "description": "PgSchemas selects and renames PostgreSQL schemas within this database.\nEmpty migrates every schema under its own name; a non-empty list migrates\nonly the schemas it names, which makes it a selection as much as a rename.\nPostgreSQL only: the plan layer rejects it for other engines and for the\nfile system and object storage filters.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PgSchemaMapping"
+                    }
+                },
+                "srcName": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.DBColumnInfo": {
+            "type": "object",
+            "properties": {
+                "characterSet": {
+                    "description": "CharacterSet and Collation are the column's own text handling, and appear\nonly where the engine records them per column. MySQL and MariaDB fill both\nfor string columns and neither for the rest. PostgreSQL fills Collation\nalone, and only when the column declares one explicitly — a column that\ninherits the database default reports nothing, which DBMSInfo.Collation\nalready says. MongoDB fills neither: its fields are inferred by sampling.",
+                    "type": "string"
+                },
+                "collation": {
+                    "type": "string"
+                },
+                "comment": {
+                    "type": "string"
+                },
+                "dataType": {
+                    "type": "string"
+                },
+                "default": {
+                    "type": "string"
+                },
+                "isNullable": {
+                    "type": "boolean"
+                },
+                "isPrimary": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.DBIndexInfo": {
+            "type": "object",
+            "properties": {
+                "columns": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "isUnique": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.DBMSInfo": {
+            "type": "object",
+            "properties": {
+                "characterSet": {
+                    "description": "CharacterSet is the database's default character set, which on PostgreSQL\nis its encoding — the two name the same thing there. MongoDB stores UTF-8\nonly and leaves it empty.",
+                    "type": "string"
+                },
+                "collation": {
+                    "description": "Collation is the database's default collation: DEFAULT_COLLATION_NAME on\nMySQL and MariaDB, datcollate on PostgreSQL. MongoDB has no database-level\ncollation and leaves it empty.",
+                    "type": "string"
+                },
+                "ctype": {
+                    "description": "Ctype is the locale governing character classification — PostgreSQL's\ndatctype, which the engine keeps separate from the collation order. The\nother engines have no equivalent and leave it empty.",
+                    "type": "string"
+                },
+                "dataSize": {
+                    "type": "integer"
+                },
+                "database": {
+                    "type": "string"
+                },
+                "events": {
+                    "description": "MySQL / MariaDB",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "extensions": {
+                    "description": "PostgreSQL",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "foreignKeys": {
+                    "description": "Schema object inventory (name list) — populated only on metric opt-in.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "functions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "indexSize": {
+                    "type": "integer"
+                },
+                "materializedViews": {
+                    "description": "PostgreSQL",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "pgSchema": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBPgSchemaInfo"
+                    }
+                },
+                "procedures": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "rules": {
+                    "description": "PostgreSQL",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "sequences": {
+                    "description": "PostgreSQL",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "serverVersion": {
+                    "type": "string"
+                },
+                "tableCount": {
+                    "type": "integer"
+                },
+                "tables": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBTableInfo"
+                    }
+                },
+                "totalSize": {
+                    "description": "TotalSize..TableCount are the sum over the schemas the inspection covered,\nnot the size of the database as PostgreSQL reports it. PgSchema breaks them\ndown per schema and always sums back to them; a schema holding no tables is\nlisted at zero rather than omitted. PostgreSQL only.",
+                    "type": "integer"
+                },
+                "triggers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "types": {
+                    "description": "PostgreSQL",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "validators": {
+                    "description": "MongoDB",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "views": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.DBPgSchemaInfo": {
+            "type": "object",
+            "properties": {
+                "dataSize": {
+                    "type": "integer"
+                },
+                "indexSize": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "tableCount": {
+                    "type": "integer"
+                },
+                "totalSize": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.DBTableInfo": {
+            "type": "object",
+            "properties": {
+                "characterSet": {
+                    "description": "CharacterSet and Collation are the table's own text defaults, which its\ncolumns inherit unless they declare their own. PostgreSQL has no\ntable-level collation and leaves both empty; MongoDB reports the\ncollection's default collation locale in Collation and leaves CharacterSet\nempty.",
+                    "type": "string"
+                },
+                "collation": {
+                    "type": "string"
+                },
+                "columns": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBColumnInfo"
+                    }
+                },
+                "dataSize": {
+                    "type": "integer"
+                },
+                "engine": {
+                    "type": "string"
+                },
+                "indexSize": {
+                    "type": "integer"
+                },
+                "indexes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBIndexInfo"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "pgSchema": {
+                    "type": "string"
+                },
+                "rowCount": {
+                    "type": "integer"
+                },
+                "totalSize": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.FSEntry": {
+            "type": "object",
+            "properties": {
+                "fileCount": {
+                    "description": "only when FilesystemMetric.FolderFileCount",
+                    "type": "integer"
+                },
+                "fileSize": {
+                    "description": "only when FilesystemMetric.FolderFileSize",
+                    "type": "integer"
+                },
+                "isMount": {
+                    "type": "boolean"
+                },
+                "modTime": {
+                    "description": "only when FilesystemMetric.FolderModTime",
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "permissions": {
+                    "description": "only when FilesystemMetric.FolderPerms",
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.ObjectEntry": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "description": "folder prefix \"bucket/prefix/\"",
+                    "type": "string"
+                },
+                "lastModified": {
+                    "description": "only when ObjectStorageMetric.PrefixModTime",
+                    "type": "string"
+                },
+                "objectCount": {
+                    "description": "only when ObjectStorageMetric.PrefixObjectCount",
+                    "type": "integer"
+                },
+                "size": {
+                    "description": "only when ObjectStorageMetric.PrefixObjectSize",
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDBModel": {
+            "type": "object",
+            "properties": {
+                "connection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "databases": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBMSInfo"
+                    }
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDataMigrationModel": {
+            "type": "object",
+            "properties": {
+                "sourceDataMigrationModel": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDataMigrationProperty"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDataMigrationProperty": {
+            "type": "object",
+            "properties": {
+                "databases": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDBModel"
+                    }
+                },
+                "fileSystems": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceFileSystemModel"
+                    }
+                },
+                "objectStorages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceObjectStorageModel"
+                    }
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceFileSystemModel": {
+            "type": "object",
+            "properties": {
+                "connection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "extensionCounts": {
+                    "description": "only when FilesystemMetric.ExtensionCount",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                },
+                "fileCount": {
+                    "description": "only when FilesystemMetric.FileCount",
+                    "type": "integer"
+                },
+                "folders": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.FSEntry"
+                    }
+                },
+                "isMount": {
+                    "type": "boolean"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "totalSize": {
+                    "description": "only when FilesystemMetric.TotalSize",
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceObjectStorageModel": {
+            "type": "object",
+            "properties": {
+                "connection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "extensionCounts": {
+                    "description": "only when ObjectStorageMetric.ExtensionCount",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer"
+                    }
+                },
+                "folders": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.ObjectEntry"
+                    }
+                },
+                "objectCount": {
+                    "description": "only when ObjectStorageMetric.ObjectCount",
+                    "type": "integer"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "totalSize": {
+                    "description": "only when ObjectStorageMetric.TotalSize",
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_target-model.DBMigrationInfo": {
+            "type": "object",
+            "required": [
+                "dstName",
+                "srcName"
+            ],
+            "properties": {
+                "dstName": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "pgSchemas": {
+                    "description": "PgSchemas selects and renames PostgreSQL schemas within this database.\nEmpty migrates every schema under its own name. The adapter splits the\nname pairs into the two positional slices transx-ex expects.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PgSchemaMapping"
+                    }
+                },
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterRule"
+                    }
+                },
+                "srcName": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_target-model.FSMigrationInfo": {
+            "type": "object",
+            "required": [
+                "dstPath",
+                "srcPath"
+            ],
+            "properties": {
+                "dstPath": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule"
+                    }
+                },
+                "srcPath": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationDBModel": {
+            "type": "object",
+            "required": [
+                "databases",
+                "dbType",
+                "dstConnection",
+                "srcConnection"
+            ],
+            "properties": {
+                "databases": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.DBMigrationInfo"
+                    }
+                },
+                "dbType": {
+                    "enum": [
+                        "mysql",
+                        "mariadb",
+                        "postgresql",
+                        "mongodb"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSType"
+                        }
+                    ]
+                },
+                "dstConnection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "planEntryId": {
+                    "description": "PlanEntryID names this entry within the plan\n— see MigrationFileSystemModel.PlanEntryID.",
+                    "type": "string"
+                },
+                "srcConnection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationFileSystemModel": {
+            "type": "object",
+            "required": [
+                "dstConnection",
+                "srcConnection"
+            ],
+            "properties": {
+                "dstConnection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "dstType": {
+                    "description": "DstType is the destination storage type: empty/\"filesystem\" = SSH→SSH,\n\"objectstorage\" = filesystem→objectstorage cross-storage.",
+                    "type": "string",
+                    "enum": [
+                        "filesystem",
+                        "objectstorage"
+                    ]
+                },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "folders": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.FSMigrationInfo"
+                    }
+                },
+                "planEntryId": {
+                    "description": "PlanEntryID names this entry within the plan. It is what a migration log,\na validation detail and a per-entry retry refer to, so that none of them\nhas to identify an entry by its position in the array — a position is not\na name, and nothing outside the plan can hold on to one.\n\n\"entry\", not \"item\": an item is the folder, bucket or database inside one\nof these (see countPlanItems, MigrationLog.ItemPath, Migration.TotalItems),\nand a name that meant both layers at once would be worse than the index it\nreplaces. Not \"id\" either — an entry is anonymous in its own document,\nsitting in fileSystems[] with no type name beside it, so \"id\" alone would\nnot say what kind of id it is. The log field that refers to it is spelled\nthe same, which is the point: one token to search for in both documents.\n\nAssigned by POST /plans/target. A plan that arrives without one — edited,\nhand-written, issued elsewhere — is given ids by CreateMigration before it\nis stored, so a stored plan always has them.",
+                    "type": "string"
+                },
+                "srcConnection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "strategy": {
+                    "description": "Strategy is the transx transfer strategy (auto/direct/relay). It only affects\nSSH→SSH transfers; cross-storage always relays. Set by the plan layer.",
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "direct",
+                        "relay"
+                    ]
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationObjectStorageModel": {
+            "type": "object",
+            "required": [
+                "dstConnection",
+                "srcConnection"
+            ],
+            "properties": {
+                "buckets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.ObjectMigrationInfo"
+                    }
+                },
+                "dstConnection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "dstType": {
+                    "description": "DstType is the destination storage type: empty/\"objectstorage\" = S3→S3,\n\"filesystem\" = objectstorage→filesystem cross-storage.",
+                    "type": "string",
+                    "enum": [
+                        "filesystem",
+                        "objectstorage"
+                    ]
+                },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "planEntryId": {
+                    "description": "PlanEntryID names this entry within the plan\n— see MigrationFileSystemModel.PlanEntryID.",
+                    "type": "string"
+                },
+                "srcConnection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_target-model.ObjectMigrationInfo": {
+            "type": "object",
+            "required": [
+                "dstPath",
+                "srcPath"
+            ],
+            "properties": {
+                "dstPath": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule"
+                    }
+                },
+                "srcPath": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel": {
+            "type": "object",
+            "required": [
+                "targetDataMigrationModel"
+            ],
+            "properties": {
+                "targetDataMigrationModel": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationProperty"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationProperty": {
+            "type": "object",
+            "properties": {
+                "databases": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationDBModel"
+                    }
+                },
+                "fileSystems": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationFileSystemModel"
+                    }
+                },
+                "objectStorages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationObjectStorageModel"
+                    }
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any": {
+            "type": "object",
+            "properties": {
+                "data": {},
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-array_github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationSummary"
+                    }
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_dmdl_target-model_TargetDataMigrationModel": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationLog": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationLog"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_Migration": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.Migration"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_RetryResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.RetryResponse"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_SimpleMessageResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.SimpleMessageResponse"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ValidationResultResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationResultResponse"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-pkg_api_rest_controller_ReadyzResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/pkg_api_rest_controller.ReadyzResponse"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.CreateMigrationReq": {
+            "type": "object",
+            "required": [
+                "name",
+                "plan"
+            ],
+            "properties": {
+                "dbmsOnFailure": {
+                    "description": "DBMSOnFailure decides what happens to a DBMS target when one of its\ndatabase items fails. It is named for the DBMS domain because only that\ndomain has an undo step: a filesystem or object storage transfer leaves\nwhatever it had already written, with or without this field.\n\n\"cleanup\" (the default) undoes the failed item. \"keep\" leaves it in place\nfor inspection — useful when the failure is in the data rather than in the\nconnection, since cleanup destroys the evidence.\n\nCancellation is not a failure and always cleans up, whatever this says.",
+                    "type": "string",
+                    "enum": [
+                        "cleanup",
+                        "keep"
+                    ]
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "plan": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationLog": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationLog"
+                    }
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "pageSize": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationSummary"
+                    }
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "pageSize": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.Migration": {
+            "type": "object",
+            "required": [
+                "name",
+                "plan"
+            ],
+            "properties": {
+                "completedAt": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "description": "CreatedAt is indexed because it is both the list ordering key and the only\ncolumn the date filters compare against: without the index every list call\nis a full scan plus a sort.",
+                    "type": "string"
+                },
+                "currentObject": {
+                    "description": "CurrentObject is the file, object or table being moved right now — one level\nbelow ItemPath, which names the folder, bucket or database. Empty when\nnothing is in flight.",
+                    "type": "string"
+                },
+                "dbmsOnFailure": {
+                    "description": "DBMSOnFailure is carried on the record rather than only on the request\nbecause execution is asynchronous and a retry re-reads the row: the policy\nhas to outlive the call that set it. Empty means DBMSOnFailureCleanup.",
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "failedItems": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "plan": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel"
+                },
+                "processedItems": {
+                    "type": "integer"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "statusMessage": {
+                    "type": "string"
+                },
+                "totalItems": {
+                    "type": "integer"
+                },
+                "transferredBytes": {
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "validationDetails": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem"
+                    }
+                },
+                "validationMessage": {
+                    "type": "string"
+                },
+                "validationStatus": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationLog": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "durationMs": {
+                    "type": "integer"
+                },
+                "errorMsg": {
+                    "type": "string"
+                },
+                "failedObjectKind": {
+                    "description": "FailedObjectKind and FailedObjectName name the object transx-ex was\nworking on when the item failed — a table, view, routine, file or object —\nso the failure can be located without reading ErrorMsg. FailedObjectName\ncarries the enclosing database, schema or bucket when transx-ex knew it\n(\"centipede_test.v_customer_stats\").\n\nBoth stay empty when the failure was not tied to a single object: a\nconnection refused, a dump command that failed as a whole.",
+                    "type": "string"
+                },
+                "failedObjectName": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "itemPath": {
+                    "description": "ItemPath: absolute file path (SSH) | object key (ObjectStorage) | table/collection name (DBMS)",
+                    "type": "string"
+                },
+                "migrationId": {
+                    "type": "string"
+                },
+                "planEntryId": {
+                    "description": "PlanEntryID names the plan entry this item came from\n(targetmodel.Migration*Model.PlanEntryID). ItemPath alone does not identify\nit: two entries of one plan legitimately carry the same path — one source\nfanned out to two destinations, or two sources that scanned the same\ndirectory — and their log lines were indistinguishable.\n\nIt is the only thing about the entry kept here. Which host the item was\nread from, where it was written and under what rules are all in the plan,\nwhich GET /centipede/migration/{id} returns beside these logs; copying any\nof it into every row would not save the reader that lookup.\n\nNot indexed: nothing queries by it. One migration's logs are read whole, by\nthe list endpoint and by the retry that groups them in memory, so an index\nhere would only be paid for on every insert.\n\nEmpty on rows written before this field existed.",
+                    "type": "string"
+                },
+                "rollbackErrorMsg": {
+                    "type": "string"
+                },
+                "rollbackStatus": {
+                    "description": "RollbackStatus reports the cleanup that followed a failure. What it refers\nto depends on TargetCreated: emptying a database that already existed\n(false), or dropping one centipede created (true).",
+                    "type": "string"
+                },
+                "sizeBytes": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "targetCreated": {
+                    "description": "TargetCreated records that this item's target database did not exist before\nthe migration and does because of it, which is what decides whether a failure\ndropped the database or emptied it. DBMS items only.\n\nIt is not a record of who ran a DDL statement. On MongoDB nobody does: a\ndatabase begins to exist when the restore writes its first collection, and\nthe flag is true there all the same, because dropping is still what undoing\nthe item means.",
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationSummary": {
+            "type": "object",
+            "properties": {
+                "completedAt": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "currentObject": {
+                    "type": "string"
+                },
+                "dbmsOnFailure": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "failedItems": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "planSummary": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary"
+                },
+                "processedItems": {
+                    "type": "integer"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "statusMessage": {
+                    "type": "string"
+                },
+                "totalItems": {
+                    "type": "integer"
+                },
+                "transferredBytes": {
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "validationDetails": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem"
+                    }
+                },
+                "validationMessage": {
+                    "type": "string"
+                },
+                "validationStatus": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanEntry": {
+            "type": "object",
+            "required": [
+                "dstConnection",
+                "srcConnection"
+            ],
+            "properties": {
+                "dbmsFilter": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilter"
+                },
+                "dstConnection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "fileSystemFilter": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.FileSystemFilter"
+                },
+                "fileSystemStrategy": {
+                    "description": "FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)\ntasks. Empty is normalised to \"relay\" (safer default: avoids agent-forward\nsetup requirements). It has no effect on object-storage or DBMS tasks, where\nrelay is always used / not applicable.",
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "direct",
+                        "relay"
+                    ]
+                },
+                "objectStorageFilter": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ObjectStorageFilter"
+                },
+                "srcConnection": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary": {
+            "type": "object",
+            "properties": {
+                "databases": {
+                    "type": "integer"
+                },
+                "fileSystems": {
+                    "type": "integer"
+                },
+                "objectStorages": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.RetryReq": {
+            "type": "object",
+            "properties": {
+                "retryMode": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.RetryResponse": {
+            "type": "object",
+            "properties": {
+                "newMigration": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.Migration"
+                },
+                "originalMigrationId": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.SimpleMessageResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.TargetPlanReq": {
+            "type": "object",
+            "required": [
+                "plans",
+                "source"
+            ],
+            "properties": {
+                "plans": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanEntry"
+                    }
+                },
+                "source": {
+                    "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDataMigrationModel"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem": {
+            "type": "object",
+            "properties": {
+                "itemPath": {
+                    "description": "ItemPath: file path | object key | DBMS target\n(\"{database}/{table}\", \"{database}/{table}.{column}\", \"{database}/{kind}:{name}\").",
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "planEntryId": {
+                    "description": "PlanEntryID names the plan entry this detail is about, the same id\nMigrationLog carries. Without it a plan of several entries reports every\none of them under the same ItemPath — \"filesystem\" for a whole entry that\ncould not be resolved — and nothing says which.",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "Status: \"passed\" | \"failed\" | \"warning\". A warning is reported but does not\nfail the validation — a character-set difference can be a managed service\nimposing its own default.",
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationResultResponse": {
+            "type": "object",
+            "properties": {
+                "details": {
+                    "description": "list of failed items",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem"
+                    }
+                },
+                "validationMessage": {
+                    "type": "string"
+                },
+                "validationStatus": {
+                    "description": "\"passed\" | \"failed\" | \"not_run\" | \"running\"",
+                    "type": "string"
+                }
+            }
+        },
+        "pkg_api_rest_controller.ReadyzResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BasicAuth": {
+            "type": "basic"
+        }
+    }
+}

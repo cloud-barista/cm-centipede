@@ -1,0 +1,25 @@
+[Unit]
+Description=Matrix Source Initialization (buckets + seed objects)
+After=network.target minio.service
+Requires=minio.service
+
+[Service]
+Type=oneshot
+# Type=oneshot with RemainAfterExit=yes leaves the unit "active" once init.sh has
+# returned, which makes `systemctl is-active matrix-init.service` a single signal
+# meaning "MinIO is up, the buckets exist and every seed object is uploaded".
+# That is what lib/source.sh polls, instead of probing MinIO itself.
+#
+# pipefail so a failure inside init.sh is not masked by tee and propagates to the
+# unit, which is then "failed" rather than "active" - a run that waits on this
+# gets the truth.
+ExecStart=/bin/bash -c 'set -o pipefail; /opt/matrix/init.sh 2>&1 | tee -a /var/log/matrix-init.log'
+RemainAfterExit=yes
+TimeoutStartSec=600
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=matrix-init
+
+[Install]
+WantedBy=multi-user.target

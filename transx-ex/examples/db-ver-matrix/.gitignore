@@ -1,0 +1,14 @@
+# Local config copied from db-ver-matrix.env.example (the template stays tracked)
+db-ver-matrix.env
+
+# Built runner binary (the scripts run: go build -o runner .)
+/runner/runner
+
+# Per-engine config and result the scripts hand to the runner
+/.run/
+
+# SSH key pair generated for MODE=ssh
+/.matrix-ssh/
+
+# Run logs and the result matrix
+/logs/

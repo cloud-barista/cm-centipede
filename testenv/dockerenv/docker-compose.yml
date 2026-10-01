@@ -1,0 +1,229 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# cm-centipede migration test environment (role-split, 12 containers)
+#
+# Roles are split per container so the whole set runs at once without port conflicts.
+#   - filesystem  : source / target        (SSH only)
+#   - minio       : source / target        (SSH + MinIO)
+#   - database     : mariadb/mysql/postgresql/mongodb × source/target (SSH + DB)
+#
+# Use dockerenv-up.sh / dockerenv-down.sh to start and stop the environment.
+#   ./dockerenv-up.sh    # build -> up --wait -> inject SSH keys -> print connection info
+#   ./dockerenv-down.sh  # stop everything
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Settings shared by every container (privileged/cgroup/tmpfs, required to run systemd)
+x-testenv-common: &testenv-common
+  privileged: true
+  cgroup: host
+  stop_signal: SIGRTMIN+3
+  restart: "no"
+  environment:
+    TZ: Asia/Seoul
+  tmpfs:
+    - /run
+    - /tmp:exec
+  volumes:
+    - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+# Healthy is decided by whether role initialization (testenv-init.service) finished
+x-testenv-healthcheck: &testenv-healthcheck
+  test: ["CMD-SHELL", "systemctl is-active testenv-init.service"]
+  interval: 5s
+  timeout: 5s
+  retries: 120
+  start_period: 15s
+
+services:
+  # ── filesystem ──────────────────────────────────────────────────────────────
+  fs-source:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.filesystem
+      args:
+        ROLE: source
+    image: centipede-testenv-fs-source
+    container_name: centipede-testenv-fs-source
+    hostname: fs-source
+    ports:
+      - "32210:22"
+    healthcheck: *testenv-healthcheck
+
+  fs-target:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.filesystem
+      args:
+        ROLE: target
+    image: centipede-testenv-fs-target
+    container_name: centipede-testenv-fs-target
+    hostname: fs-target
+    ports:
+      - "32211:22"
+    healthcheck: *testenv-healthcheck
+
+  # ── minio ─────────────────────────────────────────────────────────────────
+  minio-source:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.minio
+      args:
+        ROLE: source
+    image: centipede-testenv-minio-source
+    container_name: centipede-testenv-minio-source
+    hostname: minio-source
+    ports:
+      - "32220:22"
+      - "39000:9000"
+      - "39001:9001"
+    healthcheck: *testenv-healthcheck
+
+  minio-target:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.minio
+      args:
+        ROLE: target
+    image: centipede-testenv-minio-target
+    container_name: centipede-testenv-minio-target
+    hostname: minio-target
+    ports:
+      - "32221:22"
+      - "39010:9000"
+      - "39011:9001"
+    healthcheck: *testenv-healthcheck
+
+  # ── MariaDB ─────────────────────────────────────────────────────────────────
+  mariadb-source:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.mariadb
+      args:
+        ROLE: source
+        DB_VERSION: ${MARIADB_VERSION:-10.6}
+    image: centipede-testenv-mariadb-source
+    container_name: centipede-testenv-mariadb-source
+    hostname: mariadb-source
+    ports:
+      - "32230:22"
+      - "33306:3306"
+    healthcheck: *testenv-healthcheck
+
+  mariadb-target:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.mariadb
+      args:
+        ROLE: target
+        DB_VERSION: ${MARIADB_VERSION:-10.6}
+    image: centipede-testenv-mariadb-target
+    container_name: centipede-testenv-mariadb-target
+    hostname: mariadb-target
+    ports:
+      - "32231:22"
+      - "33307:3306"
+    healthcheck: *testenv-healthcheck
+
+  # ── MySQL ─────────────────────────────────────────────────────────────────
+  mysql-source:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.mysql
+      args:
+        ROLE: source
+        DB_VERSION: ${MYSQL_VERSION:-8.0}
+    image: centipede-testenv-mysql-source
+    container_name: centipede-testenv-mysql-source
+    hostname: mysql-source
+    ports:
+      - "32240:22"
+      - "33406:3306"
+    healthcheck: *testenv-healthcheck
+
+  mysql-target:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.mysql
+      args:
+        ROLE: target
+        DB_VERSION: ${MYSQL_VERSION:-8.0}
+    image: centipede-testenv-mysql-target
+    container_name: centipede-testenv-mysql-target
+    hostname: mysql-target
+    ports:
+      - "32241:22"
+      - "33407:3306"
+    healthcheck: *testenv-healthcheck
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgresql-source:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.postgresql
+      args:
+        ROLE: source
+        DB_VERSION: ${POSTGRESQL_VERSION:-14}
+    image: centipede-testenv-postgresql-source
+    container_name: centipede-testenv-postgresql-source
+    hostname: postgresql-source
+    ports:
+      - "32250:22"
+      - "35432:5432"
+    healthcheck: *testenv-healthcheck
+
+  postgresql-target:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.postgresql
+      args:
+        ROLE: target
+        DB_VERSION: ${POSTGRESQL_VERSION:-14}
+    image: centipede-testenv-postgresql-target
+    container_name: centipede-testenv-postgresql-target
+    hostname: postgresql-target
+    ports:
+      - "32251:22"
+      - "35433:5432"
+    healthcheck: *testenv-healthcheck
+
+  # ── MongoDB ─────────────────────────────────────────────────────────────────
+  mongodb-source:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.mongodb
+      args:
+        ROLE: source
+        DB_VERSION: ${MONGODB_VERSION:-7.0}
+    image: centipede-testenv-mongodb-source
+    container_name: centipede-testenv-mongodb-source
+    hostname: mongodb-source
+    ports:
+      - "32260:22"
+      - "37017:27017"
+    healthcheck: *testenv-healthcheck
+
+  mongodb-target:
+    <<: *testenv-common
+    build:
+      context: .
+      dockerfile: compose/Dockerfile.mongodb
+      args:
+        ROLE: target
+        DB_VERSION: ${MONGODB_VERSION:-7.0}
+    image: centipede-testenv-mongodb-target
+    container_name: centipede-testenv-mongodb-target
+    hostname: mongodb-target
+    ports:
+      - "32261:22"
+      - "37018:27017"
+    healthcheck: *testenv-healthcheck

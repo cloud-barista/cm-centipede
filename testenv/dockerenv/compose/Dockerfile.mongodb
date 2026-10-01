@@ -1,0 +1,75 @@
+FROM ubuntu:22.04
+
+# ROLE=source -> load shop_db/hr_db / ROLE=target -> create empty databases only
+ARG ROLE=source
+ARG DB_VERSION=7.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+# ── Install base packages ─────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y \
+    systemd \
+    systemd-sysv \
+    dbus \
+    gnupg \
+    openssh-server \
+    curl \
+    wget \
+    openssl \
+    rsync \
+    sudo \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Remove systemd units unnecessary in a container ───────────────────────────
+RUN find /etc/systemd/system /lib/systemd/system \
+    -path '*.wants/*' \( \
+    -name '*getty*' -o \
+    -name '*plymouth*' -o \
+    -name '*apt-daily*' -o \
+    -name 'systemd-timesyncd*' -o \
+    -name '*udev*' \
+    \) -exec rm -f {} \; 2>/dev/null || true
+
+# ── Add the official MongoDB repository + install (6.0, 7.0, 8.0) ─────────────
+RUN curl -fsSL https://www.mongodb.org/static/pgp/server-${DB_VERSION}.asc \
+        | gpg -o /usr/share/keyrings/mongodb-server-${DB_VERSION}.gpg --dearmor \
+    && echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-${DB_VERSION}.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/${DB_VERSION} multiverse" \
+        > /etc/apt/sources.list.d/mongodb-org-${DB_VERSION}.list \
+    && apt-get update && apt-get install -y mongodb-org \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── MongoDB config: allow remote access + enable authorization ────────────────
+RUN sed -i 's/bindIp: 127.0.0.1/bindIp: 0.0.0.0/' /etc/mongod.conf \
+    && printf '\nsecurity:\n  authorization: enabled\n' >> /etc/mongod.conf
+
+# ── Copy resources + pick the role-specific init.sh ───────────────────────────
+COPY sql/      /opt/testenv/sql/
+COPY scripts/  /opt/testenv/scripts/
+COPY services/testenv-init.service /etc/systemd/system/testenv-init.service
+
+RUN chmod +x /opt/testenv/scripts/*.sh \
+    && if [ "$ROLE" = "source" ]; then \
+         cp /opt/testenv/scripts/01-setup-mongodb.sh /opt/testenv/init.sh; \
+       else \
+         cp /opt/testenv/scripts/target-db-mongodb.sh /opt/testenv/init.sh; \
+       fi \
+    && chmod +x /opt/testenv/init.sh
+
+# ── SSH setup: create the centipede user + allow password auth ────────────────
+RUN mkdir -p /var/run/sshd \
+    && useradd -m -s /bin/bash centipede \
+    && echo 'centipede:centipede_pass' | chpasswd \
+    && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && echo 'root:testpass123' | chpasswd \
+    && echo 'root ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/root-nopasswd \
+    && chmod 0440 /etc/sudoers.d/root-nopasswd
+
+# ── Enable systemd services ───────────────────────────────────────────────────
+RUN systemctl enable mongod.service testenv-init.service ssh.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd", "--system"]

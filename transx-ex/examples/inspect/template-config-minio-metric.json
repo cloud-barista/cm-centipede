@@ -1,0 +1,32 @@
+{
+  "storageType": "objectstorage",
+  "path": "YOUR_BUCKET_NAME/sample/",
+  "objectStorage": {
+    "accessType": "minio",
+    "minio": {
+      "endpoint": "s3.YOUR_REGION.amazonaws.com",
+      "accessKeyId": "YOUR_ACCESS_KEY_ID",
+      "secretAccessKey": "YOUR_SECRET_ACCESS_KEY",
+      "region": "YOUR_REGION",
+      "useSSL": true
+    }
+  },
+  "filter": {
+    "maxDepth": 0,
+    "rules": [
+      { "action": "exclude", "type": "glob", "pattern": "tmp" },
+      { "action": "exclude", "type": "glob", "pattern": "temp" },
+      { "action": "exclude", "type": "glob", "pattern": "backup" }
+    ]
+  },
+  "metric": {
+    "objectStorage": {
+      "totalSize": true,
+      "objectCount": true,
+      "extensionCount": true,
+      "prefixModTime": true,
+      "prefixObjectCount": true,
+      "prefixObjectSize": true
+    }
+  }
+}

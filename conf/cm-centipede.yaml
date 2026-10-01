@@ -1,0 +1,54 @@
+centipede:
+  self:
+    endpoint: localhost:8085
+  honeybee:
+    endpoint: http://localhost:8081
+    privateKeyPath: ~/.cm-honeybee/honeybee.key
+  beetle:
+    endpoint: http://localhost:8056
+    username: default
+    password: default
+  tumblebug:
+    # Object storage transfers only (transx-ex reaches managed buckets through
+    # cb-tumblebug). Not selectable as a connection source.
+    #
+    # Host and port only, like the beetle endpoint above: cm-centipede appends
+    # cb-tumblebug's "/tumblebug" route prefix itself, the same way the beetle
+    # client appends "/beetle". An endpoint that already carries the prefix is
+    # left unchanged.
+    endpoint: http://localhost:1323
+    username: default
+    password: default
+  api:
+    allow:
+      origins: "*"
+    auth:
+      enabled: true
+      mode: basic
+    username: default
+    password: default
+    rateLimit: 20
+  db:
+    path: ./db/cm-centipede.db
+  encryption:
+    # Passphrase the connection credentials are encrypted with. Required: the
+    # server will not start without it. Any passphrase of 12+ characters; it is
+    # stretched into an AES-256 key with scrypt and a salt generated per
+    # database, so it never has to be a particular length or encoding.
+    #
+    # Change this before running anything you care about, and then keep it:
+    # losing or changing the value makes every stored credential unrecoverable.
+    # Override with CENTIPEDE_ENCRYPTION_SECRET_KEY.
+    secretKey: secret-key-change-me
+  logfile:
+    path: ./log/cm-centipede.log
+    maxsize: 1000
+    maxbackups: 3
+    maxage: 30
+  # trace | debug | info | warn | error | fatal.
+  # Note that "trace" and "debug" also switch GORM to its Info level, which
+  # prints every SQL statement to stdout; keep "info" unless that is wanted.
+  loglevel: info
+  logwriter: both
+  node:
+    env: development

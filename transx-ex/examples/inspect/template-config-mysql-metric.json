@@ -1,0 +1,24 @@
+{
+  "dbmsType": "mysql",
+  "database": "YOUR_DATABASE",
+  "accessType": "direct",
+  "direct": {
+    "host": "YOUR_HOST",
+    "port": 3306,
+    "username": "YOUR_USERNAME",
+    "password": "YOUR_PASSWORD"
+  },
+  "metric": {
+    "mysql": {
+      "rowCountExact": true,
+      "columns": true,
+      "indexes": true,
+      "foreignKeys": true,
+      "views": true,
+      "functions": true,
+      "procedures": true,
+      "triggers": true,
+      "events": true
+    }
+  }
+}

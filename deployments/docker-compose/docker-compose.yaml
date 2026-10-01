@@ -42,6 +42,10 @@ services:
   #     - CENTIPEDE_SELF_ENDPOINT=localhost:8057
   #     - CENTIPEDE_API_USERNAME=${CENTIPEDE_API_USERNAME:?Please set CENTIPEDE_API_USERNAME}
   #     - CENTIPEDE_API_PASSWORD=${CENTIPEDE_API_PASSWORD:?Please set CENTIPEDE_API_PASSWORD}
+  #     # Passphrase the stored connection credentials are encrypted with. Keep
+  #     # it together with the db/ volume above: losing or changing either one
+  #     # makes every stored credential unrecoverable.
+  #     - CENTIPEDE_ENCRYPTION_SECRET_KEY=${CENTIPEDE_ENCRYPTION_SECRET_KEY:?Please set CENTIPEDE_ENCRYPTION_SECRET_KEY}
   #     - CENTIPEDE_TUMBLEBUG_ENDPOINT=http://cb-tumblebug:1323
   #     - CENTIPEDE_BEETLE_ENDPOINT=http://cm-beetle:8056
   #     - CENTIPEDE_HONEYBEE_ENDPOINT=http://cm-honeybee:8081

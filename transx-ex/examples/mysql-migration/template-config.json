@@ -1,0 +1,26 @@
+{
+  "source": {
+    "dbmsType": "mysql",
+    "database": "YOUR_SOURCE_DATABASE",
+    "accessType": "direct",
+    "direct": {
+      "host": "YOUR_SOURCE_HOST",
+      "port": 3306,
+      "username": "YOUR_USERNAME",
+      "password": "YOUR_PASSWORD"
+    }
+  },
+  "destination": {
+    "dbmsType": "mysql",
+    "database": "YOUR_TARGET_DATABASE",
+    "accessType": "direct",
+    "direct": {
+      "host": "YOUR_TARGET_HOST",
+      "port": 3307,
+      "username": "YOUR_USERNAME",
+      "password": "YOUR_PASSWORD"
+    }
+  },
+  "scope": "full",
+  "rollbackOnFailure": true
+}

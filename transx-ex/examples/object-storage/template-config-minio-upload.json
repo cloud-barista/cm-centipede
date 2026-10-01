@@ -1,0 +1,24 @@
+{
+  "source": {
+    "storageType": "filesystem",
+    "path": "/tmp/transx-test-data/",
+    "filesystem": {
+      "accessType": "local"
+    }
+  },
+  "destination": {
+    "storageType": "objectstorage",
+    "path": "YOUR_BUCKET_NAME/backup/",
+    "objectStorage": {
+      "accessType": "minio",
+      "minio": {
+        "endpoint": "s3.YOUR_REGION.amazonaws.com",
+        "accessKeyId": "YOUR_ACCESS_KEY_ID",
+        "secretAccessKey": "YOUR_SECRET_ACCESS_KEY",
+        "region": "YOUR_REGION",
+        "useSSL": true
+      }
+    }
+  },
+  "strategy": "auto"
+}

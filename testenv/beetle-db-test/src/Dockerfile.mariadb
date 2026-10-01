@@ -1,0 +1,79 @@
+# Matrix source image - MariaDB on Ubuntu 22.04 with systemd.
+#
+# Why systemd rather than the official mariadb image: the container has to look
+# like a machine, not a process. `systemctl` works, sshd is a unit, and the
+# database is a service that starts at boot - which is what an on-premises source
+# is, and what anything deployed onto it later expects to find.
+#
+# The row axis of the matrix is DB_VERSION, resolved by mariadb_repo_setup.
+# Only versions that script serves for jammy can be built (10.6, 10.11, 11.4,
+# 11.8), and a version outside that fails here, at build time.
+#
+# Readiness is one signal: matrix-init.service reaching "active" means the server
+# is up, the account exists and the seed is loaded.
+#
+# Requires --privileged, --cgroupns=host and /sys/fs/cgroup mounted rw.
+# Local testing only, never production.
+FROM ubuntu:22.04
+
+ARG DB_VERSION=10.6
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus \
+        openssh-server sudo ca-certificates curl wget gnupg lsb-release \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsS https://r.mariadb.com/downloads/mariadb_repo_setup \
+        | bash -s -- --mariadb-server-version="mariadb-${DB_VERSION}" \
+    && apt-get update && apt-get install -y mariadb-server \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Units that make no sense in a container: they slow the boot and clutter the
+# log, and a failed one keeps the boot from settling.
+RUN find /etc/systemd/system /lib/systemd/system \
+    -path '*.wants/*' \( \
+    -name '*getty*' -o -name '*plymouth*' -o -name '*apt-daily*' -o \
+    -name 'systemd-timesyncd*' -o -name '*udev*' \
+    \) -exec rm -f {} \; 2>/dev/null || true
+
+# Remote access, and utf8mb4 on both ends. The seed holds 4-byte UTF-8 (emoji),
+# which a utf8mb3 client connection rejects with ERROR 1366.
+#
+# The packaged bind-address is commented out rather than just overridden.
+# /etc/mysql/my.cnf includes conf.d/ first and mariadb.conf.d/ second, and the
+# last value read wins - so mariadb.conf.d/50-server.cnf's
+# bind-address = 127.0.0.1 beats anything written here, the server listens on
+# loopback only, and the published port refuses every connection while
+# matrix-init still reports active. Removing the competing lines settles it
+# regardless of which directory a future package writes into.
+RUN printf '[mysqld]\nbind-address = 0.0.0.0\nevent_scheduler = ON\ncharacter-set-server = utf8mb4\ncollation-server = utf8mb4_unicode_ci\n\n[client]\ndefault-character-set = utf8mb4\n\n[mysql]\ndefault-character-set = utf8mb4\n' \
+        > /etc/mysql/conf.d/99-matrix.cnf \
+    && find /etc/mysql -name '*.cnf' ! -name '99-matrix.cnf' -exec \
+        sed -i -E 's/^([[:space:]]*(mysqlx-)?bind-address[[:space:]]*=)/#\1/' {} + \
+    && mariadbd --verbose --help 2>/dev/null \
+        | awk '$1 == "bind-address" { print $2; exit }' | grep -qx '0.0.0.0'
+
+COPY sql/                          /opt/matrix/sql/
+COPY scripts/                      /opt/matrix/scripts/
+COPY services/matrix-init.service  /etc/systemd/system/matrix-init.service
+
+RUN printf 'SRC_DB=matrix_db\nDB_ROOT_PASS=testpass123\nSRC_DB_USER=centipede\nSRC_DB_PASS=centipede_pass\nMARIADB_SRC_CHARSET=utf8mb4\nMARIADB_SRC_COLLATION=utf8mb4_general_ci\n' \
+        > /opt/matrix/defaults.env \
+    && chmod +x /opt/matrix/scripts/*.sh \
+    && cp /opt/matrix/scripts/init-mariadb.sh /opt/matrix/init.sh \
+    && chmod +x /opt/matrix/init.sh
+
+RUN mkdir -p /var/run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && echo 'root:testpass123' | chpasswd \
+    && echo 'root ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/root-nopasswd \
+    && chmod 0440 /etc/sudoers.d/root-nopasswd
+
+RUN systemctl enable mariadb.service matrix-init.service ssh.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd", "--system"]

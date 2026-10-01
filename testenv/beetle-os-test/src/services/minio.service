@@ -1,0 +1,33 @@
+[Unit]
+Description=MinIO Object Storage Server
+After=network.target
+Documentation=https://min.io/docs/minio/linux/index.html
+
+[Service]
+Type=notify
+User=root
+Group=root
+
+# The root account is baked in rather than read from /opt/matrix/matrix.env,
+# because systemd reads a unit's Environment= at unit-load time and the init
+# script has to agree with whatever the server was actually started with. The
+# same two values are written into defaults.env, and scripts/lib/source.sh
+# refuses to start a container whose .env asks for different ones.
+Environment="MINIO_ROOT_USER=minioadmin"
+Environment="MINIO_ROOT_PASSWORD=minioadmin123"
+Environment="MINIO_VOLUMES=/data/minio"
+Environment="MINIO_OPTS=--console-address :9001"
+
+ExecStartPre=/bin/mkdir -p /data/minio
+ExecStart=/usr/local/bin/minio server $MINIO_VOLUMES $MINIO_OPTS
+
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minio
+
+[Install]
+WantedBy=multi-user.target

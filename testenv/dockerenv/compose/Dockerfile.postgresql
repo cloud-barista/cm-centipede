@@ -1,0 +1,78 @@
+FROM ubuntu:22.04
+
+# ROLE=source -> load shop_db/hr_db / ROLE=target -> create empty databases only
+ARG ROLE=source
+ARG DB_VERSION=14
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+# ── Install base packages ─────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y \
+    systemd \
+    systemd-sysv \
+    dbus \
+    gnupg \
+    openssh-server \
+    curl \
+    wget \
+    openssl \
+    rsync \
+    sudo \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Add the official PostgreSQL repository (PGDG) + install (13-17) ───────────
+RUN install -d /usr/share/keyrings \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt jammy-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y postgresql-${DB_VERSION} \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Remove systemd units unnecessary in a container ───────────────────────────
+RUN find /etc/systemd/system /lib/systemd/system \
+    -path '*.wants/*' \( \
+    -name '*getty*' -o \
+    -name '*plymouth*' -o \
+    -name '*apt-daily*' -o \
+    -name 'systemd-timesyncd*' -o \
+    -name '*udev*' \
+    \) -exec rm -f {} \; 2>/dev/null || true
+
+# ── PostgreSQL config: allow remote access ────────────────────────────────────
+RUN PG_DIR=$(find /etc/postgresql -name postgresql.conf | head -1 | xargs dirname) \
+    && sed -i "s/#\?listen_addresses\s*=\s*'localhost'/listen_addresses = '*'/" \
+        "${PG_DIR}/postgresql.conf" \
+    && echo "host all all 0.0.0.0/0 md5" >> "${PG_DIR}/pg_hba.conf"
+
+# ── Copy resources + pick the role-specific init.sh ───────────────────────────
+COPY sql/      /opt/testenv/sql/
+COPY scripts/  /opt/testenv/scripts/
+COPY services/testenv-init.service /etc/systemd/system/testenv-init.service
+
+RUN chmod +x /opt/testenv/scripts/*.sh \
+    && if [ "$ROLE" = "source" ]; then \
+         cp /opt/testenv/scripts/01-setup-postgresql.sh /opt/testenv/init.sh; \
+       else \
+         cp /opt/testenv/scripts/target-db-postgresql.sh /opt/testenv/init.sh; \
+       fi \
+    && chmod +x /opt/testenv/init.sh
+
+# ── SSH setup: create the centipede user + allow password auth ────────────────
+RUN mkdir -p /var/run/sshd \
+    && useradd -m -s /bin/bash centipede \
+    && echo 'centipede:centipede_pass' | chpasswd \
+    && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && echo 'root:testpass123' | chpasswd \
+    && echo 'root ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/root-nopasswd \
+    && chmod 0440 /etc/sudoers.d/root-nopasswd
+
+# ── Enable systemd services ───────────────────────────────────────────────────
+RUN systemctl enable postgresql.service testenv-init.service ssh.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd", "--system"]

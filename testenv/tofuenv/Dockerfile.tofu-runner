@@ -1,0 +1,24 @@
+# OpenTofu runner (a long-lived container)
+#   Ships tofu, curl, jq, git, openssh-client and bash.
+#   scripts/*.sh run their tofu commands in this container through docker exec.
+FROM debian:12-slim
+
+# Override the version at build time if needed: --build-arg TOFU_VERSION=1.9.1
+ARG TOFU_VERSION=1.9.1
+ARG TARGETARCH=amd64
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl unzip ca-certificates bash jq git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install OpenTofu by extracting just the tofu binary from the release zip.
+RUN curl -fsSL "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_${TARGETARCH}.zip" -o /tmp/tofu.zip \
+    && unzip -o /tmp/tofu.zip tofu -d /usr/local/bin \
+    && chmod +x /usr/local/bin/tofu \
+    && rm /tmp/tofu.zip \
+    && tofu version
+
+# Provider plugin cache, reused across modules to speed up init.
+ENV TF_PLUGIN_CACHE_DIR=/work/.tofu-plugin-cache
+
+WORKDIR /work

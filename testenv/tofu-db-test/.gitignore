@@ -1,0 +1,26 @@
+# Credentials and state - never committed.
+.env
+.env.bak
+init/openbao/secrets/
+
+# OpenBao storage
+container-volume/
+
+# tofu state and working files.
+#   State holds the managed-DB master password in plaintext - that is inherent to
+#   Terraform/OpenTofu state, not a choice this folder made. Treat the directory
+#   as sensitive.
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/terraform.tfstate.backup
+**/matrix.auto.tfvars.json
+.tofu-plugin-cache/
+
+# The SSH key pair generated for MODE=ssh.
+.matrix-ssh/
+
+# Run output - the directory itself is kept (logs/.gitkeep)
+logs/*.log
+logs/*.json

@@ -1,0 +1,26 @@
+[Unit]
+Description=Matrix Source Initialization (accounts + seed)
+# One unit file is shared by all four engines. An After= on a unit that does not
+# exist in this image is ignored, so the list can name every engine service.
+After=network.target mysql.service mariadb.service postgresql.service mongod.service
+
+[Service]
+Type=oneshot
+# Type=oneshot with RemainAfterExit=yes leaves the unit "active" once init.sh has
+# returned, which makes `systemctl is-active matrix-init.service` a single signal
+# meaning "the server is up, the account exists and the seed is loaded". That is
+# what lib/source.sh polls, instead of probing the database itself.
+#
+# pipefail so a failure inside init.sh is not masked by tee and propagates to the
+# unit, which is then "failed" rather than "active" - a cell that waits on this
+# gets the truth.
+ExecStart=/bin/bash -c 'set -o pipefail; /opt/matrix/init.sh 2>&1 | tee -a /var/log/matrix-init.log'
+RemainAfterExit=yes
+TimeoutStartSec=600
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=matrix-init
+
+[Install]
+WantedBy=multi-user.target

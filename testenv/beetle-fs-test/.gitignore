@@ -1,0 +1,11 @@
+# Credentials - never committed.
+#   The SSH key pair this folder generates lives under logs/ and in the run's
+#   temporary directory, not here, but .env carries endpoints, the namespace and
+#   the CSP regions - worth keeping to yourself. chmod 600.
+.env
+.env.bak
+
+# Run output. The directory is created at run time (fs-matrix.sh mkdir -p's it
+# outside the NO_LOG check, because the result JSON is written there either way),
+# so there is nothing to keep in git.
+logs/

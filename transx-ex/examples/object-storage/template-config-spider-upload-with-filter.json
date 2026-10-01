@@ -1,0 +1,26 @@
+{
+  "source": {
+    "storageType": "filesystem",
+    "path": "/tmp/transx-test-data/",
+    "filesystem": {
+      "accessType": "local"
+    },
+    "filter": {
+      "include": ["data/**", "docs/**", "*.md"],
+      "exclude": ["logs/**", "temp/**", "node_modules/**", "backup/**", "*.tmp", "*.log"]
+    }
+  },
+  "destination": {
+    "storageType": "objectstorage",
+    "path": "YOUR_BUCKET_NAME/",
+    "objectStorage": {
+      "accessType": "spider",
+      "spider": {
+        "endpoint": "http://localhost:1024/spider",
+        "connectionName": "YOUR_CONNECTION_NAME",
+        "expires": 3600
+      }
+    }
+  },
+  "strategy": "auto"
+}

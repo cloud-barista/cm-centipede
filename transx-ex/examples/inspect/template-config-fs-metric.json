@@ -1,0 +1,30 @@
+{
+  "storageType": "filesystem",
+  "path": "/home/YOUR_USERNAME/data",
+  "filesystem": {
+    "accessType": "ssh",
+    "ssh": {
+      "host": "YOUR_HOST",
+      "port": 22,
+      "username": "YOUR_USERNAME",
+      "privateKeyPath": "/home/YOUR_LOCAL_USERNAME/.ssh/id_rsa"
+    }
+  },
+  "filter": {
+    "maxDepth": 0,
+    "rules": [
+      { "action": "exclude", "type": "glob", "pattern": "tmp" },
+      { "action": "exclude", "type": "glob", "pattern": "temp" },
+      { "action": "exclude", "type": "glob", "pattern": "logs" }
+    ]
+  },
+  "metric": {
+    "filesystem": {
+      "totalSize": true,
+      "fileCount": true,
+      "extensionCount": true,
+      "folderFileCount": true,
+      "folderFileSize": true
+    }
+  }
+}

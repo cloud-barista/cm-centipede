@@ -1,0 +1,58 @@
+FROM ubuntu:22.04
+
+# ROLE=source -> fully populated /testdata / ROLE=target -> empty /testdata
+ARG ROLE=source
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+# ── Install base packages (SSH + rsync + openssl) ─────────────────────────────
+RUN apt-get update && apt-get install -y \
+    systemd \
+    systemd-sysv \
+    dbus \
+    openssh-server \
+    curl \
+    openssl \
+    rsync \
+    sudo \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Remove systemd units unnecessary in a container ───────────────────────────
+RUN find /etc/systemd/system /lib/systemd/system \
+    -path '*.wants/*' \( \
+    -name '*getty*' -o \
+    -name '*plymouth*' -o \
+    -name '*apt-daily*' -o \
+    -name 'systemd-timesyncd*' -o \
+    -name '*udev*' \
+    \) -exec rm -f {} \; 2>/dev/null || true
+
+# ── Copy resources + pick the role-specific init.sh ───────────────────────────
+COPY scripts/  /opt/testenv/scripts/
+COPY services/testenv-init.service /etc/systemd/system/testenv-init.service
+
+RUN chmod +x /opt/testenv/scripts/*.sh \
+    && if [ "$ROLE" = "source" ]; then \
+         cp /opt/testenv/scripts/03-setup-filesystem.sh /opt/testenv/init.sh; \
+       else \
+         cp /opt/testenv/scripts/target-fs.sh           /opt/testenv/init.sh; \
+       fi \
+    && chmod +x /opt/testenv/init.sh
+
+# ── SSH setup: create the centipede user + allow password auth ────────────────
+RUN mkdir -p /var/run/sshd \
+    && useradd -m -s /bin/bash centipede \
+    && echo 'centipede:centipede_pass' | chpasswd \
+    && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && echo 'root:testpass123' | chpasswd \
+    && echo 'root ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/root-nopasswd \
+    && chmod 0440 /etc/sudoers.d/root-nopasswd
+
+# ── Enable systemd services ───────────────────────────────────────────────────
+RUN systemctl enable testenv-init.service ssh.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd", "--system"]

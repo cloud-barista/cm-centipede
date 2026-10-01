@@ -1,0 +1,28 @@
+{
+  "source": {
+    "storageType": "objectstorage",
+    "path": "YOUR_BUCKET_NAME/backup/",
+    "objectStorage": {
+      "accessType": "minio",
+      "minio": {
+        "endpoint": "s3.YOUR_REGION.amazonaws.com",
+        "accessKeyId": "YOUR_ACCESS_KEY_ID",
+        "secretAccessKey": "YOUR_SECRET_ACCESS_KEY",
+        "region": "YOUR_REGION",
+        "useSSL": true
+      }
+    },
+    "filter": {
+      "include": ["*.csv", "*.json", "*.md"],
+      "exclude": ["*.tmp", "*.log"]
+    }
+  },
+  "destination": {
+    "storageType": "filesystem",
+    "path": "/tmp/transx-download/",
+    "filesystem": {
+      "accessType": "local"
+    }
+  },
+  "strategy": "auto"
+}

@@ -1,0 +1,11 @@
+# The RDBMS admin password lives here.
+.env
+
+# Recommendation payloads recorded per provision. No secrets, but they name the
+# resources of whoever ran it.
+state/
+
+# VM private keys written by conn-info.sh --ssh. cb-tumblebug generates the key
+# pair and hands the private half over only on request, so a file here is the
+# only copy outside tumblebug. Kept out of state/, which holds no secrets.
+keys/

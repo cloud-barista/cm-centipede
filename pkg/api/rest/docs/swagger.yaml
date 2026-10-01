@@ -1,0 +1,1764 @@
+basePath: /
+definitions:
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleDBRef:
+    properties:
+      nsId:
+        type: string
+      password:
+        description: AES-encrypted on store
+        type: string
+      rdbmsId:
+        type: string
+      tlsCAPem:
+        description: |-
+          TLSCAPEM is the PEM root that verify-ca and verify-full check against.
+          Empty means the system trust store, which carries only publicly trusted
+          CAs — and managed RDBMS services commonly sign with their own, so those two
+          modes usually need the CSP's root supplied here.
+        type: string
+      tlsMode:
+        description: |-
+          TLSMode selects transport security; the empty value is "disable". It means
+          the same thing here as on DBConnConfig — see the table in transx-ex's
+          dbmsx/driver/base/tls.go.
+        enum:
+        - disable
+        - prefer
+        - require
+        - verify-ca
+        - verify-full
+        type: string
+      username:
+        description: defaults to the looked-up AdminUsername
+        type: string
+    required:
+    - nsId
+    - password
+    - rdbmsId
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleOSRef:
+    properties:
+      nsId:
+        type: string
+      osId:
+        type: string
+    required:
+    - nsId
+    - osId
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleSSHRef:
+    properties:
+      infraId:
+        type: string
+      nodeId:
+        type: string
+      nsId:
+        type: string
+    required:
+    - infraId
+    - nodeId
+    - nsId
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef:
+    properties:
+      beetleDb:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleDBRef'
+      beetleObjectStorage:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleOSRef'
+      beetleSsh:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleSSHRef'
+      db:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBConnConfig'
+      honeybee:
+        allOf:
+        - $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.HoneybeeRef'
+        description: Reference types
+      minio:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.MinioConnConfig'
+      source:
+        allOf:
+        - $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionSource'
+        enum:
+        - honeybee
+        - beetleSsh
+        - beetleObjectStorage
+        - beetleDb
+        - ssh
+        - minio
+        - db
+      ssh:
+        allOf:
+        - $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.SSHConnConfig'
+        description: Inline types
+    required:
+    - source
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionSource:
+    enum:
+    - honeybee
+    - beetleSsh
+    - beetleObjectStorage
+    - beetleDb
+    - ssh
+    - minio
+    - db
+    type: string
+    x-enum-varnames:
+    - ConnectionSourceHoneybee
+    - ConnectionSourceBeetleSSH
+    - ConnectionSourceBeetleObjectStorage
+    - ConnectionSourceBeetleDB
+    - ConnectionSourceSSH
+    - ConnectionSourceMinio
+    - ConnectionSourceDB
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.DBConnConfig:
+    properties:
+      accessType:
+        enum:
+        - direct
+        - sshTunnel
+        type: string
+      authSource:
+        description: |-
+          AuthSource selects the authentication database. MongoDB only; ignored by
+          other drivers. When empty and credentials are given, MongoDB defaults to
+          "admin" (where users are usually created) rather than the target database.
+        type: string
+      connectTimeout:
+        type: integer
+      dbmsType:
+        enum:
+        - mysql
+        - mariadb
+        - postgresql
+        - mongodb
+        type: string
+      host:
+        description: |-
+          DB endpoint (the direct connection target, or the target reached through
+          the SSH tunnel)
+        type: string
+      password:
+        type: string
+      port:
+        type: integer
+      providerName:
+        description: |-
+          ProviderName records where the database is hosted. transx-ex carries it
+          through to DBMSLocation.ProviderName but never reads it: no routing,
+          validation or connection decision depends on it. It is required all the
+          same, so that "where does this data live" has an answer for every
+          connection that holds data. A database the operator runs themselves is
+          ProviderOnPrem, spelled out rather than left blank.
+        enum:
+        - aws
+        - alibaba
+        - tencent
+        - ncp
+        - nhn
+        - ibm
+        - gcp
+        - kt
+        - azure
+        - openstack
+        - onprem
+        type: string
+      sshTunnel:
+        allOf:
+        - $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.SSHConnConfig'
+        description: Jump host used when accessType=sshTunnel (inline SSH).
+      tlsCAPem:
+        description: |-
+          TLSCAPem is the PEM root that verify-ca and verify-full check against.
+          Empty means the system trust store, which carries only publicly trusted
+          CAs, so a server using a private CA needs its root supplied here.
+
+          transx-ex also accepts a path to a CA file, but that path would name a
+          file on the centipede server rather than on the caller's machine, so it
+          is deliberately not part of this API.
+        type: string
+      tlsMode:
+        description: |-
+          TLSMode selects transport security; the empty value is "disable". The
+          modes mean the same thing on every engine — see transx-ex's
+          dbmsx/driver/base/tls.go for the table that defines them.
+        enum:
+        - disable
+        - prefer
+        - require
+        - verify-ca
+        - verify-full
+        type: string
+      username:
+        type: string
+    required:
+    - accessType
+    - dbmsType
+    - providerName
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilter:
+    properties:
+      databases:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterEntry'
+        type: array
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterEntry:
+    properties:
+      rules:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterRule'
+        type: array
+      targetMapping:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping'
+    required:
+    - targetMapping
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterRule:
+    properties:
+      columns:
+        description: type=table_column (empty => whole table)
+        items:
+          type: string
+        type: array
+      kind:
+        description: type=object_exclude (view|index|function|...)
+        type: string
+      match:
+        description: type=row_exclude
+        type: string
+      name:
+        description: type=object_exclude
+        type: string
+      table:
+        type: string
+      type:
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSType:
+    enum:
+    - mysql
+    - mariadb
+    - postgresql
+    - mongodb
+    type: string
+    x-enum-varnames:
+    - DBMSTypeMySQL
+    - DBMSTypeMariaDB
+    - DBMSTypePostgreSQL
+    - DBMSTypeMongoDB
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.FileSystemFilter:
+    properties:
+      rules:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule'
+        type: array
+      targetMapping:
+        allOf:
+        - $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping'
+        description: selects the single folder to migrate
+    required:
+    - targetMapping
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.HoneybeeRef:
+    properties:
+      connectionId:
+        type: string
+    required:
+    - connectionId
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.MinioConnConfig:
+    properties:
+      accessKeyId:
+        description: |-
+          AccessKeyId doubles as the storage account name on azure, where it is also
+          the endpoint source.
+        type: string
+      bucketLookup:
+        description: '"" | "dns" | "path"'
+        type: string
+      endpoint:
+        description: |-
+          Endpoint is required for the openstack and onprem providers, where the
+          user supplies the host. For the others it is an optional override of the
+          derived host — except azure, whose host is derived from AccessKeyId.
+        type: string
+      providerName:
+        description: |-
+          ProviderName decides the endpoint, region, TLS and bucket addressing style
+          (see ResolveS3Endpoint in core/migration). transxex.S3MinioConfig has no
+          provider field: it receives the resolved values.
+        enum:
+        - aws
+        - alibaba
+        - tencent
+        - ncp
+        - nhn
+        - ibm
+        - gcp
+        - kt
+        - azure
+        - openstack
+        - onprem
+        type: string
+      region:
+        description: |-
+          Region is the region this store lives in. Required for the providers whose
+          hostname contains it (aws, alibaba, tencent, ncp, nhn, ibm) and for gcp,
+          which has a region-less host but still signs with a region.
+
+          It is NOT unconditionally the signing region: NCP serves
+          "kr.object.ncloudstorage.com" and signs "kr-standard", so ResolveS3Endpoint
+          signs with this value only where the two are spelled the same and otherwise
+          leaves the signing region to be discovered.
+        type: string
+      secretAccessKey:
+        type: string
+      useSSL:
+        description: |-
+          UseSSL is honored only for user-supplied endpoints (openstack, onprem).
+          The other providers use the fixed value from the provider table. A scheme
+          on Endpoint ("http://" or "https://") overrides both.
+        type: boolean
+    required:
+    - accessKeyId
+    - providerName
+    - secretAccessKey
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.ObjectStorageFilter:
+    properties:
+      rules:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule'
+        type: array
+      targetMapping:
+        allOf:
+        - $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping'
+        description: selects the single bucket to migrate
+    required:
+    - targetMapping
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule:
+    properties:
+      action:
+        description: |-
+          include | exclude. An item no rule matched is kept, so an include only
+          narrows the transfer when an exclude below it would otherwise have
+          dropped the item: end a whitelist with {"action":"exclude","type":"glob","pattern":"*"}.
+        type: string
+      op:
+        description: |-
+          type=size (> >= < <= ==). On a filesystem source the bound is applied
+          globally by rsync, so a size rule must sit above every include rule.
+        type: string
+      pattern:
+        description: |-
+          type=glob; matched against the path relative to the migrated folder or key
+          prefix: "*.log" (base name, any depth), "src/*.go" (path tail, so
+          "a/src/main.go" matches too; "/src/*.go" anchors at the root), "a/**"
+          (crosses directories), "logs" (a folder and everything under it).
+        type: string
+      type:
+        description: glob | size
+        type: string
+      value:
+        description: type=size (bytes)
+        type: integer
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.PgSchemaMapping:
+    properties:
+      dstName:
+        type: string
+      srcName:
+        type: string
+    required:
+    - srcName
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.SSHConnConfig:
+    properties:
+      host:
+        type: string
+      port:
+        description: defaults to 22
+        type: integer
+      privateKey:
+        type: string
+      username:
+        type: string
+    required:
+    - host
+    - privateKey
+    - username
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_common-model.TargetMapping:
+    properties:
+      dstName:
+        type: string
+      pgSchemas:
+        description: |-
+          PgSchemas selects and renames PostgreSQL schemas within this database.
+          Empty migrates every schema under its own name; a non-empty list migrates
+          only the schemas it names, which makes it a selection as much as a rename.
+          PostgreSQL only: the plan layer rejects it for other engines and for the
+          file system and object storage filters.
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PgSchemaMapping'
+        type: array
+      srcName:
+        type: string
+    required:
+    - srcName
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.DBColumnInfo:
+    properties:
+      characterSet:
+        description: |-
+          CharacterSet and Collation are the column's own text handling, and appear
+          only where the engine records them per column. MySQL and MariaDB fill both
+          for string columns and neither for the rest. PostgreSQL fills Collation
+          alone, and only when the column declares one explicitly — a column that
+          inherits the database default reports nothing, which DBMSInfo.Collation
+          already says. MongoDB fills neither: its fields are inferred by sampling.
+        type: string
+      collation:
+        type: string
+      comment:
+        type: string
+      dataType:
+        type: string
+      default:
+        type: string
+      isNullable:
+        type: boolean
+      isPrimary:
+        type: boolean
+      name:
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.DBIndexInfo:
+    properties:
+      columns:
+        items:
+          type: string
+        type: array
+      isUnique:
+        type: boolean
+      name:
+        type: string
+      type:
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.DBMSInfo:
+    properties:
+      characterSet:
+        description: |-
+          CharacterSet is the database's default character set, which on PostgreSQL
+          is its encoding — the two name the same thing there. MongoDB stores UTF-8
+          only and leaves it empty.
+        type: string
+      collation:
+        description: |-
+          Collation is the database's default collation: DEFAULT_COLLATION_NAME on
+          MySQL and MariaDB, datcollate on PostgreSQL. MongoDB has no database-level
+          collation and leaves it empty.
+        type: string
+      ctype:
+        description: |-
+          Ctype is the locale governing character classification — PostgreSQL's
+          datctype, which the engine keeps separate from the collation order. The
+          other engines have no equivalent and leave it empty.
+        type: string
+      dataSize:
+        type: integer
+      database:
+        type: string
+      events:
+        description: MySQL / MariaDB
+        items:
+          type: string
+        type: array
+      extensions:
+        description: PostgreSQL
+        items:
+          type: string
+        type: array
+      foreignKeys:
+        description: Schema object inventory (name list) — populated only on metric
+          opt-in.
+        items:
+          type: string
+        type: array
+      functions:
+        items:
+          type: string
+        type: array
+      indexSize:
+        type: integer
+      materializedViews:
+        description: PostgreSQL
+        items:
+          type: string
+        type: array
+      pgSchema:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBPgSchemaInfo'
+        type: array
+      procedures:
+        items:
+          type: string
+        type: array
+      rules:
+        description: PostgreSQL
+        items:
+          type: string
+        type: array
+      sequences:
+        description: PostgreSQL
+        items:
+          type: string
+        type: array
+      serverVersion:
+        type: string
+      tableCount:
+        type: integer
+      tables:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBTableInfo'
+        type: array
+      totalSize:
+        description: |-
+          TotalSize..TableCount are the sum over the schemas the inspection covered,
+          not the size of the database as PostgreSQL reports it. PgSchema breaks them
+          down per schema and always sums back to them; a schema holding no tables is
+          listed at zero rather than omitted. PostgreSQL only.
+        type: integer
+      triggers:
+        items:
+          type: string
+        type: array
+      types:
+        description: PostgreSQL
+        items:
+          type: string
+        type: array
+      validators:
+        description: MongoDB
+        items:
+          type: string
+        type: array
+      views:
+        items:
+          type: string
+        type: array
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.DBPgSchemaInfo:
+    properties:
+      dataSize:
+        type: integer
+      indexSize:
+        type: integer
+      name:
+        type: string
+      tableCount:
+        type: integer
+      totalSize:
+        type: integer
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.DBTableInfo:
+    properties:
+      characterSet:
+        description: |-
+          CharacterSet and Collation are the table's own text defaults, which its
+          columns inherit unless they declare their own. PostgreSQL has no
+          table-level collation and leaves both empty; MongoDB reports the
+          collection's default collation locale in Collation and leaves CharacterSet
+          empty.
+        type: string
+      collation:
+        type: string
+      columns:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBColumnInfo'
+        type: array
+      dataSize:
+        type: integer
+      engine:
+        type: string
+      indexSize:
+        type: integer
+      indexes:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBIndexInfo'
+        type: array
+      name:
+        type: string
+      pgSchema:
+        type: string
+      rowCount:
+        type: integer
+      totalSize:
+        type: integer
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.FSEntry:
+    properties:
+      fileCount:
+        description: only when FilesystemMetric.FolderFileCount
+        type: integer
+      fileSize:
+        description: only when FilesystemMetric.FolderFileSize
+        type: integer
+      isMount:
+        type: boolean
+      modTime:
+        description: only when FilesystemMetric.FolderModTime
+        type: string
+      path:
+        type: string
+      permissions:
+        description: only when FilesystemMetric.FolderPerms
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.ObjectEntry:
+    properties:
+      key:
+        description: folder prefix "bucket/prefix/"
+        type: string
+      lastModified:
+        description: only when ObjectStorageMetric.PrefixModTime
+        type: string
+      objectCount:
+        description: only when ObjectStorageMetric.PrefixObjectCount
+        type: integer
+      size:
+        description: only when ObjectStorageMetric.PrefixObjectSize
+        type: integer
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDBModel:
+    properties:
+      connection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      databases:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.DBMSInfo'
+        type: array
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDataMigrationModel:
+    properties:
+      sourceDataMigrationModel:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDataMigrationProperty'
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDataMigrationProperty:
+    properties:
+      databases:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDBModel'
+        type: array
+      fileSystems:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceFileSystemModel'
+        type: array
+      objectStorages:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceObjectStorageModel'
+        type: array
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceFileSystemModel:
+    properties:
+      connection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      extensionCounts:
+        additionalProperties:
+          type: integer
+        description: only when FilesystemMetric.ExtensionCount
+        type: object
+      fileCount:
+        description: only when FilesystemMetric.FileCount
+        type: integer
+      folders:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.FSEntry'
+        type: array
+      isMount:
+        type: boolean
+      path:
+        type: string
+      totalSize:
+        description: only when FilesystemMetric.TotalSize
+        type: integer
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceObjectStorageModel:
+    properties:
+      connection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      extensionCounts:
+        additionalProperties:
+          type: integer
+        description: only when ObjectStorageMetric.ExtensionCount
+        type: object
+      folders:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.ObjectEntry'
+        type: array
+      objectCount:
+        description: only when ObjectStorageMetric.ObjectCount
+        type: integer
+      path:
+        type: string
+      totalSize:
+        description: only when ObjectStorageMetric.TotalSize
+        type: integer
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_target-model.DBMigrationInfo:
+    properties:
+      dstName:
+        type: string
+      order:
+        type: integer
+      pgSchemas:
+        description: |-
+          PgSchemas selects and renames PostgreSQL schemas within this database.
+          Empty migrates every schema under its own name. The adapter splits the
+          name pairs into the two positional slices transx-ex expects.
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PgSchemaMapping'
+        type: array
+      rules:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilterRule'
+        type: array
+      srcName:
+        type: string
+    required:
+    - dstName
+    - srcName
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_target-model.FSMigrationInfo:
+    properties:
+      dstPath:
+        type: string
+      order:
+        type: integer
+      rules:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule'
+        type: array
+      srcPath:
+        type: string
+    required:
+    - dstPath
+    - srcPath
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationDBModel:
+    properties:
+      databases:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.DBMigrationInfo'
+        minItems: 1
+        type: array
+      dbType:
+        allOf:
+        - $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSType'
+        enum:
+        - mysql
+        - mariadb
+        - postgresql
+        - mongodb
+      dstConnection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      errors:
+        items:
+          type: string
+        type: array
+      planEntryId:
+        description: |-
+          PlanEntryID names this entry within the plan
+          — see MigrationFileSystemModel.PlanEntryID.
+        type: string
+      srcConnection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+    required:
+    - databases
+    - dbType
+    - dstConnection
+    - srcConnection
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationFileSystemModel:
+    properties:
+      dstConnection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      dstType:
+        description: |-
+          DstType is the destination storage type: empty/"filesystem" = SSH→SSH,
+          "objectstorage" = filesystem→objectstorage cross-storage.
+        enum:
+        - filesystem
+        - objectstorage
+        type: string
+      errors:
+        items:
+          type: string
+        type: array
+      folders:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.FSMigrationInfo'
+        type: array
+      planEntryId:
+        description: |-
+          PlanEntryID names this entry within the plan. It is what a migration log,
+          a validation detail and a per-entry retry refer to, so that none of them
+          has to identify an entry by its position in the array — a position is not
+          a name, and nothing outside the plan can hold on to one.
+
+          "entry", not "item": an item is the folder, bucket or database inside one
+          of these (see countPlanItems, MigrationLog.ItemPath, Migration.TotalItems),
+          and a name that meant both layers at once would be worse than the index it
+          replaces. Not "id" either — an entry is anonymous in its own document,
+          sitting in fileSystems[] with no type name beside it, so "id" alone would
+          not say what kind of id it is. The log field that refers to it is spelled
+          the same, which is the point: one token to search for in both documents.
+
+          Assigned by POST /plans/target. A plan that arrives without one — edited,
+          hand-written, issued elsewhere — is given ids by CreateMigration before it
+          is stored, so a stored plan always has them.
+        type: string
+      srcConnection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      strategy:
+        description: |-
+          Strategy is the transx transfer strategy (auto/direct/relay). It only affects
+          SSH→SSH transfers; cross-storage always relays. Set by the plan layer.
+        enum:
+        - auto
+        - direct
+        - relay
+        type: string
+    required:
+    - dstConnection
+    - srcConnection
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationObjectStorageModel:
+    properties:
+      buckets:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.ObjectMigrationInfo'
+        type: array
+      dstConnection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      dstType:
+        description: |-
+          DstType is the destination storage type: empty/"objectstorage" = S3→S3,
+          "filesystem" = objectstorage→filesystem cross-storage.
+        enum:
+        - filesystem
+        - objectstorage
+        type: string
+      errors:
+        items:
+          type: string
+        type: array
+      planEntryId:
+        description: |-
+          PlanEntryID names this entry within the plan
+          — see MigrationFileSystemModel.PlanEntryID.
+        type: string
+      srcConnection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+    required:
+    - dstConnection
+    - srcConnection
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_target-model.ObjectMigrationInfo:
+    properties:
+      dstPath:
+        type: string
+      order:
+        type: integer
+      rules:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PathFilterRule'
+        type: array
+      srcPath:
+        type: string
+    required:
+    - dstPath
+    - srcPath
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel:
+    properties:
+      targetDataMigrationModel:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationProperty'
+    required:
+    - targetDataMigrationModel
+    type: object
+  github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationProperty:
+    properties:
+      databases:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationDBModel'
+        type: array
+      fileSystems:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationFileSystemModel'
+        type: array
+      objectStorages:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.MigrationObjectStorageModel'
+        type: array
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any:
+    properties:
+      data: {}
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-array_github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary
+  : properties:
+      data:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationSummary'
+        type: array
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_dmdl_target-model_TargetDataMigrationModel
+  : properties:
+      data:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel'
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationLog
+  : properties:
+      data:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationLog'
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary
+  : properties:
+      data:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary'
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_Migration
+  : properties:
+      data:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.Migration'
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_RetryResponse
+  : properties:
+      data:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.RetryResponse'
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_SimpleMessageResponse
+  : properties:
+      data:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.SimpleMessageResponse'
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ValidationResultResponse
+  : properties:
+      data:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationResultResponse'
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-pkg_api_rest_controller_ReadyzResponse:
+    properties:
+      data:
+        $ref: '#/definitions/pkg_api_rest_controller.ReadyzResponse'
+      error:
+        type: string
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.CreateMigrationReq:
+    properties:
+      dbmsOnFailure:
+        description: |-
+          DBMSOnFailure decides what happens to a DBMS target when one of its
+          database items fails. It is named for the DBMS domain because only that
+          domain has an undo step: a filesystem or object storage transfer leaves
+          whatever it had already written, with or without this field.
+
+          "cleanup" (the default) undoes the failed item. "keep" leaves it in place
+          for inspection — useful when the failure is in the data rather than in the
+          connection, since cleanup destroys the evidence.
+
+          Cancellation is not a failure and always cleans up, whatever this says.
+        enum:
+        - cleanup
+        - keep
+        type: string
+      description:
+        type: string
+      name:
+        type: string
+      plan:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel'
+    required:
+    - name
+    - plan
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationLog
+  : properties:
+      items:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationLog'
+        type: array
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      total:
+        type: integer
+    type: object
+  ? github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary
+  : properties:
+      items:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationSummary'
+        type: array
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      total:
+        type: integer
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.Migration:
+    properties:
+      completedAt:
+        type: string
+      createdAt:
+        description: |-
+          CreatedAt is indexed because it is both the list ordering key and the only
+          column the date filters compare against: without the index every list call
+          is a full scan plus a sort.
+        type: string
+      currentObject:
+        description: |-
+          CurrentObject is the file, object or table being moved right now — one level
+          below ItemPath, which names the folder, bucket or database. Empty when
+          nothing is in flight.
+        type: string
+      dbmsOnFailure:
+        description: |-
+          DBMSOnFailure is carried on the record rather than only on the request
+          because execution is asynchronous and a retry re-reads the row: the policy
+          has to outlive the call that set it. Empty means DBMSOnFailureCleanup.
+        type: string
+      description:
+        type: string
+      failedItems:
+        type: integer
+      id:
+        type: string
+      name:
+        type: string
+      plan:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel'
+      processedItems:
+        type: integer
+      startedAt:
+        type: string
+      status:
+        type: string
+      statusMessage:
+        type: string
+      totalItems:
+        type: integer
+      transferredBytes:
+        type: integer
+      updatedAt:
+        type: string
+      validationDetails:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem'
+        type: array
+      validationMessage:
+        type: string
+      validationStatus:
+        type: string
+    required:
+    - name
+    - plan
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationLog:
+    properties:
+      createdAt:
+        type: string
+      durationMs:
+        type: integer
+      errorMsg:
+        type: string
+      failedObjectKind:
+        description: |-
+          FailedObjectKind and FailedObjectName name the object transx-ex was
+          working on when the item failed — a table, view, routine, file or object —
+          so the failure can be located without reading ErrorMsg. FailedObjectName
+          carries the enclosing database, schema or bucket when transx-ex knew it
+          ("centipede_test.v_customer_stats").
+
+          Both stay empty when the failure was not tied to a single object: a
+          connection refused, a dump command that failed as a whole.
+        type: string
+      failedObjectName:
+        type: string
+      id:
+        type: integer
+      itemPath:
+        description: 'ItemPath: absolute file path (SSH) | object key (ObjectStorage)
+          | table/collection name (DBMS)'
+        type: string
+      migrationId:
+        type: string
+      planEntryId:
+        description: |-
+          PlanEntryID names the plan entry this item came from
+          (targetmodel.Migration*Model.PlanEntryID). ItemPath alone does not identify
+          it: two entries of one plan legitimately carry the same path — one source
+          fanned out to two destinations, or two sources that scanned the same
+          directory — and their log lines were indistinguishable.
+
+          It is the only thing about the entry kept here. Which host the item was
+          read from, where it was written and under what rules are all in the plan,
+          which GET /centipede/migration/{id} returns beside these logs; copying any
+          of it into every row would not save the reader that lookup.
+
+          Not indexed: nothing queries by it. One migration's logs are read whole, by
+          the list endpoint and by the retry that groups them in memory, so an index
+          here would only be paid for on every insert.
+
+          Empty on rows written before this field existed.
+        type: string
+      rollbackErrorMsg:
+        type: string
+      rollbackStatus:
+        description: |-
+          RollbackStatus reports the cleanup that followed a failure. What it refers
+          to depends on TargetCreated: emptying a database that already existed
+          (false), or dropping one centipede created (true).
+        type: string
+      sizeBytes:
+        type: integer
+      status:
+        type: string
+      targetCreated:
+        description: |-
+          TargetCreated records that this item's target database did not exist before
+          the migration and does because of it, which is what decides whether a failure
+          dropped the database or emptied it. DBMS items only.
+
+          It is not a record of who ran a DDL statement. On MongoDB nobody does: a
+          database begins to exist when the restore writes its first collection, and
+          the flag is true there all the same, because dropping is still what undoing
+          the item means.
+        type: boolean
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.MigrationSummary:
+    properties:
+      completedAt:
+        type: string
+      createdAt:
+        type: string
+      currentObject:
+        type: string
+      dbmsOnFailure:
+        type: string
+      description:
+        type: string
+      failedItems:
+        type: integer
+      id:
+        type: string
+      name:
+        type: string
+      planSummary:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary'
+      processedItems:
+        type: integer
+      startedAt:
+        type: string
+      status:
+        type: string
+      statusMessage:
+        type: string
+      totalItems:
+        type: integer
+      transferredBytes:
+        type: integer
+      updatedAt:
+        type: string
+      validationDetails:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem'
+        type: array
+      validationMessage:
+        type: string
+      validationStatus:
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanEntry:
+    properties:
+      dbmsFilter:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.DBMSFilter'
+      dstConnection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      fileSystemFilter:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.FileSystemFilter'
+      fileSystemStrategy:
+        description: |-
+          FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)
+          tasks. Empty is normalised to "relay" (safer default: avoids agent-forward
+          setup requirements). It has no effect on object-storage or DBMS tasks, where
+          relay is always used / not applicable.
+        enum:
+        - auto
+        - direct
+        - relay
+        type: string
+      objectStorageFilter:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ObjectStorageFilter'
+      srcConnection:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+    required:
+    - dstConnection
+    - srcConnection
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary:
+    properties:
+      databases:
+        type: integer
+      fileSystems:
+        type: integer
+      objectStorages:
+        type: integer
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.RetryReq:
+    properties:
+      retryMode:
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.RetryResponse:
+    properties:
+      newMigration:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.Migration'
+      originalMigrationId:
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.SimpleMessageResponse:
+    properties:
+      message:
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.TargetPlanReq:
+    properties:
+      plans:
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanEntry'
+        minItems: 1
+        type: array
+      source:
+        $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_source-model.SourceDataMigrationModel'
+    required:
+    - plans
+    - source
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem:
+    properties:
+      itemPath:
+        description: |-
+          ItemPath: file path | object key | DBMS target
+          ("{database}/{table}", "{database}/{table}.{column}", "{database}/{kind}:{name}").
+        type: string
+      message:
+        type: string
+      planEntryId:
+        description: |-
+          PlanEntryID names the plan entry this detail is about, the same id
+          MigrationLog carries. Without it a plan of several entries reports every
+          one of them under the same ItemPath — "filesystem" for a whole entry that
+          could not be resolved — and nothing says which.
+        type: string
+      status:
+        description: |-
+          Status: "passed" | "failed" | "warning". A warning is reported but does not
+          fail the validation — a character-set difference can be a managed service
+          imposing its own default.
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationResultResponse:
+    properties:
+      details:
+        description: list of failed items
+        items:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem'
+        type: array
+      validationMessage:
+        type: string
+      validationStatus:
+        description: '"passed" | "failed" | "not_run" | "running"'
+        type: string
+    type: object
+  pkg_api_rest_controller.ReadyzResponse:
+    properties:
+      status:
+        type: string
+    type: object
+host: localhost:8085
+info:
+  contact:
+    name: Cloud-Barista Community
+    url: https://github.com/cloud-barista/cm-centipede
+  description: Cloud-Barista cm-centipede — Multi-cloud filesystem, object storage,
+    and DBMS data migration subsystem.
+  title: cm-centipede API
+  version: 1.0.0
+paths:
+  /centipede/migration:
+    get:
+      description: |-
+        Returns a paginated list of migration summaries ordered by created_at DESC.
+        The response carries planSummary (unit counts per category) in place of the plan itself.
+        Date filters compare against created_at and are interpreted in the server's local time zone.
+        dateFrom and dateTo may each be used alone for an open-ended range; dateTo includes its own day.
+      parameters:
+      - description: Filter by status (pending|running|completed|failed|cancelled)
+        in: query
+        name: status
+        type: string
+      - description: Inclusive lower bound on created_at (yyyy-mm-dd)
+        in: query
+        name: dateFrom
+        type: string
+      - description: Inclusive upper bound on created_at (yyyy-mm-dd)
+        in: query
+        name: dateTo
+        type: string
+      - description: Last N calendar days including today (0-3650; 0 means no limit).
+          Cannot be combined with dateFrom or dateTo
+        in: query
+        name: lastDays
+        type: integer
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 100)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: List migrations (paginated)
+      tags:
+      - migration
+    post:
+      consumes:
+      - application/json
+      description: Creates a Migration record from the given plan and immediately
+        starts execution asynchronously.
+      parameters:
+      - description: Migration creation request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.CreateMigrationReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_Migration'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Create and start a migration
+      tags:
+      - migration
+  /centipede/migration/{migrationId}:
+    delete:
+      description: Deletes a migration record. Returns 409 if the migration is currently
+        running — cancel it first.
+      parameters:
+      - description: Migration ID
+        in: path
+        name: migrationId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Delete a migration
+      tags:
+      - migration
+    get:
+      description: Returns the Migration record for the given ID.
+      parameters:
+      - description: Migration ID
+        in: path
+        name: migrationId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_Migration'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Get a single migration
+      tags:
+      - migration
+  /centipede/migration/{migrationId}/cancel:
+    post:
+      description: Signals the running migration to stop after the current item finishes.
+        Returns 404 if the migration is not currently running.
+      parameters:
+      - description: Migration ID
+        in: path
+        name: migrationId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_Migration'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Cancel a running migration
+      tags:
+      - migration
+  /centipede/migration/{migrationId}/logs:
+    get:
+      description: Returns paginated MigrationLog entries for the given migration
+        ID, optionally filtered by status.
+      parameters:
+      - description: Migration ID
+        in: path
+        name: migrationId
+        required: true
+        type: string
+      - description: Filter by status (success|failed|skipped)
+        in: query
+        name: status
+        type: string
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 100)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ListResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationLog'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: List logs for a migration
+      tags:
+      - migration
+  /centipede/migration/{migrationId}/retry:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new Migration that re-runs items from the original according
+        to retryMode. DBMS destination tables are DROP-ped before re-execution.
+      parameters:
+      - description: Original Migration ID
+        in: path
+        name: migrationId
+        required: true
+        type: string
+      - description: 'Retry options (retryMode: partial|full, default: partial)'
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.RetryReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_RetryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Retry a failed or cancelled migration
+      tags:
+      - migration
+  /centipede/migration/{migrationId}/validation:
+    get:
+      description: Returns the current validation status, summary message, and per-item
+        detail list for the given migration.
+      parameters:
+      - description: Migration ID
+        in: path
+        name: migrationId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_ValidationResultResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Get validation result for a migration
+      tags:
+      - validation
+    post:
+      description: Validates that the destination data matches the source after a
+        completed migration. Returns 400 if migration is not completed, 409 if validation
+        is already running.
+      parameters:
+      - description: Migration ID
+        in: path
+        name: migrationId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_pkg_api_rest_model_SimpleMessageResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Start validation for a completed migration
+      tags:
+      - validation
+  /centipede/migration/all:
+    get:
+      description: |-
+        Returns every matching migration summary ordered by created_at DESC.
+        The response carries planSummary (unit counts per category) in place of the plan itself.
+        When none of dateFrom, dateTo and lastDays is given, the last 7 calendar days are applied and the response message says so; pass lastDays=0 to lift the limit.
+        Date filters compare against created_at and are interpreted in the server's local time zone.
+      parameters:
+      - description: Filter by status (pending|running|completed|failed|cancelled)
+        in: query
+        name: status
+        type: string
+      - description: Inclusive lower bound on created_at (yyyy-mm-dd)
+        in: query
+        name: dateFrom
+        type: string
+      - description: Inclusive upper bound on created_at (yyyy-mm-dd)
+        in: query
+        name: dateTo
+        type: string
+      - description: Last N calendar days including today (0-3650; 0 means no limit,
+          default 7). Cannot be combined with dateFrom or dateTo
+        in: query
+        name: lastDays
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-array_github_com_cloud-barista_cm-centipede_pkg_api_rest_model_MigrationSummary'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: List all migrations without pagination
+      tags:
+      - migration
+  /centipede/plans/target:
+    post:
+      consumes:
+      - application/json
+      description: Validates source/destination connections, checks DBMS compatibility
+        and version, and returns a TargetDataMigrationModel ready for CreateMigration.
+      parameters:
+      - description: Target plan request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.TargetPlanReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-github_com_cloud-barista_cm-centipede_dmdl_target-model_TargetDataMigrationModel'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Analyse target migration plan
+      tags:
+      - plan
+  /centipede/readyz:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-pkg_api_rest_controller_ReadyzResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ApiResponse-any'
+      summary: Server readiness check
+      tags:
+      - utility
+securityDefinitions:
+  BasicAuth:
+    type: basic
+swagger: "2.0"

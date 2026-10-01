@@ -1,0 +1,91 @@
+# Stack for the managed-DB version matrix: a credential vault and a tofu runner.
+#
+# Everything is named apart from the tofuenv stack so both can run at once:
+# a distinct compose project, container names, network and published port.
+# The matrix drives the runner through `docker exec`; it never runs tofu on
+# the host.
+#
+# The source containers are NOT here. They are created and destroyed per cell by
+# scripts/lib/source.sh, one version at a time, because their whole point is to
+# change with the row axis of the matrix.
+name: cptfm
+
+networks:
+  cptfm:
+    driver: bridge
+
+services:
+  # ==========================================================================
+  # OpenBao (credential vault) in persistent mode
+  #   Holds the CSP keys and DB passwords in KV v2 (secret/csp/*, secret/db/*).
+  #
+  #   First run :  ./scripts/up.sh   (initializes, unseals, registers credentials)
+  #   Restart   :  ./scripts/up.sh   (unseals)
+  # ==========================================================================
+  openbao:
+    image: openbao/openbao:2.5.1
+    container_name: cptfm-openbao
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - cptfm
+    ports:
+      # 38210, not the 38200 tofuenv publishes, so both stacks can be up.
+      - target: 8200
+        published: 38210
+        protocol: tcp
+    environment:
+      - BAO_ADDR=http://0.0.0.0:8200
+      - SKIP_SETCAP=true
+    # Fix bind-mount ownership (host UID -> the container's openbao UID 100).
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        chown -R openbao:openbao /openbao/data || { echo "ERROR: chown failed on /openbao/data"; exit 1; }
+        exec docker-entrypoint.sh server -config=/openbao/config/openbao-config.hcl
+    volumes:
+      - ./container-volume/openbao-data:/openbao/data
+      - ./init/openbao/openbao-config.hcl:/openbao/config/openbao-config.hcl:ro
+    healthcheck:
+      # 'bao status' exit codes: 0=unsealed, 1=sealed, 2=uninitialized.
+      # All three mean the process is alive and the API responds.
+      test: ["CMD", "sh", "-c", "rc=0; bao status || rc=$$?; [ $$rc -le 2 ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  # ==========================================================================
+  # OpenTofu runner - a long-lived container
+  #   Ships tofu plus curl, jq, git, openssh-client and psql. It stays up via
+  #   sleep and scripts/lib/tofu.sh drives it with docker exec.
+  #   The whole directory is mounted at /work, sharing the tofu modules, .env
+  #   and the state files.
+  # ==========================================================================
+  tofu-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.tofu-runner
+    image: cptfm-tofu-runner:local
+    # This image is only ever built here, never published. Without an explicit
+    # policy Compose tries the registry first and reports "pull access denied"
+    # before falling back to the build.
+    pull_policy: build
+    container_name: cptfm-tofu-runner
+    networks:
+      - cptfm
+    working_dir: /work
+    volumes:
+      - ./:/work
+    environment:
+      # From inside the container, reach OpenBao by its compose service name.
+      - VAULT_ADDR=http://openbao:8200
+      - VAULT_TOKEN=${VAULT_TOKEN:-}
+    env_file:
+      - .env
+    depends_on:
+      openbao:
+        condition: service_healthy
+    command: ["sleep", "infinity"]
+    restart: unless-stopped

@@ -1,0 +1,288 @@
+# MySQL Direct-to-Direct Migration Example
+
+This example demonstrates how to perform a **direct-to-direct MySQL database migration** using transx-ex.  
+Two Docker containers simulate a source and a target MySQL server — no SSH is required.
+
+## Prerequisites
+
+- Go 1.26 or higher
+- Docker installed and running
+
+> **No MySQL client needed on the host.** `setup_environment.sh` and `migrate.sh`
+> run `mysql` inside the containers via `docker exec`.
+
+---
+
+## Overview
+
+```
+Host Machine
+┌──────────────────────────────────────────────────────────────┐
+│                                                              │
+│   ┌─────────────────────┐        ┌─────────────────────┐   │
+│   │    mysql_src         │        │    mysql_dst         │   │
+│   │  (MySQL SOURCE)      │        │  (MySQL TARGET)      │   │
+│   │  port: 3306          │        │  port: 3307          │   │
+│   │  db:   testdb_src    │        │  db:   testdb_dst    │   │
+│   │  pass: srcpass       │        │  pass: dstpass       │   │
+│   └──────────┬───────────┘        └──────────▲───────────┘  │
+│              │                               │              │
+│              │   transxex.MigrateDBMS()      │              │
+│              │   ① dump  → staging dir       │              │
+│              │   ② restore ← staging dir ────┘              │
+│                                                              │
+│   main  (Go binary built from main.go)                       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The staging directory is `/tmp/transxex-staging/dbms` (`transxex.DBMSStagingPath`).
+
+---
+
+## Source DB Seed Objects
+
+| Category   | Objects                                                  |
+|------------|----------------------------------------------------------|
+| Tables     | `users`, `products`, `orders`, `order_items`, `audit_log` |
+| Views      | `v_order_summary`, `v_product_stock`                     |
+| Functions  | `fn_total_order_amount`, `fn_is_in_stock`                |
+| Procedures | `sp_get_user_orders`, `sp_restock_product`               |
+| Triggers   | `trg_orders_after_insert`, `trg_stock_after_order`       |
+| Events     | `evt_cleanup_old_logs`                                   |
+
+---
+
+## Supported MySQL Versions
+
+| Tag     | Version      |
+|---------|--------------|
+| `5.7`   | MySQL 5.7 LTS |
+| `8.0`   | MySQL 8.0 LTS |
+| `8.4`   | MySQL 8.4     |
+| `latest`| Latest stable |
+
+Source and destination can use **different versions** — useful for cross-version migration testing.
+
+---
+
+## Quick Start
+
+### 1. Setup Environment
+
+```bash
+chmod +x setup_environment.sh migrate.sh
+
+# Same version (latest → latest)
+./setup_environment.sh all
+
+# Cross-version: 5.7 → 8.0
+./setup_environment.sh all --src-version 5.7 --dst-version 8.0
+
+# Cross-version: 8.0 → 8.4
+./setup_environment.sh all --src-version 8.0 --dst-version 8.4
+```
+
+### 2. Run Migration
+
+```bash
+# Full migration (schema + data), sync mode
+./migrate.sh full
+
+# Schema only
+./migrate.sh schema-only
+
+# Full with source DB inspection + async progress polling
+./migrate.sh full --async --inspect
+
+# Cross-version migration
+./migrate.sh full --src-version 5.7 --dst-version 8.0
+./migrate.sh full --src-version 8.0 --dst-version 8.4 --inspect
+```
+
+---
+
+## Commands Reference
+
+### `setup_environment.sh`
+
+```
+./setup_environment.sh [command] [--src-version VER] [--dst-version VER]
+
+Commands:
+  all      Start source + target containers, seed test data, write config.json (default)
+  source   Start only the source container and seed data
+  target   Start only the target container (empty DB)
+  status   Show container info, object counts, and row counts
+  cleanup  Stop and remove both containers and the generated config.json
+
+Environment overrides:
+  SRC_HOST / DST_HOST  Host written into config.json (default: 127.0.0.1)
+```
+
+### `migrate.sh`
+
+```
+./migrate.sh [full|schema-only|data-only] [flags]
+
+Scopes (passed to the binary as --scope, overriding the config's scope field):
+  full         Schema + data  (default)
+  schema-only  Tables, Views, Procedures, Functions, Triggers, Events — no rows
+  data-only    Rows only — target tables must already exist
+
+Flags:
+  --async            Async mode with 1-second progress polling
+  --inspect          Print source DB info (version, tables, sizes) before migration
+  --src-version VER  MySQL version for source container
+  --dst-version VER  MySQL version for target container
+```
+
+---
+
+## Running Manually (Go binary)
+
+```bash
+# Build
+go build -o main .
+
+# Sync migration
+./main --config=config.json --scope=full
+
+# Async migration with inspect
+./main --config=config.json --scope=full --async --inspect
+
+# Schema only
+./main --config=config.json --scope=schema-only
+```
+
+---
+
+## Configuration
+
+### Template vs Generated
+
+| File | Purpose |
+|------|---------|
+| `template-config.json` | Template with placeholders for your own servers |
+| `config.json` | Auto-generated by `setup_environment.sh all` — points to the containers |
+
+One config covers every scope: `migrate.sh` (and `--scope` on the binary)
+overrides the `scope` field, so no per-scope file is needed.
+
+The generated `config.json` holds real hosts and passwords, so it is ignored by
+git and removed by `./setup_environment.sh cleanup`. To target your own servers,
+copy `template-config.json` and edit it, or export `SRC_HOST`/`DST_HOST` before
+running the setup script.
+
+### `config.json` (as generated)
+
+```json
+{
+  "source": {
+    "dbmsType": "mysql",
+    "database": "testdb_src",
+    "accessType": "direct",
+    "direct": {
+      "host": "127.0.0.1",
+      "port": 3306,
+      "username": "root",
+      "password": "srcpass"
+    }
+  },
+  "destination": {
+    "dbmsType": "mysql",
+    "database": "testdb_dst",
+    "accessType": "direct",
+    "direct": {
+      "host": "127.0.0.1",
+      "port": 3307,
+      "username": "root",
+      "password": "dstpass"
+    }
+  },
+  "scope": "full",
+  "rollbackOnFailure": true
+}
+```
+
+Edit `host`, `port`, `username`, `password`, `database` to point at any reachable
+MySQL instance — but note that `./setup_environment.sh all` overwrites these
+files. Keep permanent edits in a copy of the matching template.
+
+---
+
+## Expected Output (full, sync)
+
+```
+  ============================================
+  MySQL Direct-to-Direct Migration  (transx-ex)
+  ============================================
+  Source:      mysql (host=127.0.0.1 port=3306 db=testdb_src)
+  Destination: mysql (host=127.0.0.1 port=3307 db=testdb_dst)
+  Scope:       full
+  Mode:        sync
+  Rollback:    true
+
+>> Running migration...
+
+  ============================================
+  Migration Summary
+  ============================================
+  Result:   SUCCESS
+  Duration: 3.241s
+```
+
+---
+
+## Cross-Version Migration Matrix (E2E)
+
+> Only the lower version → higher version direction is supported.
+
+| Source  | Target  | Scope       | Expected |
+|---------|---------|-------------|----------|
+| 5.7     | 8.0     | full        | ✅       |
+| 5.7     | 8.0     | schema-only | ✅       |
+| 5.7     | 8.4     | full        | ✅       |
+| 5.7     | 8.4     | schema-only | ✅       |
+| 8.0     | 8.4     | full        | ✅       |
+| 8.0     | 8.4     | schema-only | ✅       |
+| same    | same    | full        | ✅       |
+
+---
+
+## Troubleshooting
+
+### Containers not starting
+
+```bash
+docker logs mysql_src
+docker logs mysql_dst
+./setup_environment.sh cleanup
+./setup_environment.sh all --src-version 8.0 --dst-version 8.4
+```
+
+### "testdb_dst is not empty" error
+
+The target DB already has tables. Clean up and rerun:
+
+```bash
+./setup_environment.sh cleanup
+./setup_environment.sh all
+```
+
+### Event Scheduler not ON (MySQL 5.7)
+
+The setup script enables `event_scheduler` and `log_bin_trust_function_creators`  
+automatically. If it still fails:
+
+```bash
+docker exec mysql_src mysql -uroot -psrcpass \
+  -e "SET GLOBAL event_scheduler = ON; SET GLOBAL log_bin_trust_function_creators = 1;"
+```
+
+---
+
+## Cleanup
+
+```bash
+./setup_environment.sh cleanup
+```

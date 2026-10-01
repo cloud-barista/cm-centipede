@@ -1,0 +1,86 @@
+# Matrix source image - MinIO on Ubuntu 22.04 with systemd.
+#
+# Why systemd rather than the official minio image: the container has to look
+# like a machine, not a process. `systemctl` works, sshd is a unit, and the
+# object store is a service that starts at boot - which is what an on-premises
+# source is, and what anything deployed onto it later expects to find. It is the
+# same shape testenv/dockerenv's compose/Dockerfile.minio has, minus the ROLE
+# argument: this folder only ever builds a source, because the target is a CSP
+# bucket that cm-beetle creates.
+#
+# Readiness is one signal: matrix-init.service reaching "active" means MinIO is
+# up, the buckets exist and every seed object is uploaded.
+#
+# Requires --privileged, --cgroupns=host and /sys/fs/cgroup mounted rw.
+# Local testing only, never production.
+FROM ubuntu:22.04
+
+# MINIO_VERSION pins the server. Empty (the default) takes whatever the release
+# channel serves today, which is what dockerenv does. Pin it - the value is a
+# RELEASE tag such as RELEASE.2025-04-22T22-12-26Z - when a result has to be
+# reproducible, because "the migration works" is a claim about a specific server.
+ARG MINIO_VERSION=""
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus \
+        openssh-server sudo ca-certificates curl wget openssl rsync \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Units that make no sense in a container: they slow the boot and clutter the
+# log, and a failed one keeps the boot from settling.
+RUN find /etc/systemd/system /lib/systemd/system \
+    -path '*.wants/*' \( \
+    -name '*getty*' -o -name '*plymouth*' -o -name '*apt-daily*' -o \
+    -name 'systemd-timesyncd*' -o -name '*udev*' \
+    \) -exec rm -f {} \; 2>/dev/null || true
+
+# The server and the client. mc is what the seed script uploads with, and what
+# lib/source.sh reads the bucket list back through - keeping it inside the
+# container means the host running the matrix needs no S3 tooling at all.
+RUN set -eux; \
+    if [ -n "$MINIO_VERSION" ]; then \
+        server_url="https://dl.min.io/server/minio/release/linux-amd64/archive/minio.${MINIO_VERSION}"; \
+    else \
+        server_url="https://dl.min.io/server/minio/release/linux-amd64/minio"; \
+    fi; \
+    wget -q "$server_url" -O /usr/local/bin/minio; \
+    chmod +x /usr/local/bin/minio; \
+    wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc; \
+    chmod +x /usr/local/bin/mc; \
+    minio --version
+
+COPY scripts/                      /opt/matrix/scripts/
+COPY services/minio.service        /etc/systemd/system/minio.service
+COPY services/matrix-init.service  /etc/systemd/system/matrix-init.service
+
+# defaults.env is what the image runs on its own; lib/source.sh bind-mounts
+# /opt/matrix/matrix.env over it, per run. The root account here must match
+# minio.service's Environment= - systemd reads a unit's environment at load time,
+# so the init script cannot change what the server was started with.
+#
+# Every value is quoted: init-minio.sh sources this file, and an unquoted
+# OS_SRC_BUCKETS would have the shell try to run "processed-data" as a command.
+RUN printf 'MINIO_ROOT_USER="minioadmin"\nMINIO_ROOT_PASSWORD="minioadmin123"\nOS_SRC_BUCKETS="raw-data processed-data images documents backups logs"\n' \
+        > /opt/matrix/defaults.env \
+    && chmod +x /opt/matrix/scripts/*.sh \
+    && cp /opt/matrix/scripts/init-minio.sh /opt/matrix/init.sh \
+    && chmod +x /opt/matrix/init.sh
+
+# sshd is a unit, so nothing has to be started by hand. Object storage access is
+# always direct - honeybee inspects the endpoint itself and transx-ex has no
+# tunnelled storage path - so this is here for interactive debugging only.
+RUN mkdir -p /var/run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && echo 'root:testpass123' | chpasswd \
+    && echo 'root ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/root-nopasswd \
+    && chmod 0440 /etc/sudoers.d/root-nopasswd
+
+RUN systemctl enable minio.service matrix-init.service ssh.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd", "--system"]

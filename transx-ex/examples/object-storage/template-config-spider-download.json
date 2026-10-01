@@ -1,0 +1,22 @@
+{
+  "source": {
+    "storageType": "objectstorage",
+    "path": "YOUR_BUCKET_NAME/",
+    "objectStorage": {
+      "accessType": "spider",
+      "spider": {
+        "endpoint": "http://localhost:1024/spider",
+        "connectionName": "YOUR_CONNECTION_NAME",
+        "expires": 3600
+      }
+    }
+  },
+  "destination": {
+    "storageType": "filesystem",
+    "path": "/tmp/transx-download/",
+    "filesystem": {
+      "accessType": "local"
+    }
+  },
+  "strategy": "auto"
+}

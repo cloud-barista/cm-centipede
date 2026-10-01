@@ -1,0 +1,69 @@
+# Matrix source image - MongoDB on Ubuntu 22.04 with systemd.
+#
+# Why systemd rather than the official mongo image: the container has to look
+# like a machine, not a process. `systemctl` works, sshd is a unit, and the
+# database is a service that starts at boot - which is what an on-premises source
+# is, and what anything deployed onto it later expects to find.
+#
+# The row axis of the matrix is DB_VERSION, resolved against the MongoDB apt
+# repository for jammy (6.0, 7.0, 8.0). A version outside that fails here, at
+# build time - the repository path itself carries the version.
+#
+# Readiness is one signal: matrix-init.service reaching "active" means the server
+# is up, the accounts exist and the seed is loaded.
+#
+# Requires --privileged, --cgroupns=host and /sys/fs/cgroup mounted rw.
+# Local testing only, never production.
+FROM ubuntu:22.04
+
+ARG DB_VERSION=7.0
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus \
+        openssh-server sudo ca-certificates curl wget gnupg lsb-release \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://www.mongodb.org/static/pgp/server-${DB_VERSION}.asc \
+        | gpg -o /usr/share/keyrings/mongodb-server-${DB_VERSION}.gpg --dearmor \
+    && echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-${DB_VERSION}.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/${DB_VERSION} multiverse" \
+        > /etc/apt/sources.list.d/mongodb-org-${DB_VERSION}.list \
+    && apt-get update && apt-get install -y mongodb-org \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Units that make no sense in a container: they slow the boot and clutter the
+# log, and a failed one keeps the boot from settling.
+RUN find /etc/systemd/system /lib/systemd/system \
+    -path '*.wants/*' \( \
+    -name '*getty*' -o -name '*plymouth*' -o -name '*apt-daily*' -o \
+    -name 'systemd-timesyncd*' -o -name '*udev*' \
+    \) -exec rm -f {} \; 2>/dev/null || true
+
+# Remote access, and authorization on from the first boot. The localhost
+# exception still lets init-mongodb.sh create the first account.
+RUN sed -i 's/bindIp: 127.0.0.1/bindIp: 0.0.0.0/' /etc/mongod.conf \
+    && printf '\nsecurity:\n  authorization: enabled\n' >> /etc/mongod.conf
+
+COPY sql/                          /opt/matrix/sql/
+COPY scripts/                      /opt/matrix/scripts/
+COPY services/matrix-init.service  /etc/systemd/system/matrix-init.service
+
+RUN printf 'SRC_DB=matrix_db\nDB_ROOT_PASS=testpass123\nSRC_DB_USER=centipede\nSRC_DB_PASS=centipede_pass\nMONGODB_SRC_COLLATION_LOCALE=\n' \
+        > /opt/matrix/defaults.env \
+    && chmod +x /opt/matrix/scripts/*.sh \
+    && cp /opt/matrix/scripts/init-mongodb.sh /opt/matrix/init.sh \
+    && chmod +x /opt/matrix/init.sh
+
+RUN mkdir -p /var/run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && echo 'root:testpass123' | chpasswd \
+    && echo 'root ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/root-nopasswd \
+    && chmod 0440 /etc/sudoers.d/root-nopasswd
+
+RUN systemctl enable mongod.service matrix-init.service ssh.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd", "--system"]

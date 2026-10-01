@@ -1,0 +1,20 @@
+[Unit]
+Description=Test Environment Role Initialization
+# Each container only has the service for its own role. An After= on a unit that
+# does not exist is ignored, so this list is shared by every role (fs/minio/db).
+After=network.target mariadb.service mysql.service postgresql.service mongod.service minio.service
+
+[Service]
+Type=oneshot
+# init.sh is the role-specific script copied in at build time. pipefail is set so
+# a script failure is not masked by tee and propagates as a service failure.
+ExecStart=/bin/bash -c 'set -o pipefail; /opt/testenv/init.sh 2>&1 | tee -a /var/log/testenv-init.log'
+RemainAfterExit=yes
+TimeoutStartSec=300
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=testenv-init
+
+[Install]
+WantedBy=multi-user.target

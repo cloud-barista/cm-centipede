@@ -1,0 +1,5 @@
+# built binary
+/gendata
+
+# run manifests (keep the directory)
+/runs/*.json

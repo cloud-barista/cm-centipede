@@ -1,0 +1,32 @@
+{
+  "source": {
+    "storageType": "filesystem",
+    "path": "/data/src",
+    "filesystem": {
+      "accessType": "ssh",
+      "ssh": {
+        "host": "YOUR_SRC_HOST",
+        "port": 3222,
+        "username": "YOUR_USERNAME",
+        "privateKeyPath": "/home/YOUR_LOCAL_USERNAME/.ssh/id_rsa"
+      }
+    },
+    "filter": {
+      "exclude": ["tmp", "logs"]
+    }
+  },
+  "destination": {
+    "storageType": "filesystem",
+    "path": "/data/dst",
+    "filesystem": {
+      "accessType": "ssh",
+      "ssh": {
+        "host": "YOUR_DST_HOST",
+        "port": 3223,
+        "username": "YOUR_USERNAME",
+        "privateKeyPath": "/home/YOUR_LOCAL_USERNAME/.ssh/id_rsa"
+      }
+    }
+  },
+  "strategy": "relay"
+}

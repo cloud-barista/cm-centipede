@@ -1,16 +1,36 @@
 # Makefile for CM-Centipede in Cloud-Barista.
 #
-# CM-Centipede itself has no Go source code yet (no cmd/, no go.mod), so this
-# Makefile only covers the Docker Compose development stack — modeled on
-# cloud-barista/cm-beetle's Makefile. Once cmd/cm-centipede/main.go and a
-# Dockerfile are added, port cm-beetle's dependency/lint/build/run/swag
-# targets here and uncomment the "cm-centipede" service block in
-# deployments/docker-compose/docker-compose.yaml.
+# Covers the Go build for cmd/cm-centipede and the Docker Compose development
+# stack that runs its dependencies — modeled on cloud-barista/cm-beetle's
+# Makefile. CM-Centipede is not yet part of that stack: its service block in
+# deployments/docker-compose/docker-compose.yaml is still commented out, so
+# 'make build' / 'make run' drive it locally against the composed dependencies.
 
 SHELL := /bin/bash
 
-.PHONY: up dev-ui down prepare-volumes compose compose-down build-honeybee \
-	init init-openbao unseal logs status ps clean-db clean-all help
+.PHONY: build run swagger up dev-ui down prepare-volumes compose compose-down \
+	build-honeybee init init-openbao unseal logs status ps clean-db clean-all help
+
+# ===== Go build =====
+
+build: ## Build the cm-centipede binary into bin/
+	@mkdir -p bin
+	@go build -o bin/cm-centipede ./cmd/cm-centipede
+	@echo "Built bin/cm-centipede"
+
+run: build ## Build and run cm-centipede locally (reads conf/cm-centipede.yaml)
+	@./bin/cm-centipede
+
+# dummy/ vendors other Cloud-Barista repos and transx-ex is a nested module;
+# scanning either makes swag fail on types it cannot resolve.
+swagger: ## Regenerate the OpenAPI docs in pkg/api/rest/docs from the handler annotations
+	@go run github.com/swaggo/swag/cmd/swag@v1.16.6 init \
+		--generalInfo cmd/cm-centipede/main.go \
+		--dir ./ \
+		--exclude ./dummy,./testenv,./deployments,./transx-ex \
+		--output pkg/api/rest/docs \
+		--parseDependency --parseInternal
+	@echo "Regenerated pkg/api/rest/docs"
 
 up: compose ## Build and up services by docker compose
 
