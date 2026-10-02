@@ -276,8 +276,11 @@ if want filesystem; then
     fi
 
     # How much the volume holds, so gendata can refuse a dummy size that would
-    # fill it. Only AWS sizes its root volume from .env; on NCP it comes with the
-    # server image, so 0 is sent and gendata skips the check rather than guessing.
+    # fill it. AWS sizes its root volume from .env. NCP reads the size from the
+    # vm module's volume_size output - what the VM was actually built with - since
+    # a VM made before TF_VAR_ncp_vm_volume_size existed has the old 10 GB disk
+    # whatever .env says now. A VM whose state has no such output yet sends 0, and
+    # gendata skips the check rather than guessing.
     #
     # A data path on the VM's EFS mount does not touch the root volume at all, and
     # EFS grows with what is written, so there is no size to check it against:
@@ -295,6 +298,10 @@ if want filesystem; then
                     ;;
             esac
         fi
+    else
+        VM_VOLUME_GB="$(out_val "$VO" volume_size)"
+        VM_VOLUME_GB="${VM_VOLUME_GB%.*}"
+        VM_VOLUME_GB="${VM_VOLUME_GB:-0}"
     fi
 fi
 
@@ -314,11 +321,12 @@ if want database; then
     # deprovision + provision, not a delete.
     #
     #   aws  var.aws_db_allocated_storage, 20 GB unless .env overrides it
-    #   ncp  fixed - the managed instances come with 10 GB and the module has no
-    #        knob for it, which is the tighter of the two limits
+    #   ncp  none - Cloud DB storage starts small and grows on its own as data is
+    #        written, so there is no allocation to measure against. 0 makes
+    #        gendata skip the check, as it does for an unknown VM volume.
     case "$PROVIDER" in
         aws) DB_STORAGE_GB="${TF_VAR_aws_db_allocated_storage:-20}" ;;
-        ncp) DB_STORAGE_GB=10 ;;
+        ncp) DB_STORAGE_GB=0 ;;
     esac
 fi
 

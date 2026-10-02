@@ -33,6 +33,20 @@ variable "allowed_cidr" {
   default     = "0.0.0.0/0"
 }
 
+# Which engines this module runs. Not set in .env: provision.sh and deprovision.sh
+# work it out from --engine and from what the state already holds, and export it
+# for each apply. The default - every engine - is what a plain apply gets.
+variable "ncp_db_engines" {
+  description = "Managed DB engines to run: any of mysql, postgres, mongodb"
+  type        = list(string)
+  default     = ["mysql", "postgres", "mongodb"]
+
+  validation {
+    condition     = alltrue([for e in var.ncp_db_engines : contains(["mysql", "postgres", "mongodb"], e)])
+    error_message = "ncp_db_engines may only contain mysql, postgres and mongodb."
+  }
+}
+
 # ---------------------------------------------------------------------------
 # DB engine versions
 #   Always use the FULL version string, e.g. 8.0.36.
@@ -75,3 +89,57 @@ variable "ncp_mongodb_version" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# DB server specs (product codes)
+#   Empty - the default - leaves the choice to NCP's default spec for the engine,
+#   as before these existed. A code is a long dotted string (SVR.VDBAS....);
+#   copy it verbatim from
+#   ./scripts/ncp-db-versions.sh <engine>, which lists the specs available for
+#   the engine version set above.
+#   Like every managed DB attribute it is RequiresReplace: setting or changing it
+#   on a provisioned engine re-creates that DB (about 30 minutes, data lost).
+# ---------------------------------------------------------------------------
+variable "ncp_mysql_product_code" {
+  description = "Managed MySQL server spec (product code); empty = NCP default"
+  type        = string
+  default     = ""
+}
+
+variable "ncp_postgres_product_code" {
+  description = "Managed PostgreSQL server spec (product code); empty = NCP default"
+  type        = string
+  default     = ""
+}
+
+variable "ncp_mongodb_product_code" {
+  description = "Managed MongoDB member server spec (product code); empty = NCP default"
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# DB images (image product codes)
+#   Empty - the default - lets NCP pick the image for the engine version, as
+#   before these existed. One version can come as several images (generations,
+#   G2 / G3), and a spec only works with its own image, so pin the image whenever
+#   a product code above is set: copy the [image ...] code the spec is listed
+#   under in ./scripts/ncp-db-versions.sh <engine>. The plan refuses an image that
+#   is not one of the engine version's. RequiresReplace like the rest.
+# ---------------------------------------------------------------------------
+variable "ncp_mysql_image_product_code" {
+  description = "Managed MySQL image (image product code) for ncp_mysql_version; empty = NCP's choice"
+  type        = string
+  default     = ""
+}
+
+variable "ncp_postgres_image_product_code" {
+  description = "Managed PostgreSQL image (image product code) for ncp_postgres_version; empty = NCP's choice"
+  type        = string
+  default     = ""
+}
+
+variable "ncp_mongodb_image_product_code" {
+  description = "Managed MongoDB image (image product code) for ncp_mongodb_version; empty = NCP's choice"
+  type        = string
+  default     = ""
+}

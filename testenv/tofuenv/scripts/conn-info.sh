@@ -84,9 +84,12 @@ warn_missing_public_domain() {
     missing="$(ws_exec bash -c '
         cd "/work/'"$module"'" 2>/dev/null || exit 0
         tofu output -json 2>/dev/null || true
-    ' | jq -r 'to_entries
+    ' | jq -r '. as $o | to_entries
                 | map(select(.key | endswith("_public_domain")))
                 | map(select(.value.value == null or .value.value == ""))
+                # An engine whose port is null is not provisioned at all
+                # (provision.sh --engine), so it has no domain to wait for.
+                | map(select($o[(.key | sub("_public_domain$"; "_port"))].value != null))
                 | map(.key) | join(" ")' 2>/dev/null || true)"
 
     if [ -n "$missing" ]; then

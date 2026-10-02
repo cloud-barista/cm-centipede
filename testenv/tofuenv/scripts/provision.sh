@@ -2,14 +2,22 @@
 # ==============================================================================
 # provision.sh — create resources (tofu init + validate + apply)
 # ------------------------------------------------------------------------------
-#   ./scripts/provision.sh <csp> <resource>
+#   ./scripts/provision.sh <csp> <resource> [--engine e1,e2] [--force]
 #     aws : bucket | vm | database
 #     ncp : bucket | vm | database
 #
 #   Examples:
 #     ./scripts/provision.sh aws bucket
 #     ./scripts/provision.sh aws database
-#     ./scripts/provision.sh ncp database
+#     ./scripts/provision.sh aws database --engine postgresql
+#     ./scripts/provision.sh ncp database --engine mysql,mongodb
+#
+#   One engine at a time (database only):
+#     --engine adds the engines named to the ones the prefix already runs; those keep
+#     running. aws: mysql | mariadb | postgresql, ncp: mysql | postgresql | mongodb.
+#     Without --engine a fresh database module gets every engine, as before. The
+#     list is worked out here and handed to tofu as TF_VAR_<csp>_db_engines (see
+#     scripts/lib/db-engines.sh); it is not a .env setting.
 #
 #   How it works:
 #     Runs init -> validate -> apply for /work/tofu/<csp>/<resource> inside the
@@ -29,7 +37,10 @@
 #     A resource that already holds state is reported and skipped, so running the same
 #     command twice costs nothing and creates nothing. Pass --force to apply anyway -
 #     needed to converge a module whose previous apply stopped halfway, and to pick up
-#     changed .env values.
+#     changed .env values. With --engine, the check is per engine: the run is skipped
+#     only when every engine named is already there. --force on a database module
+#     without --engine re-applies the engines it already runs, so one removed with
+#     deprovision.sh --engine does not come back.
 #
 #   NCP notes:
 #     - NCP has no default VPC, so tofu/ncp/vm and tofu/ncp/database resolve the
@@ -48,12 +59,16 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC
 
 usage() {
     cat >&2 <<'EOF'
-Usage: provision.sh <csp> <resource> [--force]
+Usage: provision.sh <csp> <resource> [--engine e1,e2] [--force]
   aws : bucket | vm | database
   ncp : bucket | vm | database
 
   A resource that already holds state is reported and left alone; --force re-applies
   it, which is what converges a module whose previous apply stopped halfway.
+
+  --engine (database only) adds just the engines named; the ones already running stay.
+    aws : mysql | mariadb | postgresql
+    ncp : mysql | postgresql | mongodb
 
   ncp/network is created automatically when vm or database needs it.
   For AWS engine versions, instance classes and the AMI: ./scripts/aws-db-versions.sh
@@ -62,21 +77,26 @@ EOF
     exit 1
 }
 
-CSP=""; RESOURCE=""; FORCE=0
-for arg in "$@"; do
-    case "$arg" in
+CSP=""; RESOURCE=""; FORCE=0; ENGINE_ARG=""
+while [ $# -gt 0 ]; do
+    case "$1" in
         -f|--force) FORCE=1 ;;
         -h|--help)  usage ;;
+        --engine)
+            [ $# -ge 2 ] || { echo "--engine needs a value" >&2; usage; }
+            ENGINE_ARG="$2"; shift ;;
+        --engine=*) ENGINE_ARG="${1#--engine=}" ;;
         *)
             if [ -z "$CSP" ]; then
-                CSP="$arg"
+                CSP="$1"
             elif [ -z "$RESOURCE" ]; then
-                RESOURCE="$arg"
+                RESOURCE="$1"
             else
-                echo "unexpected argument: $arg" >&2; usage
+                echo "unexpected argument: $1" >&2; usage
             fi
             ;;
     esac
+    shift
 done
 [ -z "$CSP" ] || [ -z "$RESOURCE" ] && usage
 
@@ -89,6 +109,10 @@ case "$RESOURCE" in
     bucket|vm|database) ;;
     *) echo "invalid resource for ${CSP}: $RESOURCE" >&2; usage ;;
 esac
+
+if [ -n "$ENGINE_ARG" ] && [ "$RESOURCE" != "database" ]; then
+    echo "--engine only applies to database" >&2; usage
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -104,6 +128,17 @@ fi
 # shellcheck source=./lib/workspace.sh
 . "$SCRIPT_DIR/lib/workspace.sh"
 ws_load "$CSP"
+# shellcheck source=./lib/db-engines.sh
+. "$SCRIPT_DIR/lib/db-engines.sh"
+
+ENGINE_REQ=""
+if [ -n "$ENGINE_ARG" ]; then
+    ENGINE_REQ="$(db_parse_engines "$ENGINE_ARG")" || usage
+fi
+
+# APPLY_EXPORTS — extra shell lines apply_module runs after sourcing .env. Only
+#   the database module sets any: the engine list worked out further down.
+APPLY_EXPORTS=""
 
 # has_managed_state <module> — true when the prefix's workspace of the module tracks a
 #   real resource. Data sources are filtered out, and outputs are ignored: a module whose
@@ -125,6 +160,7 @@ apply_module() {
         set -euo pipefail
         set -a; . /work/.env; set +a
         export VAULT_ADDR=http://openbao:8200
+        '"$APPLY_EXPORTS"'
         mkdir -p /work/.tofu-plugin-cache /work/ssh_keys
         cd "/work/'"$mod"'"
         '"$WS_INIT"'
@@ -178,17 +214,40 @@ check_bucket_name() {
 # a fresh apply. Tracking a resource is the signal; it does not prove the module applied
 # cleanly to the end, which is why --force exists to re-apply and converge one that
 # stopped halfway.
-if [ "$FORCE" -eq 0 ] && has_managed_state "$MODULE"; then
-    echo -e "${YELLOW}=== ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) is already provisioned - nothing to do ===${NC}"
+# already_provisioned <what> <hint-args> — report a no-op run and stop.
+already_provisioned() {
+    echo -e "${YELLOW}=== ${1} (prefix ${WS_PREFIX}) is already provisioned - nothing to do ===${NC}"
     ws_exec bash -c '
         cd "/work/'"$MODULE"'"
         tofu output 2>/dev/null || true
     ' | sed 's/^/  /'
     echo
     echo "  Connection info  :  ./scripts/conn-info.sh ${CSP} ${RESOURCE}"
-    echo "  Re-apply anyway  :  ./scripts/provision.sh ${CSP} ${RESOURCE} --force"
-    echo "  Destroy          :  ./scripts/deprovision.sh ${CSP} ${RESOURCE}"
+    echo "  Re-apply anyway  :  ./scripts/provision.sh ${CSP} ${RESOURCE}${2} --force"
+    echo "  Destroy          :  ./scripts/deprovision.sh ${CSP} ${RESOURCE}${2}"
     exit 0
+}
+
+if [ "$RESOURCE" = "database" ]; then
+    # The engines tofu is asked to run. Existing ones are always kept: the module
+    # is declarative, so an engine left out of the list would be destroyed.
+    CURRENT="$(db_state_engines "$MODULE")"
+    if [ -n "$ENGINE_REQ" ]; then
+        if [ "$FORCE" -eq 0 ] && [ -z "$(db_minus "$ENGINE_REQ" "$CURRENT")" ]; then
+            already_provisioned "${CSP}/database $(db_cli_names "$ENGINE_REQ")" \
+                " --engine $(db_cli_names "$ENGINE_REQ" | tr ' ' ',')"
+        fi
+        TARGET="$(db_union "$CURRENT" "$ENGINE_REQ")"
+    elif [ "$FORCE" -eq 1 ] && [ -n "$CURRENT" ]; then
+        TARGET="$CURRENT"
+    else
+        TARGET="$(db_all_engines)"
+    fi
+    APPLY_EXPORTS="$(db_engines_export "$TARGET")"
+fi
+
+if [ "$FORCE" -eq 0 ] && [ -z "$ENGINE_REQ" ] && has_managed_state "$MODULE"; then
+    already_provisioned "${CSP}/${RESOURCE}" ""
 fi
 
 if [ "$RESOURCE" = "bucket" ]; then
@@ -209,6 +268,12 @@ if [ "$CSP" = "ncp" ] && { [ "$RESOURCE" = "vm" ] || [ "$RESOURCE" = "database" 
 fi
 
 echo -e "${CYAN}=== provision: ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
+if [ "$RESOURCE" = "database" ]; then
+    echo "  engines : $(db_cli_names "$TARGET")"
+    if [ -n "$CURRENT" ]; then
+        echo "  (already running: $(db_cli_names "$CURRENT"); they stay)"
+    fi
+fi
 if [ "$CSP" = "ncp" ] && [ "$RESOURCE" = "database" ]; then
     echo -e "${YELLOW}Managed DB creation takes ~30 minutes. Do not interrupt this command.${NC}"
 fi

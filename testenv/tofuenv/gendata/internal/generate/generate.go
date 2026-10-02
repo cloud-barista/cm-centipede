@@ -20,7 +20,9 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"sync"
 
 	"github.com/brianvoe/gofakeit/v6"
 )
@@ -60,32 +62,98 @@ var writers = map[string]writer{
 
 // Generate writes the files a planned into a fresh temp directory and returns
 // the dir and a stably-sorted file list. The caller is responsible for removing
-// the dir. onFile, when set, is called with the size of each file once it is
-// written, so the caller can report progress.
-func Generate(a Allocation, onFile func(size int64)) (string, []File, error) {
-	dir, err := os.MkdirTemp("", "gendata-")
+// the dir. The temp directory is created under root, which is made if it does
+// not exist yet; an empty root means the system temp directory. onFile, when
+// set, is called with the size of each file once it is written, so the caller
+// can report progress; it is called from several goroutines at once.
+//
+// Files are written workers at a time (0 means one per CPU). Each file depends
+// only on its own seed, so the result is the same whatever the count; the first
+// failure stops the files not yet started.
+func Generate(a Allocation, root string, workers int, onFile func(size int64)) (string, []File, error) {
+	if root != "" {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return "", nil, fmt.Errorf("create temp root: %w", err)
+		}
+	}
+	dir, err := os.MkdirTemp(root, "gendata-")
 	if err != nil {
 		return "", nil, err
 	}
+	if workers < 1 {
+		workers = runtime.NumCPU()
+	}
+
+	type job struct {
+		format, path string
+		size, seed   int64
+	}
+	jobs := make(chan job)
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
+	failed := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
+	}
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				if failed() {
+					continue // drain: the run is already lost
+				}
+				if err := writers[j.format](j.path, j.size, j.seed); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("generate %s: %w", j.format, err)
+					}
+					mu.Unlock()
+					continue
+				}
+				if onFile != nil {
+					if fi, err := os.Stat(j.path); err == nil {
+						onFile(fi.Size())
+					}
+				}
+			}
+		}()
+	}
+
+feed:
 	for _, f := range a.Formats {
 		typeDir := filepath.Join(dir, f.Format)
 		if err := os.MkdirAll(typeDir, 0o755); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", nil, err
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = err
+			}
+			mu.Unlock()
+			break
 		}
 		for i := 0; i < f.Files; i++ {
-			p := filepath.Join(typeDir, fmt.Sprintf("%s_%d.%s", f.Format, i, f.Format))
-			if err := writers[f.Format](p, f.FileBytes(i), int64(i)); err != nil {
-				_ = os.RemoveAll(dir)
-				return "", nil, fmt.Errorf("generate %s: %w", f.Format, err)
+			if failed() {
+				break feed
 			}
-			if onFile != nil {
-				if fi, err := os.Stat(p); err == nil {
-					onFile(fi.Size())
-				}
+			jobs <- job{
+				format: f.Format,
+				path:   filepath.Join(typeDir, fmt.Sprintf("%s_%d.%s", f.Format, i, f.Format)),
+				size:   f.FileBytes(i),
+				seed:   int64(i),
 			}
 		}
 	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, firstErr
+	}
+
 	files, err := listFiles(dir)
 	if err != nil {
 		_ = os.RemoveAll(dir)
@@ -95,33 +163,42 @@ func Generate(a Allocation, onFile func(size int64)) (string, []File, error) {
 }
 
 // --- text formats (gofakeit) -------------------------------------------------
+//
+// Each file draws from a Faker of its own, seeded with the file's seed, rather
+// than from gofakeit's package-level source: that one is global, so files written
+// at the same time would interleave their draws and no file would be the same
+// twice. A Faker per file keeps every file reproducible however many are
+// generated at once.
 
 func writeCSV(path string, target, seed int64) error {
-	return textFile(path, seed, func(w *bufio.Writer) (int, error) {
+	fk := newFaker(seed)
+	return textFile(path, func(w *bufio.Writer) (int, error) {
 		return w.WriteString("id,first_name,last_name,email,city,age\n")
 	}, func(w *bufio.Writer, i int) (int, error) {
 		return w.WriteString(fmt.Sprintf("%d,%s,%s,%s,%s,%d\n",
-			i, gofakeit.FirstName(), gofakeit.LastName(), gofakeit.Email(),
-			gofakeit.City(), gofakeit.Number(18, 80)))
+			i, fk.FirstName(), fk.LastName(), fk.Email(),
+			fk.City(), fk.Number(18, 80)))
 	}, nil, target)
 }
 
 func writeSQL(path string, target, seed int64) error {
+	fk := newFaker(seed)
 	header := "CREATE TABLE IF NOT EXISTS gendata_people (\n" +
 		"  id INT PRIMARY KEY, first_name VARCHAR(100), last_name VARCHAR(100),\n" +
 		"  email VARCHAR(200), city VARCHAR(100), age INT\n);\n"
-	return textFile(path, seed, func(w *bufio.Writer) (int, error) {
+	return textFile(path, func(w *bufio.Writer) (int, error) {
 		return w.WriteString(header)
 	}, func(w *bufio.Writer, i int) (int, error) {
 		return w.WriteString(fmt.Sprintf(
 			"INSERT INTO gendata_people (id,first_name,last_name,email,city,age) VALUES (%d,'%s','%s','%s','%s',%d);\n",
-			i, gofakeit.FirstName(), gofakeit.LastName(), gofakeit.Email(), gofakeit.City(), gofakeit.Number(18, 80)))
+			i, fk.FirstName(), fk.LastName(), fk.Email(), fk.City(), fk.Number(18, 80)))
 	}, nil, target)
 }
 
 func writeTXT(path string, target, seed int64) error {
-	return textFile(path, seed, nil, func(w *bufio.Writer, _ int) (int, error) {
-		return w.WriteString(gofakeit.Paragraph(1, 5, 12, " ") + "\n")
+	fk := newFaker(seed)
+	return textFile(path, nil, func(w *bufio.Writer, _ int) (int, error) {
+		return w.WriteString(fk.Paragraph(1, 5, 12, " ") + "\n")
 	}, nil, target)
 }
 
@@ -134,11 +211,12 @@ type jsonRec struct {
 }
 
 func writeJSON(path string, target, seed int64) error {
+	fk := newFaker(seed)
 	first := true
-	return textFile(path, seed, func(w *bufio.Writer) (int, error) {
+	return textFile(path, func(w *bufio.Writer) (int, error) {
 		return w.WriteString("[\n")
 	}, func(w *bufio.Writer, i int) (int, error) {
-		b, err := json.Marshal(jsonRec{i, gofakeit.Name(), gofakeit.Email(), gofakeit.City(), gofakeit.Number(18, 80)})
+		b, err := json.Marshal(jsonRec{i, fk.Name(), fk.Email(), fk.City(), fk.Number(18, 80)})
 		if err != nil {
 			return 0, err
 		}
@@ -154,25 +232,33 @@ func writeJSON(path string, target, seed int64) error {
 }
 
 func writeXML(path string, target, seed int64) error {
-	return textFile(path, seed, func(w *bufio.Writer) (int, error) {
+	fk := newFaker(seed)
+	return textFile(path, func(w *bufio.Writer) (int, error) {
 		return w.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<records>\n")
 	}, func(w *bufio.Writer, i int) (int, error) {
 		return w.WriteString(fmt.Sprintf(
 			"  <record><id>%d</id><name>%s</name><email>%s</email><city>%s</city><age>%d</age></record>\n",
-			i, gofakeit.Name(), gofakeit.Email(), gofakeit.City(), gofakeit.Number(18, 80)))
+			i, fk.Name(), fk.Email(), fk.City(), fk.Number(18, 80)))
 	}, func(w *bufio.Writer) (int, error) {
 		return w.WriteString("</records>\n")
 	}, target)
 }
 
+// newFaker returns the Faker a text file draws from. gofakeit takes seed 0 to
+// mean "seed from a random source", which made the first file of every text
+// format different on every run; the seed is shifted by one so every file,
+// _0 included, is the same each time.
+func newFaker(seed int64) *gofakeit.Faker {
+	return gofakeit.New(seed + 1)
+}
+
 // textFile writes head, then row(i) until the file reaches target bytes, then foot.
-func textFile(path string, seed int64,
+func textFile(path string,
 	head func(*bufio.Writer) (int, error),
 	row func(*bufio.Writer, int) (int, error),
 	foot func(*bufio.Writer) (int, error),
 	target int64) (err error) {
 
-	gofakeit.Seed(seed)
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -225,7 +311,11 @@ func writePNG(path string, target, seed int64) (err error) {
 			err = cerr
 		}
 	}()
-	return png.Encode(f, img)
+	// Noise does not compress, so deflating it only burns CPU - several times the
+	// cost of writing the file - for a file of the same size. Stored blocks keep
+	// the size where the target put it and the PNG just as valid.
+	enc := png.Encoder{CompressionLevel: png.NoCompression}
+	return enc.Encode(f, img)
 }
 
 func writeGIF(path string, target, seed int64) (err error) {

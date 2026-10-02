@@ -7,6 +7,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -25,6 +26,9 @@ type BulkOptions struct {
 	IDOffset  int
 	Seed      int64
 	Weights   map[string]int
+	// Workers is how many connections write at once where the engine's load
+	// runs in parallel (MySQL, MariaDB, MongoDB); 0 or 1 means one.
+	Workers int
 }
 
 // BulkPlan is what a BulkOptions works out to, before anything is written.
@@ -266,8 +270,9 @@ func loadBulkMySQL(ctx context.Context, cfg Config, o BulkOptions, plan BulkPlan
 		return err
 	}
 	defer db.Close()
-	// One connection throughout: the session settings below, and the dropped
-	// triggers, have to apply to every statement of the load.
+	// The control connection: the triggers, keys and the session settings the
+	// DDL below needs all go through it. The rows themselves are written by
+	// connections of their own, opened per table.
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
@@ -276,22 +281,17 @@ func loadBulkMySQL(ctx context.Context, cfg Config, o BulkOptions, plan BulkPlan
 	if err := conn.PingContext(ctx); err != nil {
 		return fmt.Errorf("connect %s/%s: %w", cfg.Host, dbName, err)
 	}
-
-	// The parents are generated before the children and referenced by id, so the
-	// constraints are satisfied either way; checking them per row only costs an
-	// index probe each. unique_checks is the same bargain for the unique email
-	// and sku, which are generated from the row number and cannot collide.
-	for _, s := range []string{"SET SESSION foreign_key_checks = 0", "SET SESSION unique_checks = 0"} {
-		if _, err := conn.ExecContext(ctx, s); err != nil {
-			log.Printf("[warn] %s failed (continuing): %v", s, err)
-		}
-	}
+	setMySQLBulkSession(ctx, conn, true)
 
 	restore, err := suspendMySQLTriggers(ctx, conn, dbName)
 	if err != nil {
 		return err
 	}
 	defer restore()
+
+	// Deferred after the triggers, so it runs first: keys back, then triggers.
+	restoreKeys := dropMySQLKeys(ctx, db, conn, cfg.Engine, dbName, plannedTables(plan))
+	defer restoreKeys()
 
 	g, err := newGenCtx(ctx, o, plan, &sqlRefs{db: db, engine: cfg.Engine})
 	if err != nil {
@@ -303,11 +303,28 @@ func loadBulkMySQL(ctx context.Context, cfg Config, o BulkOptions, plan BulkPlan
 		if rows == 0 {
 			continue
 		}
-		if err := insertBatchedMySQL(ctx, conn, t, rows, g, o); err != nil {
+		if err := insertParallelMySQL(ctx, db, t, rows, g, o); err != nil {
 			return fmt.Errorf("bulk %s: %w", t.name, err)
 		}
 	}
 	return nil
+}
+
+// setMySQLBulkSession turns off the per-row checks on one connection. Every
+// connection that writes rows needs it, since session settings stay with the
+// session.
+//
+// The parents are generated before the children and referenced by id, so the
+// constraints are satisfied either way; checking them per row only costs an
+// index probe each. unique_checks is the same bargain for the unique email and
+// sku, which are generated from the row number and cannot collide. A refusal is
+// reported once, by the control connection (loud), and not again per writer.
+func setMySQLBulkSession(ctx context.Context, conn *sql.Conn, loud bool) {
+	for _, s := range []string{"SET SESSION foreign_key_checks = 0", "SET SESSION unique_checks = 0"} {
+		if _, err := conn.ExecContext(ctx, s); err != nil && loud {
+			log.Printf("[warn] %s failed (continuing): %v", s, err)
+		}
+	}
 }
 
 // mysqlBulkDSN is the fixture loader's DSN with parameter interpolation added.
@@ -323,41 +340,107 @@ func mysqlBulkDSN(cfg Config, dbName string) string {
 	return mc.FormatDSN()
 }
 
-func insertBatchedMySQL(ctx context.Context, conn *sql.Conn, t bulkTable, rows int, g *genCtx, o BulkOptions) error {
-	perStmt := rowsPerStatement(o.BatchSize, len(t.cols))
+// insertParallelMySQL writes one table's rows over o.Workers connections at
+// once (pumpBatches), each a mysqlWriter.
+func insertParallelMySQL(ctx context.Context, db *sql.DB, t bulkTable, rows int, g *genCtx, o BulkOptions) error {
 	prefix := "INSERT INTO " + quoteMySQL(t.name) + " (" + joinQuoted(t.cols, quoteMySQL) + ") VALUES "
-	prog := newProgress(t.name, rows)
-
-	args := make([]any, 0, perStmt*len(t.cols))
-	for done := 0; done < rows; {
-		n := perStmt
-		if rem := rows - done; rem < n {
-			n = rem
+	n := workerCount(o)
+	writers := make([]bulkWriter, 0, n)
+	var conns []*sql.Conn
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
 		}
-		args = args[:0]
-		for i := 0; i < n; i++ {
-			args = append(args, t.gen(g, o.IDOffset+done+i)...)
-		}
-		if _, err := conn.ExecContext(ctx, prefix+placeholders(n, len(t.cols)), args...); err != nil {
+	}()
+	for i := 0; i < n; i++ {
+		c, err := db.Conn(ctx)
+		if err != nil {
 			return err
 		}
-		done += n
-		prog.add(n)
+		conns = append(conns, c)
+		setMySQLBulkSession(ctx, c, false)
+		writers = append(writers, &mysqlWriter{conn: c, prefix: prefix, cols: len(t.cols)})
 	}
-	prog.done()
+	return pumpBatches(ctx, t, rows, mysqlRowsPerStatement(t, o.BatchSize), g, o.IDOffset, writers)
+}
+
+// mysqlCommitRows is how many rows a writer puts in one transaction. Committing
+// every statement means a redo log flush - and a binlog one where it is on -
+// every few thousand rows; RDS keeps innodb_flush_log_at_trx_commit=1 and a
+// master account cannot change it, so fewer commits is the lever that is left.
+// Large enough to make the flushes rare, small enough that a transaction does
+// not hold an undo log of millions of rows.
+const mysqlCommitRows = 50_000
+
+// mysqlWriter is one connection of a parallel MySQL/MariaDB load: multi-row
+// INSERTs inside a transaction it commits every mysqlCommitRows rows.
+type mysqlWriter struct {
+	conn   *sql.Conn
+	prefix string
+	cols   int
+	tx     *sql.Tx
+	inTx   int
+}
+
+func (w *mysqlWriter) write(ctx context.Context, rows [][]any) error {
+	if w.tx == nil {
+		tx, err := w.conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		w.tx = tx
+	}
+	args := make([]any, 0, len(rows)*w.cols)
+	for _, r := range rows {
+		args = append(args, r...)
+	}
+	if _, err := w.tx.ExecContext(ctx, w.prefix+placeholders(len(rows), w.cols), args...); err != nil {
+		return err
+	}
+	w.inTx += len(rows)
+	if w.inTx < mysqlCommitRows {
+		return nil
+	}
+	err := w.tx.Commit()
+	w.tx, w.inTx = nil, 0
+	return err
+}
+
+func (w *mysqlWriter) finish(_ context.Context, ok bool) error {
+	if w.tx == nil {
+		return nil
+	}
+	tx := w.tx
+	w.tx = nil
+	if ok {
+		return tx.Commit()
+	}
+	_ = tx.Rollback()
 	return nil
 }
 
-// rowsPerStatement caps a batch so the placeholder count stays well inside
-// MySQL's 65535 limit per prepared statement.
-func rowsPerStatement(batch, cols int) int {
-	if batch < 1 {
-		batch = 1000
+// mysqlRowsPerStatement is how many rows one INSERT carries: batch, raised to
+// mysqlStatementRows, and then held under two ceilings - 60000 values, inside
+// the 65535 placeholders a prepared statement may have, and about 4 MiB of
+// statement text, well inside the 16 MiB max_allowed_packet MariaDB ships with
+// (MySQL's is 64). A bigger statement is fewer round trips and fewer parses.
+const mysqlStatementRows = 10_000
+
+func mysqlRowsPerStatement(t bulkTable, batch int) int {
+	n := batch
+	if n < mysqlStatementRows {
+		n = mysqlStatementRows
 	}
-	if max := 60000 / cols; batch > max {
-		batch = max
+	if max := 60000 / len(t.cols); n > max {
+		n = max
 	}
-	return batch
+	if max := (4 << 20) / t.bytesPerRow; n > max {
+		n = max
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 func placeholders(rows, cols int) string {
@@ -513,12 +596,27 @@ func loadBulkPostgres(ctx context.Context, cfg Config, o BulkOptions, plan BulkP
 		return err
 	}
 	defer db.Close()
-	if err := db.PingContext(ctx); err != nil {
+	// One connection throughout: session_replication_role below only applies to
+	// the session that set it, so every COPY has to run on that same session.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.PingContext(ctx); err != nil {
 		return fmt.Errorf("connect postgres(%s) %s: %w", dbName, cfg.Host, err)
 	}
 
-	restore := suspendPGTriggers(ctx, db, plan)
-	defer restore()
+	schema := pgSchema(cfg)
+	tables := plannedTables(plan)
+
+	// Deferred in reverse: the indexes are rebuilt first, then the checks come
+	// back, and the tables are analyzed last, once both are in place.
+	defer analyzePG(ctx, conn, tables)
+	restoreChecks := suspendPGChecks(ctx, conn, schema, tables)
+	defer restoreChecks()
+	restoreIndexes := dropPGIndexes(ctx, db, conn, schema, tables)
+	defer restoreIndexes()
 
 	g, err := newGenCtx(ctx, o, plan, &sqlRefs{db: db, engine: cfg.Engine})
 	if err != nil {
@@ -530,11 +628,22 @@ func loadBulkPostgres(ctx context.Context, cfg Config, o BulkOptions, plan BulkP
 		if rows == 0 {
 			continue
 		}
-		if err := copyPostgres(ctx, db, t, rows, g, o); err != nil {
+		if err := copyPostgres(ctx, conn, t, rows, g, o); err != nil {
 			return fmt.Errorf("bulk %s: %w", t.name, err)
 		}
 	}
 	return nil
+}
+
+// plannedTables lists the bulk tables the plan writes rows into, in load order.
+func plannedTables(plan BulkPlan) []string {
+	var out []string
+	for _, t := range bulkTables {
+		if plan.Rows[t.name] > 0 {
+			out = append(out, t.name)
+		}
+	}
+	return out
 }
 
 // pgCopyChunk is how many rows go into one COPY transaction. One transaction for
@@ -542,14 +651,14 @@ func loadBulkPostgres(ctx context.Context, cfg Config, o BulkOptions, plan BulkP
 // rows; chunking bounds that without costing much.
 const pgCopyChunk = 100_000
 
-func copyPostgres(ctx context.Context, db *sql.DB, t bulkTable, rows int, g *genCtx, o BulkOptions) error {
+func copyPostgres(ctx context.Context, conn *sql.Conn, t bulkTable, rows int, g *genCtx, o BulkOptions) error {
 	prog := newProgress(t.name, rows)
 	for done := 0; done < rows; {
 		n := pgCopyChunk
 		if rem := rows - done; rem < n {
 			n = rem
 		}
-		if err := copyChunkPostgres(ctx, db, t, o.IDOffset+done, n, g); err != nil {
+		if err := copyChunkPostgres(ctx, conn, t, o.IDOffset+done, n, g); err != nil {
 			return err
 		}
 		done += n
@@ -559,8 +668,8 @@ func copyPostgres(ctx context.Context, db *sql.DB, t bulkTable, rows int, g *gen
 	return nil
 }
 
-func copyChunkPostgres(ctx context.Context, db *sql.DB, t bulkTable, firstID, n int, g *genCtx) (err error) {
-	tx, err := db.BeginTx(ctx, nil)
+func copyChunkPostgres(ctx context.Context, conn *sql.Conn, t bulkTable, firstID, n int, g *genCtx) (err error) {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -591,22 +700,69 @@ func copyChunkPostgres(ctx context.Context, db *sql.DB, t bulkTable, firstID, n 
 	return tx.Commit()
 }
 
-// suspendPGTriggers turns off the user triggers on the tables being filled, for
-// the same reason MySQL's are dropped. PostgreSQL can do it in place, and only
-// USER triggers are touched, so the foreign keys - enforced by system triggers -
-// keep checking.
-func suspendPGTriggers(ctx context.Context, db *sql.DB, plan BulkPlan) func() {
+// suspendPGChecks turns off the foreign key checks and the user triggers on the
+// tables being filled, and returns a function that turns them back on.
+//
+// The user triggers go for the same reason MySQL's are dropped. The foreign keys
+// go because each check is a lookup plus a FOR KEY SHARE lock on the parent row:
+// with children spread at random over millions of orders, that is a random read
+// and a dirtied page per row, which on a small instance is most of the load's
+// wall clock. The generator only ever draws parent ids from ranges it created or
+// read back, so the rows are referentially valid without being checked.
+//
+// session_replication_role = replica does both at once and touches nothing but
+// this session, so there is nothing to put back if the process dies. It needs a
+// privilege a managed instance's master account may lack; when it is refused,
+// the triggers are disabled in place and the foreign keys dropped, to be added
+// back - and so validated - once the load is done.
+func suspendPGChecks(ctx context.Context, conn *sql.Conn, schema string, tables []string) func() {
+	err := setReplicaRole(ctx, conn)
+	if err == nil {
+		log.Printf("database: session_replication_role = replica, foreign key checks and user triggers are off for the bulk load")
+		return func() {
+			if _, err := conn.ExecContext(ctx, "RESET session_replication_role"); err != nil {
+				log.Printf("[warn] could not reset session_replication_role: %v", err)
+			}
+		}
+	}
+	log.Printf("[warn] session_replication_role = replica refused (%v), "+
+		"disabling triggers and dropping foreign keys instead", err)
+
+	restoreTriggers := suspendPGTriggers(ctx, conn, tables)
+	restoreFKs := dropPGForeignKeys(ctx, conn, schema, tables)
+	return func() {
+		restoreFKs()
+		restoreTriggers()
+	}
+}
+
+// setReplicaRole switches the session to replica mode and confirms it took.
+func setReplicaRole(ctx context.Context, conn *sql.Conn) error {
+	if _, err := conn.ExecContext(ctx, "SET session_replication_role = replica"); err != nil {
+		return err
+	}
+	var role string
+	if err := conn.QueryRowContext(ctx, "SHOW session_replication_role").Scan(&role); err != nil {
+		return err
+	}
+	if role != "replica" {
+		return fmt.Errorf("session_replication_role is %q after SET", role)
+	}
+	return nil
+}
+
+// suspendPGTriggers turns off the user triggers on the tables being filled.
+// PostgreSQL can do it in place, and only USER triggers are touched, so the
+// foreign keys - enforced by system triggers - keep checking.
+func suspendPGTriggers(ctx context.Context, conn *sql.Conn, tables []string) func() {
 	var disabled []string
-	for _, t := range bulkTables {
-		if plan.Rows[t.name] == 0 {
+	for _, name := range tables {
+		q := "ALTER TABLE " + pq.QuoteIdentifier(name) + " DISABLE TRIGGER USER"
+		if _, err := conn.ExecContext(ctx, q); err != nil {
+			log.Printf("[warn] could not disable triggers on %s (continuing, the load will be slower): %v", name, err)
 			continue
 		}
-		q := "ALTER TABLE " + pq.QuoteIdentifier(t.name) + " DISABLE TRIGGER USER"
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			log.Printf("[warn] could not disable triggers on %s (continuing, the load will be slower): %v", t.name, err)
-			continue
-		}
-		disabled = append(disabled, t.name)
+		disabled = append(disabled, name)
 	}
 	if len(disabled) > 0 {
 		log.Printf("database: triggers disabled on %s for the bulk load", strings.Join(disabled, ", "))
@@ -614,7 +770,7 @@ func suspendPGTriggers(ctx context.Context, db *sql.DB, plan BulkPlan) func() {
 	return func() {
 		for _, name := range disabled {
 			q := "ALTER TABLE " + pq.QuoteIdentifier(name) + " ENABLE TRIGGER USER"
-			if _, err := db.ExecContext(ctx, q); err != nil {
+			if _, err := conn.ExecContext(ctx, q); err != nil {
 				log.Printf("[ERROR] triggers on %s were disabled for the bulk load and could NOT be re-enabled: %v\n"+
 					"  run it by hand: %s", name, err, q)
 			}
@@ -625,10 +781,249 @@ func suspendPGTriggers(ctx context.Context, db *sql.DB, plan BulkPlan) func() {
 	}
 }
 
+// pgDDL is a schema object taken out of the way for the load, and the
+// statements that remove and recreate it.
+type pgDDL struct {
+	name, table    string
+	drop, recreate string
+}
+
+// dropPGForeignKeys drops the foreign keys declared on the tables being filled
+// and returns a function that adds them back.
+//
+// Only the child side matters: a foreign key is checked when a row is inserted
+// into the table that declares it, never when one is inserted into the table it
+// points at. pg_get_constraintdef hands back the clause exactly, ON DELETE and
+// ON UPDATE actions included, and adding it back validates every row.
+func dropPGForeignKeys(ctx context.Context, conn *sql.Conn, schema string, tables []string) func() {
+	defs, err := queryPGDDL(ctx, conn, `
+		SELECT c.conname, t.relname,
+		       format('ALTER TABLE %I.%I DROP CONSTRAINT %I', n.nspname, t.relname, c.conname),
+		       format('ALTER TABLE %I.%I ADD CONSTRAINT %I ', n.nspname, t.relname, c.conname)
+		         || pg_get_constraintdef(c.oid)
+		FROM   pg_constraint c
+		JOIN   pg_class t     ON t.oid = c.conrelid
+		JOIN   pg_namespace n ON n.oid = t.relnamespace
+		WHERE  c.contype = 'f' AND n.nspname = $1 AND t.relname = ANY($2)
+		ORDER  BY t.relname, c.conname`, schema, tables)
+	if err != nil {
+		log.Printf("[warn] could not list foreign keys (continuing, they keep checking): %v", err)
+		return func() {}
+	}
+	dropped := dropPGDDL(ctx, conn, "foreign key", defs)
+	return func() {
+		// No progress view covers validating a foreign key, so each one is only
+		// timed.
+		recreatePGDDL(ctx, conn, "foreign key", dropped, nil)
+	}
+}
+
+// pgMaintenanceWorkMem is what each index rebuild may sort in. Large enough that
+// the biggest index here sorts in a few passes, small enough to leave a 4 GB
+// instance its shared buffers.
+const pgMaintenanceWorkMem = "512MB"
+
+// dropPGIndexes drops the plain secondary indexes on the tables being filled and
+// returns a function that rebuilds them.
+//
+// Maintaining an index on a random column costs a random page per row once the
+// index outgrows memory; building it afterwards is one sort. Primary keys stay,
+// since their ids are generated in order and cost nothing to maintain, and so do
+// the indexes behind UNIQUE constraints, which can only go with the constraint.
+//
+// The rebuild is the slow end of a large load, so it reports as it goes: each
+// index as it starts and finishes, and in between what pg_stat_progress_create_index
+// says the build is doing, read from a second connection of db.
+func dropPGIndexes(ctx context.Context, db *sql.DB, conn *sql.Conn, schema string, tables []string) func() {
+	defs, err := queryPGDDL(ctx, conn, `
+		SELECT ic.relname, t.relname,
+		       format('DROP INDEX %I.%I', n.nspname, ic.relname),
+		       pg_get_indexdef(i.indexrelid)
+		FROM   pg_index i
+		JOIN   pg_class ic    ON ic.oid = i.indexrelid
+		JOIN   pg_class t     ON t.oid = i.indrelid
+		JOIN   pg_namespace n ON n.oid = t.relnamespace
+		WHERE  n.nspname = $1 AND t.relname = ANY($2)
+		  AND  NOT i.indisprimary
+		  AND  NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid)
+		ORDER  BY t.relname, ic.relname`, schema, tables)
+	if err != nil {
+		log.Printf("[warn] could not list secondary indexes (continuing, they stay in place): %v", err)
+		return func() {}
+	}
+	dropped := dropPGDDL(ctx, conn, "index", defs)
+	return func() {
+		if len(dropped) == 0 {
+			return
+		}
+		if _, err := conn.ExecContext(ctx, "SET maintenance_work_mem = '"+pgMaintenanceWorkMem+"'"); err != nil {
+			log.Printf("[warn] could not raise maintenance_work_mem (the rebuild will be slower): %v", err)
+		}
+		recreatePGDDL(ctx, conn, "index", dropped, newPGIndexWatcher(ctx, db, conn))
+		if _, err := conn.ExecContext(ctx, "RESET maintenance_work_mem"); err != nil {
+			log.Printf("[warn] could not reset maintenance_work_mem: %v", err)
+		}
+	}
+}
+
+func queryPGDDL(ctx context.Context, conn *sql.Conn, q string, schema string, tables []string) ([]pgDDL, error) {
+	rows, err := conn.QueryContext(ctx, q, schema, pq.Array(tables))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []pgDDL
+	for rows.Next() {
+		var d pgDDL
+		if err := rows.Scan(&d.name, &d.table, &d.drop, &d.recreate); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// dropPGDDL drops each object and returns the ones that are now gone, reported
+// as one line. The definitions are held in memory only; if the process dies
+// before the rebuild, the names logged here are what to look up in the fixture
+// SQL, which holds every one of them.
+func dropPGDDL(ctx context.Context, conn *sql.Conn, kind string, defs []pgDDL) []pgDDL {
+	var dropped []pgDDL
+	var names []string
+	for _, d := range defs {
+		if _, err := conn.ExecContext(ctx, d.drop); err != nil {
+			log.Printf("[warn] could not drop %s %s (continuing, the load will be slower): %v", kind, d.name, err)
+			continue
+		}
+		dropped = append(dropped, d)
+		names = append(names, d.name)
+	}
+	if len(dropped) > 0 {
+		log.Printf("database: %d %s dropped for the bulk load, rebuilt once the test data is in (%s)",
+			len(dropped), plural(kind, len(dropped)), strings.Join(names, ", "))
+	}
+	return dropped
+}
+
+// recreatePGDDL puts the dropped objects back one at a time, logging each as it
+// starts and finishes. watch, when not nil, reports on a build while it runs.
+func recreatePGDDL(ctx context.Context, conn *sql.Conn, kind string, dropped []pgDDL, watch *ddlWatcher) {
+	if len(dropped) == 0 {
+		return
+	}
+	log.Printf("database: rebuilding %d %s", len(dropped), plural(kind, len(dropped)))
+	start := time.Now()
+	failed := 0
+	for i, d := range dropped {
+		label := fmt.Sprintf("  [%d/%d] %s", i+1, len(dropped), d.name)
+		log.Printf("%s (%s) ...", label, d.table)
+		began := time.Now()
+		stop := watch.start(label)
+		_, err := conn.ExecContext(ctx, d.recreate)
+		stop()
+		if err != nil {
+			failed++
+			// Loud, because the database is now missing an object the fixture
+			// created and nothing later in the run would notice.
+			log.Printf("[ERROR] %s %s was dropped for the bulk load and could NOT be recreated: %v\n"+
+				"  recreate it by hand, or reload the fixture:\n  %s;", kind, d.name, err, d.recreate)
+			continue
+		}
+		log.Printf("%s done in %s", label, time.Since(began).Round(time.Second))
+	}
+	log.Printf("database: %d %s rebuilt in %s",
+		len(dropped)-failed, plural(kind, len(dropped)-failed), time.Since(start).Round(time.Second))
+}
+
+// newPGIndexWatcher returns a watcher that reads pg_stat_progress_create_index
+// for conn's session, or nil - which reports nothing - if the session cannot be
+// identified.
+//
+// It reads from a connection of db's own: conn is busy running the CREATE INDEX
+// it is watching. The view shows a session of the same role without any extra
+// privilege, which is what the load connects as.
+func newPGIndexWatcher(ctx context.Context, db *sql.DB, conn *sql.Conn) *ddlWatcher {
+	var pid int
+	if err := conn.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		log.Printf("[warn] could not identify the load session, index rebuilds will not report progress: %v", err)
+		return nil
+	}
+	return &ddlWatcher{ctx: ctx, poll: func(ctx context.Context) (string, bool) {
+		var (
+			phase                   string
+			blocksDone, blocksTotal int64
+			tuplesDone, tuplesTotal int64
+		)
+		err := db.QueryRowContext(ctx, `
+			SELECT phase, blocks_done, blocks_total, tuples_done, tuples_total
+			FROM   pg_stat_progress_create_index WHERE pid = $1`, pid).
+			Scan(&phase, &blocksDone, &blocksTotal, &tuplesDone, &tuplesTotal)
+		if err != nil {
+			return "", false
+		}
+		return formatIndexProgress(phase, blocksDone, blocksTotal, tuplesDone, tuplesTotal), true
+	}}
+}
+
+// formatIndexProgress renders one sample. A B-tree build scans the table (counted
+// in blocks), sorts (not counted at all), then loads the sorted tuples (counted
+// in tuples); whichever counter the current phase fills is the one shown.
+func formatIndexProgress(phase string, blocksDone, blocksTotal, tuplesDone, tuplesTotal int64) string {
+	phase = strings.TrimPrefix(phase, "building index: ")
+	switch {
+	case tuplesTotal > 0:
+		return fmt.Sprintf("%s %.0f%% (%s/%s tuples)", phase,
+			float64(tuplesDone)*100/float64(tuplesTotal), humanCount(int(tuplesDone)), humanCount(int(tuplesTotal)))
+	case blocksTotal > 0:
+		return fmt.Sprintf("%s %.0f%% (%s/%s blocks)", phase,
+			float64(blocksDone)*100/float64(blocksTotal), humanCount(int(blocksDone)), humanCount(int(blocksTotal)))
+	default:
+		return phase
+	}
+}
+
+// plural spells kind for n of them: index/indexes, foreign key/foreign keys.
+func plural(kind string, n int) string {
+	if n == 1 {
+		return kind
+	}
+	if strings.HasSuffix(kind, "x") {
+		return kind + "es"
+	}
+	return kind + "s"
+}
+
+// analyzePG refreshes the planner statistics of the loaded tables, which a bulk
+// load leaves describing the tables as they were before it.
+//
+// One table at a time, so a long run shows which table it is on.
+func analyzePG(ctx context.Context, conn *sql.Conn, tables []string) {
+	if len(tables) == 0 {
+		return
+	}
+	log.Printf("database: analyzing %d tables", len(tables))
+	start := time.Now()
+	for i, t := range tables {
+		began := time.Now()
+		if _, err := conn.ExecContext(ctx, "ANALYZE "+pq.QuoteIdentifier(t)); err != nil {
+			log.Printf("[warn] could not analyze %s: %v", t, err)
+			continue
+		}
+		log.Printf("  [%d/%d] %s analyzed in %s", i+1, len(tables), t, time.Since(began).Round(time.Second))
+	}
+	log.Printf("database: tables analyzed in %s", time.Since(start).Round(time.Second))
+}
+
 // ---------------------------------------------------------------------------
 // MongoDB
 // ---------------------------------------------------------------------------
 
+// loadBulkMongo fills the collections with InsertMany batches, o.Workers of
+// them in flight at once (pumpBatches), each a mongoWriter.
+//
+// The batches are mongoBatchSize documents or more: a batch is a round trip,
+// and an order_items document is ~150 bytes, so a thousand of them leave the
+// connection waiting on the reply far longer than it spends sending.
 func loadBulkMongo(ctx context.Context, cfg Config, o BulkOptions, plan BulkPlan) error {
 	client, err := mongoConnect(ctx, cfg)
 	if err != nil {
@@ -637,46 +1032,60 @@ func loadBulkMongo(ctx context.Context, cfg Config, o BulkOptions, plan BulkPlan
 	defer client.Disconnect(ctx)
 	db := client.Database(targetDB(cfg))
 
+	restoreIndexes := dropMongoIndexes(ctx, client, db, plannedTables(plan))
+	defer restoreIndexes()
+
 	g, err := newGenCtx(ctx, o, plan, &mongoRefs{db: db})
 	if err != nil {
 		return err
 	}
 
 	batch := o.BatchSize
-	if batch < 1 {
-		batch = 1000
+	if batch < mongoBatchSize {
+		batch = mongoBatchSize
 	}
-	// Unordered: the inserts are independent, so the server may run them in
-	// parallel instead of stopping the batch at the first rejected document.
-	opts := options.InsertMany().SetOrdered(false)
-
 	for _, t := range bulkTables {
 		rows := plan.Rows[t.name]
 		if rows == 0 {
 			continue
 		}
 		coll := db.Collection(t.name)
-		prog := newProgress(t.name, rows)
-		docs := make([]any, 0, batch)
-		for done := 0; done < rows; {
-			n := batch
-			if rem := rows - done; rem < n {
-				n = rem
-			}
-			docs = docs[:0]
-			for i := 0; i < n; i++ {
-				docs = append(docs, rowToDoc(t, t.gen(g, o.IDOffset+done+i)))
-			}
-			if _, err := coll.InsertMany(ctx, docs, opts); err != nil {
-				return fmt.Errorf("bulk %s: %w", t.name, err)
-			}
-			done += n
-			prog.add(n)
+		writers := make([]bulkWriter, workerCount(o))
+		for i := range writers {
+			writers[i] = &mongoWriter{coll: coll, t: t}
 		}
-		prog.done()
+		if err := pumpBatches(ctx, t, rows, batch, g, o.IDOffset, writers); err != nil {
+			return fmt.Errorf("bulk %s: %w", t.name, err)
+		}
 	}
 	return nil
 }
+
+// mongoBatchSize is the fewest documents one InsertMany carries. The driver
+// splits a batch past the server's 48 MB message size on its own.
+const mongoBatchSize = 10_000
+
+// mongoWriter is one of a parallel MongoDB load's writers. The client's
+// connection pool hands each concurrent InsertMany a connection of its own.
+type mongoWriter struct {
+	coll *mongo.Collection
+	t    bulkTable
+}
+
+// write inserts one batch, unordered: the documents are independent, so the
+// server may apply them in any order instead of stopping at the first rejected
+// one.
+func (w *mongoWriter) write(ctx context.Context, rows [][]any) error {
+	docs := make([]any, len(rows))
+	for i, r := range rows {
+		docs[i] = rowToDoc(w.t, r)
+	}
+	_, err := w.coll.InsertMany(ctx, docs, options.InsertMany().SetOrdered(false))
+	return err
+}
+
+// finish has nothing to do: every InsertMany is acknowledged on its own.
+func (w *mongoWriter) finish(context.Context, bool) error { return nil }
 
 // rowToDoc turns a generated row into a document shaped like the fixture's own:
 // the primary key becomes _id rather than staying a named field, which is what
@@ -865,12 +1274,20 @@ func joinQuoted(names []string, quote func(string) string) string {
 
 // progress reports a long load at a readable pace: a line every few seconds
 // rather than one per batch, and a rate so the remaining time is obvious.
+//
+// Two rates: the average since the start, and "now" - the rows of the last
+// interval alone. The average is what the time left is judged by; "now" is what
+// shows a load slowing down, which an average spread over half an hour hides.
+// Safe for concurrent use: parallel writers report into one progress.
 type progress struct {
-	label  string
-	total  int
-	seen   int
-	start  time.Time
-	lastAt time.Time
+	label string
+	total int
+	start time.Time
+
+	mu       sync.Mutex
+	seen     int
+	lastAt   time.Time
+	lastSeen int
 }
 
 const progressEvery = 5 * time.Second
@@ -881,21 +1298,29 @@ func newProgress(label string, total int) *progress {
 }
 
 func (p *progress) add(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.seen += n
-	if time.Since(p.lastAt) < progressEvery {
+	now := time.Now()
+	since := now.Sub(p.lastAt)
+	if since < progressEvery {
 		return
 	}
-	p.lastAt = time.Now()
-	log.Printf("  %s: %s/%s rows (%.0f%%, %s rows/s)",
+	recent := int(float64(p.seen-p.lastSeen) / since.Seconds())
+	p.lastAt, p.lastSeen = now, p.seen
+	log.Printf("  %s: %s/%s rows (%.0f%%, %s rows/s, now %s)",
 		p.label, humanCount(p.seen), humanCount(p.total),
-		float64(p.seen)*100/float64(p.total), humanCount(p.rate()))
+		float64(p.seen)*100/float64(p.total), humanCount(p.rate()), humanCount(recent))
 }
 
 func (p *progress) done() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	log.Printf("  %s: %s rows in %s (%s rows/s)",
 		p.label, humanCount(p.total), time.Since(p.start).Round(time.Second), humanCount(p.rate()))
 }
 
+// rate is the average since the start; the caller holds mu.
 func (p *progress) rate() int {
 	sec := time.Since(p.start).Seconds()
 	if sec <= 0 {

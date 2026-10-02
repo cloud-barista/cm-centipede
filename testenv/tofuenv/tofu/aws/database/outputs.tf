@@ -12,39 +12,48 @@ output "db_password" {
   sensitive   = true
 }
 
+# An engine left out of var.aws_db_engines has no instance, and its outputs are
+# null. gen-data.sh and conn-info.sh read a null host as "not provisioned".
+
 # --- MySQL ---
 output "mysql_host" {
-  value = aws_db_instance.mysql.address
+  value = one(aws_db_instance.mysql[*].address)
 }
 output "mysql_port" {
-  value = aws_db_instance.mysql.port
+  value = one(aws_db_instance.mysql[*].port)
 }
 output "mysql_connection_uri" {
-  value     = "mysql://${var.aws_db_username}:${local.db_password}@${aws_db_instance.mysql.address}:${aws_db_instance.mysql.port}/${var.aws_db_name}"
+  value = one([for i in aws_db_instance.mysql :
+    "mysql://${var.aws_db_username}:${local.db_password}@${i.address}:${i.port}/${var.aws_db_name}"
+  ])
   sensitive = true
 }
 
 # --- MariaDB ---
 output "mariadb_host" {
-  value = aws_db_instance.mariadb.address
+  value = one(aws_db_instance.mariadb[*].address)
 }
 output "mariadb_port" {
-  value = aws_db_instance.mariadb.port
+  value = one(aws_db_instance.mariadb[*].port)
 }
 output "mariadb_connection_uri" {
-  value     = "mysql://${var.aws_db_username}:${local.db_password}@${aws_db_instance.mariadb.address}:${aws_db_instance.mariadb.port}/${var.aws_db_name}"
+  value = one([for i in aws_db_instance.mariadb :
+    "mysql://${var.aws_db_username}:${local.db_password}@${i.address}:${i.port}/${var.aws_db_name}"
+  ])
   sensitive = true
 }
 
 # --- PostgreSQL ---
 output "postgres_host" {
-  value = aws_db_instance.postgres.address
+  value = one(aws_db_instance.postgres[*].address)
 }
 output "postgres_port" {
-  value = aws_db_instance.postgres.port
+  value = one(aws_db_instance.postgres[*].port)
 }
 output "postgres_connection_uri" {
-  value     = "postgresql://${var.aws_db_username}:${local.db_password}@${aws_db_instance.postgres.address}:${aws_db_instance.postgres.port}/${var.aws_db_name}"
+  value = one([for i in aws_db_instance.postgres :
+    "postgresql://${var.aws_db_username}:${local.db_password}@${i.address}:${i.port}/${var.aws_db_name}"
+  ])
   sensitive = true
 }
 
@@ -56,11 +65,11 @@ output "secure_transport" {
 
 output "parameter_groups" {
   description = "The plaintext parameter groups, empty when running against RDS defaults"
-  value = local.want_parameter_group ? {
-    mysql    = aws_db_parameter_group.mysql[0].name
-    mariadb  = aws_db_parameter_group.mariadb[0].name
-    postgres = aws_db_parameter_group.postgres[0].name
-  } : {}
+  value = { for engine, groups in {
+    mysql    = aws_db_parameter_group.mysql
+    mariadb  = aws_db_parameter_group.mariadb
+    postgres = aws_db_parameter_group.postgres
+  } : engine => groups[0].name if length(groups) > 0 }
 }
 
 output "name_prefix" {

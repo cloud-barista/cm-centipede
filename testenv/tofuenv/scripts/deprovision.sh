@@ -2,13 +2,26 @@
 # ==============================================================================
 # deprovision.sh — delete resources (tofu destroy)
 # ------------------------------------------------------------------------------
-#   ./scripts/deprovision.sh <csp> <resource>
+#   ./scripts/deprovision.sh <csp> <resource> [--engine e1,e2]
 #     aws : bucket | vm | database
 #     ncp : bucket | vm | database
 #
 #   Examples:
 #     ./scripts/deprovision.sh aws database
-#     ./scripts/deprovision.sh ncp database
+#     ./scripts/deprovision.sh aws database --engine postgresql
+#     ./scripts/deprovision.sh ncp database --engine mongodb
+#
+#   One engine at a time (database only):
+#     --engine destroys just the engines named; the others keep running untouched.
+#     aws: mysql | mariadb | postgresql, ncp: mysql | postgresql | mongodb.
+#     It is a targeted destroy of those engines' own resources (see
+#     db_engine_targets in scripts/lib/db-engines.sh), not an apply of the shorter
+#     engine list: an apply would also roll any .env change into the engines that
+#     stay, and on NCP that re-creates them. Removing the last engine left destroys
+#     the whole module, shared subnet group / security group included, exactly as
+#     a run without --engine does. A targeted destroy leaves the outputs as they
+#     were, so it is followed by a refresh-only apply that clears the removed
+#     engine's *_host / *_port - it changes no infrastructure.
 #
 #   One environment per prefix:
 #     Only the workspace of the prefix .env sets is destroyed (see
@@ -62,16 +75,40 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC
 
 usage() {
     cat >&2 <<'EOF'
-Usage: deprovision.sh <csp> <resource>
+Usage: deprovision.sh <csp> <resource> [--engine e1,e2]
   aws : bucket | vm | database
   ncp : bucket | vm | database
+
+  --engine (database only) destroys just the engines named; the others stay.
+    aws : mysql | mariadb | postgresql
+    ncp : mysql | postgresql | mongodb
+  Removing the last engine destroys the whole database module.
 
   ncp/network is destroyed automatically once neither vm nor database remains.
 EOF
     exit 1
 }
 
-CSP="${1:-}"; RESOURCE="${2:-}"
+CSP=""; RESOURCE=""; ENGINE_ARG=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)  usage ;;
+        --engine)
+            [ $# -ge 2 ] || { echo "--engine needs a value" >&2; usage; }
+            ENGINE_ARG="$2"; shift ;;
+        --engine=*) ENGINE_ARG="${1#--engine=}" ;;
+        *)
+            if [ -z "$CSP" ]; then
+                CSP="$1"
+            elif [ -z "$RESOURCE" ]; then
+                RESOURCE="$1"
+            else
+                echo "unexpected argument: $1" >&2; usage
+            fi
+            ;;
+    esac
+    shift
+done
 [ -z "$CSP" ] || [ -z "$RESOURCE" ] && usage
 
 case "$CSP" in
@@ -83,6 +120,10 @@ case "$RESOURCE" in
     bucket|vm|database) ;;
     *) echo "invalid resource for ${CSP}: $RESOURCE" >&2; usage ;;
 esac
+
+if [ -n "$ENGINE_ARG" ] && [ "$RESOURCE" != "database" ]; then
+    echo "--engine only applies to database" >&2; usage
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -98,6 +139,13 @@ fi
 # shellcheck source=./lib/workspace.sh
 . "$SCRIPT_DIR/lib/workspace.sh"
 ws_load "$CSP"
+# shellcheck source=./lib/db-engines.sh
+. "$SCRIPT_DIR/lib/db-engines.sh"
+
+ENGINE_REQ=""
+if [ -n "$ENGINE_ARG" ]; then
+    ENGINE_REQ="$(db_parse_engines "$ENGINE_ARG")" || usage
+fi
 
 # has_managed_state <module> — true when the module still tracks a real resource.
 #   Data sources are filtered out: a module can hold nothing but its vault lookup, and
@@ -206,6 +254,10 @@ manual_empty_hint() {
     echo -e "${YELLOW}  incomplete multipart uploads included) and re-run this command.${NC}" >&2
 }
 
+# DESTROY_TARGETS — -target flags destroy_module passes to tofu destroy. Empty
+#   destroys the whole module; deprovision --engine narrows it to those engines.
+DESTROY_TARGETS=""
+
 # destroy_module <module> — init + destroy inside the runner
 destroy_module() {
     local mod="$1"
@@ -216,7 +268,25 @@ destroy_module() {
         mkdir -p /work/.tofu-plugin-cache /work/ssh_keys
         cd "/work/'"$mod"'"
         '"$WS_INIT"'
-        tofu destroy -auto-approve
+        tofu destroy -auto-approve '"$DESTROY_TARGETS"'
+    '
+}
+
+# refresh_outputs <module> — bring the module's outputs back in line with its state.
+#   A targeted destroy (deprovision --engine) leaves outputs it did not re-evaluate,
+#   so the removed engine's *_host / *_port could keep pointing at a database that is
+#   gone - conn-info.sh would list it and gen-data.sh would try to load into it. A
+#   refresh-only apply re-reads what exists and recomputes every output, and it
+#   creates and changes nothing, so a .env edited since cannot touch the engines
+#   that stay - the same guarantee the targeted destroy was chosen for.
+refresh_outputs() {
+    local mod="$1"
+    ws_exec bash -c '
+        set -euo pipefail
+        set -a; . /work/.env; set +a
+        export VAULT_ADDR=http://openbao:8200
+        cd "/work/'"$mod"'"
+        tofu apply -refresh-only -auto-approve
     '
 }
 
@@ -266,7 +336,35 @@ destroy_with_retry() {
     done
 }
 
-echo -e "${CYAN}=== deprovision(destroy): ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
+# --engine: destroy only the engines named, unless nothing else would be left.
+PARTIAL=0
+WHAT="${CSP}/${RESOURCE}"
+if [ -n "$ENGINE_REQ" ]; then
+    CURRENT="$(db_state_engines "$MODULE")"
+    REMOVE="$(db_intersect "$ENGINE_REQ" "$CURRENT")"
+    if [ -z "$REMOVE" ]; then
+        echo -e "${YELLOW}${CSP}/database (prefix ${WS_PREFIX}) runs no $(db_cli_names "$ENGINE_REQ") - nothing to destroy.${NC}"
+        if [ -n "$CURRENT" ]; then
+            echo "  running: $(db_cli_names "$CURRENT")"
+        fi
+        exit 0
+    fi
+    KEEP="$(db_minus "$CURRENT" "$REMOVE")"
+    if [ -n "$KEEP" ]; then
+        PARTIAL=1
+        WHAT="${CSP}/database $(db_cli_names "$REMOVE")"
+        DESTROY_TARGETS="$(db_engine_targets "$REMOVE")"
+    fi
+fi
+
+echo -e "${CYAN}=== deprovision(destroy): ${WHAT} (prefix ${WS_PREFIX}) ===${NC}"
+if [ -n "$ENGINE_REQ" ]; then
+    if [ "$PARTIAL" -eq 1 ]; then
+        echo "  keeping : $(db_cli_names "$KEEP")"
+    else
+        echo "  $(db_cli_names "$REMOVE") is all that is left, so the whole database module goes."
+    fi
+fi
 
 # Skip a module that tracks nothing but data sources. Destroying it is a no-op that
 # still runs a full plan - and on NCP that plan reads the by-name lookups.
@@ -311,11 +409,29 @@ if has_managed_state "$MODULE"; then
     fi
 
     [ "$RC" -eq 0 ] || exit "$RC"
-    echo -e "${GREEN}=== deleted: ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
+    echo -e "${GREEN}=== deleted: ${WHAT} (prefix ${WS_PREFIX}) ===${NC}"
+
+    # The engines are gone either way; a refresh that fails only leaves stale
+    # outputs behind, so it warns instead of failing the run.
+    if [ "$PARTIAL" -eq 1 ]; then
+        echo
+        echo -e "${CYAN}=== refreshing outputs (refresh-only, nothing is changed) ===${NC}"
+        if refresh_outputs "$MODULE"; then
+            echo -e "${GREEN}outputs updated: $(db_cli_names "$REMOVE") no longer listed.${NC}"
+        else
+            echo -e "${YELLOW}Warning: the outputs could not be refreshed and may still list $(db_cli_names "$REMOVE").${NC}" >&2
+            echo "  Refresh them by hand (changes nothing):" >&2
+            echo "    docker exec -e TF_WORKSPACE=${WS_PREFIX} ${RUNNER} bash -c 'set -a; . /work/.env; set +a; export VAULT_ADDR=http://openbao:8200; cd /work/${MODULE} && tofu apply -refresh-only -auto-approve'" >&2
+        fi
+    fi
 else
     echo -e "${YELLOW}${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) holds no resources - nothing to destroy.${NC}"
 fi
-ws_drop "$MODULE"
+# A partial destroy leaves engines in the workspace; tofu would refuse to delete
+# it anyway, but there is no point asking.
+if [ "$PARTIAL" -eq 0 ]; then
+    ws_drop "$MODULE"
+fi
 
 # tofu/ncp/network is only referenced by ncp/vm and ncp/database. Once neither of
 # them holds state in this prefix, nothing needs its VPC any more, so clean it up as

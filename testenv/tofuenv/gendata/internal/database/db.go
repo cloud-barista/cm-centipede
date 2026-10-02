@@ -343,7 +343,13 @@ func mongoURI(cfg Config) string {
 func mongoConnect(ctx context.Context, cfg Config) (*mongo.Client, error) {
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	client, err := mongo.Connect(cctx, options.Client().ApplyURI(mongoURI(cfg)))
+	// Wire compression. Generated documents repeat a few hundred pre-drawn
+	// strings, so they shrink several times over, and over a public endpoint the
+	// bytes on the wire are what a load waits on. The server picks the first it
+	// supports; one that supports neither gets an uncompressed connection, not
+	// an error.
+	opts := options.Client().ApplyURI(mongoURI(cfg)).SetCompressors([]string{"zstd", "snappy"})
+	client, err := mongo.Connect(cctx, opts)
 	if err != nil {
 		return nil, err
 	}

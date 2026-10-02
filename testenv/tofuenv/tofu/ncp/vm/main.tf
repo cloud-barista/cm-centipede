@@ -106,6 +106,10 @@ resource "ncloud_server" "vm" {
   login_key_name      = ncloud_login_key.vm.key_name
   init_script_no      = ncloud_init_script.vm.id
 
+  # Only the size is set; the volume type stays the provider's default for the
+  # image. The init script grows the root partition into whatever this adds.
+  base_block_storage_size = var.ncp_vm_volume_size
+
   network_interface {
     network_interface_no = ncloud_network_interface.vm.id
     order                = 0

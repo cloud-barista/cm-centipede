@@ -86,6 +86,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	tmpDir, err := config.TmpDir()
+	if err != nil {
+		return err
+	}
 
 	inputs, err := config.LoadInputsFile(*inputsFile)
 	if err != nil {
@@ -172,7 +176,7 @@ func run() error {
 		} else {
 			log.Printf("generating dummy files...")
 			pg := progress.New("generate", alloc.TotalFiles(), alloc.TotalBytes())
-			genDir, files, err = generate.Generate(alloc, pg.Add)
+			genDir, files, err = generate.Generate(alloc, tmpDir, cfg.Generate.Workers, pg.Add)
 			pg.Finish()
 			if err != nil {
 				return err
@@ -317,7 +321,7 @@ func doBucket(ctx context.Context, cfg *config.Config, in *config.Inputs, provid
 		log.Printf("bucket: no files to upload (skipped)")
 		return nil
 	}
-	log.Printf("bucket: uploading %d objects to s3://%s/%s ...", len(files), in.BucketName, prefix)
+	log.Printf("bucket: uploading %d objects to s3://%s/%s, %d at a time ...", len(files), in.BucketName, prefix, cfg.ObjectStorage.Concurrency)
 	p := bucketParams(cfg, in, provider)
 	pg := progress.New("bucket", len(files), totalSize(files))
 	p.OnFile = pg.Add
@@ -341,7 +345,8 @@ func doFilesystem(ctx context.Context, cfg *config.Config, in *config.Inputs, fi
 		log.Printf("filesystem: no files to transfer (skipped)")
 		return nil
 	}
-	log.Printf("filesystem: transferring %d files to %s@%s:%s ...", len(files), in.VMUser, in.VMHost, base)
+	log.Printf("filesystem: transferring %d files to %s@%s:%s, %d at a time over %d SSH connections ...",
+		len(files), in.VMUser, in.VMHost, base, cfg.Filesystem.Concurrency, cfg.Filesystem.Connections)
 	p := fsParams(cfg, in)
 	pg := progress.New("filesystem", len(files), totalSize(files))
 	p.OnFile = pg.Add
@@ -417,6 +422,7 @@ func bulkOptions(d config.DatabaseConfig) database.BulkOptions {
 		IDOffset:  d.IDOffset,
 		Seed:      d.Seed,
 		Weights:   d.Weights,
+		Workers:   d.Workers,
 	}
 }
 
@@ -489,6 +495,7 @@ func fsParams(cfg *config.Config, in *config.Inputs) filesystem.Params {
 		PrivateKeyPath: in.VMKeyPath,
 		BasePath:       fsBasePath(cfg, in),
 		Concurrency:    cfg.Filesystem.Concurrency,
+		Connections:    cfg.Filesystem.Connections,
 	}
 }
 

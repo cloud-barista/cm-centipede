@@ -37,3 +37,22 @@ output "server_specs" {
     )
   ]
 }
+
+# Managed DB server specs for the versions .env sets, per image:
+#   "<image product code> (<generation>)" -> ["<product code> (vCPU, memory, disk type)", ...]
+#   Copy the code before the parenthesis into
+#   TF_VAR_ncp_{mysql,postgres,mongodb}_product_code. A spec belongs to its image.
+output "mysql_specs" {
+  description = "MySQL server specs for TF_VAR_ncp_mysql_version"
+  value       = local.mysql_specs
+}
+
+output "postgresql_specs" {
+  description = "PostgreSQL server specs for TF_VAR_ncp_postgres_version"
+  value       = local.postgresql_specs
+}
+
+output "mongodb_specs" {
+  description = "MongoDB server specs for TF_VAR_ncp_mongodb_version"
+  value       = local.mongodb_specs
+}

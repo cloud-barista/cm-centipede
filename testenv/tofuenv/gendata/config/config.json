@@ -1,13 +1,15 @@
 {
   "layout":        { "folderDepth": 3, "folderBreadth": 3, "maxFiles": 1000 },
-  "objectStorage": { "basePrefix": "gendata/", "concurrency": 10, "endpointOverride": "", "bucketLookup": "auto" },
-  "filesystem":    { "basePath": "/home/ubuntu/testdata", "concurrency": 10 },
+  "objectStorage": { "basePrefix": "gendata/", "concurrency": 32, "endpointOverride": "", "bucketLookup": "auto" },
+  "filesystem":    { "basePath": "/home/ubuntu/testdata", "concurrency": 10, "connections": 4 },
+  "generate":      { "workers": 0 },
   "dummy":         { "sizeCSV": 1, "sizeTXT": 1, "sizeSQL": 1, "sizeJSON": 1, "sizeXML": 1, "sizePNG": 1, "sizeGIF": 1, "sizeZIP": 1 },
   "database": {
     "sizeMB":    0,
     "batchSize": 1000,
     "idOffset":  1000000,
     "seed":      42,
+    "workers":   4,
     "weights":   { "order_items": 30, "orders": 20, "reviews": 20, "customers": 12, "inventory_log": 10, "products": 8 }
   }
 }
