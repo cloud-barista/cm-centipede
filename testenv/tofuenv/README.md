@@ -60,7 +60,7 @@ and the [AWS vs NCP](#aws-vs-ncp-at-a-glance) table.
             |
  Step 5  Test data         ./scripts/gen-data.sh --target all      (optional)
             |
- Step 6  Connect           ./scripts/conn-info.sh                  (all connection info at once)
+ Step 6  Connect           ./scripts/conn-info.sh                  (every environment; --prefix for one)
             |
  Step 7  Destroy           ./scripts/deprovision.sh aws bucket
             |                └ for NCP, the network module is removed once nothing needs it
@@ -292,7 +292,7 @@ reported and skipped, so nothing is created and nothing is charged:
 === aws/bucket (prefix cptf) is already provisioned - nothing to do ===
   bucket_name = "cptf-aws-bucket-test"
   ...
-  Connection info  :  ./scripts/conn-info.sh aws bucket
+  Connection info  :  ./scripts/conn-info.sh aws bucket --prefix cptf
   Re-apply anyway  :  ./scripts/provision.sh aws bucket --force
   Destroy          :  ./scripts/deprovision.sh aws bucket
 ```
@@ -576,27 +576,32 @@ of accumulating copies. A summary of the last run is written per environment, to
 ### `conn-info.sh` — everything at once (recommended)
 
 ```
-./scripts/conn-info.sh [aws|ncp] [network|bucket|vm|database|all] [--reveal]
+./scripts/conn-info.sh [aws|ncp] [network|bucket|vm|database|all] [--prefix <name>] [--reveal]
 ```
 
 ```bash
-./scripts/conn-info.sh                        # all AWS resources, secrets masked
-./scripts/conn-info.sh ncp all
-./scripts/conn-info.sh aws database
-./scripts/conn-info.sh ncp database --reveal  # print passwords and URIs in clear text
+./scripts/conn-info.sh                                   # every environment, both CSPs, secrets masked
+./scripts/conn-info.sh aws database                      # the DBs of every AWS environment
+./scripts/conn-info.sh ncp --prefix cptf                 # one environment
+./scripts/conn-info.sh ncp database --prefix cptf --reveal  # its passwords and URIs in clear text
 ```
 
 | Argument | Default | Values |
 |---|---|---|
-| csp | `aws` | `aws`, `ncp` |
+| csp | both | `aws`, `ncp` |
 | resource | `all` | `bucket`, `vm`, `database`, `all`, plus `network` for NCP |
+| `--prefix` | every prefix | One environment's prefix. `.env` does not need to select it |
 | `--reveal` | off | Print sensitive values in clear text instead of `<sensitive>` |
 
-Resources that do not exist yet are skipped. For NCP `database`, a warning is printed
-for any engine whose public domain has not been issued.
+**Every environment is shown by default**, one block per prefix, the one `.env`
+selects first and marked `*`. Only tofu state is read, so this works for any prefix
+without touching `.env`. Modules that hold no resources are left out. For NCP
+`database`, a warning is printed for any engine whose public domain has not been
+issued.
 
 `--reveal` prints passwords and connection URIs to your terminal — be careful with
-scrollback, logs and screen sharing.
+scrollback, logs and screen sharing. Without `--prefix` it does so for **every**
+environment at once, and says so first; add `--prefix` to reveal one.
 
 ### Connecting to a VM
 
@@ -792,7 +797,9 @@ tofu/<csp>/<module>/terraform.tfstate.d/<prefix>/terraform.tfstate
 ```
 
 **Every script acts on the prefix `.env` sets, and only on it** — `provision.sh`,
-`deprovision.sh`, `conn-info.sh`, `gen-data.sh` and `ncp-db-domain.sh` alike. The rest of
+`deprovision.sh`, `gen-data.sh` and `ncp-db-domain.sh` alike. The read-only ones look at
+all of them: `list.sh` lists every environment, and `conn-info.sh` shows every
+environment's connection info (`--prefix <name>` for one). The rest of
 `.env` (bucket name, engine versions, NFS, ...) describes that one environment too.
 
 So changing a prefix does not rename, replace or break anything:

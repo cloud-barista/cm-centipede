@@ -77,3 +77,30 @@ ws_drop() {
         tofu workspace delete "'"$WS_PREFIX"'" >/dev/null 2>&1 || true
     '
 }
+
+# ws_current <csp> — the prefix .env selects for the CSP, empty when it is not a
+#   valid one. ws_load exits on a bad value, which must not end a read-only listing,
+#   so it runs in a subshell here.
+ws_current() {
+    ( ws_load "$1" >/dev/null 2>&1 && printf %s "$WS_PREFIX" ) || true
+}
+
+# ws_provisioned — "<csp> <module> <prefix>" for every state that tracks a managed
+#   resource, across every prefix. The state files are read directly: tofu can only
+#   look at one workspace at a time, and asking it about a workspace that does not
+#   exist would create one. Data sources and leftover outputs do not count.
+ws_provisioned() {
+    docker exec "$RUNNER" bash -c '
+        managed() { jq -e "[.resources[]? | select(.mode == \"managed\")] | length > 0" "$1" >/dev/null 2>&1; }
+        for dir in /work/tofu/aws/bucket /work/tofu/aws/vm /work/tofu/aws/database \
+                   /work/tofu/ncp/bucket /work/tofu/ncp/vm /work/tofu/ncp/database /work/tofu/ncp/network; do
+            [ -d "$dir" ] || continue
+            rel="${dir#/work/tofu/}"; csp="${rel%%/*}"; mod="${rel#*/}"
+            for f in "$dir"/terraform.tfstate.d/*/terraform.tfstate; do
+                [ -f "$f" ] || continue
+                ws="${f%/terraform.tfstate}"; ws="${ws##*/}"
+                managed "$f" && printf "%s %s %s\n" "$csp" "$mod" "$ws"
+            done
+        done
+    '
+}

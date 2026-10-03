@@ -38,31 +38,7 @@ fi
 # shellcheck source=./lib/workspace.sh
 . "$SCRIPT_DIR/lib/workspace.sh"
 
-# current_prefix <csp> — the prefix .env selects, empty when it is not a valid one.
-#   ws_load exits on a bad value, which must not end a read-only listing.
-current_prefix() {
-    ( ws_load "$1" >/dev/null 2>&1 && printf %s "$WS_PREFIX" ) || true
-}
-
-# provisioned — "<csp> <module> <workspace>" for every state holding a managed
-#   resource.
-provisioned() {
-    docker exec "$RUNNER" bash -c '
-        managed() { jq -e "[.resources[]? | select(.mode == \"managed\")] | length > 0" "$1" >/dev/null 2>&1; }
-        for dir in /work/tofu/aws/bucket /work/tofu/aws/vm /work/tofu/aws/database \
-                   /work/tofu/ncp/bucket /work/tofu/ncp/vm /work/tofu/ncp/database /work/tofu/ncp/network; do
-            [ -d "$dir" ] || continue
-            rel="${dir#/work/tofu/}"; csp="${rel%%/*}"; mod="${rel#*/}"
-            for f in "$dir"/terraform.tfstate.d/*/terraform.tfstate; do
-                [ -f "$f" ] || continue
-                ws="${f%/terraform.tfstate}"; ws="${ws##*/}"
-                managed "$f" && printf "%s %s %s\n" "$csp" "$mod" "$ws"
-            done
-        done
-    '
-}
-
-ROWS="$(provisioned)"
+ROWS="$(ws_provisioned)"
 
 echo -e "${CYAN}=== provisioned environments ===${NC}"
 if [ -z "$ROWS" ]; then
@@ -72,7 +48,7 @@ fi
 
 printf '  %-4s  %-12s  %-6s  %-3s  %-8s  %s\n' CSP PREFIX bucket vm database network
 for csp in aws ncp; do
-    current="$(current_prefix "$csp")"
+    current="$(ws_current "$csp")"
     for ws in $(printf '%s\n' "$ROWS" | awk -v c="$csp" '$1 == c { print $3 }' | sort -u); do
         cells=()
         for mod in bucket vm database network; do

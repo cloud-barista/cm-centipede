@@ -102,5 +102,5 @@ if [ "$MISSING" -gt 0 ]; then
 fi
 
 echo -e "${GREEN}All managed DBs have a public domain.${NC}"
-echo "  Connection info :  ./scripts/conn-info.sh ncp database --reveal"
+echo "  Connection info :  ./scripts/conn-info.sh ncp database --prefix ${WS_PREFIX} --reveal"
 echo "  Test data       :  ./scripts/gen-data.sh --provider ncp --target database"

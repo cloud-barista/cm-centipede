@@ -222,7 +222,7 @@ already_provisioned() {
         tofu output 2>/dev/null || true
     ' | sed 's/^/  /'
     echo
-    echo "  Connection info  :  ./scripts/conn-info.sh ${CSP} ${RESOURCE}"
+    echo "  Connection info  :  ./scripts/conn-info.sh ${CSP} ${RESOURCE} --prefix ${WS_PREFIX}"
     echo "  Re-apply anyway  :  ./scripts/provision.sh ${CSP} ${RESOURCE}${2} --force"
     echo "  Destroy          :  ./scripts/deprovision.sh ${CSP} ${RESOURCE}${2}"
     exit 0
