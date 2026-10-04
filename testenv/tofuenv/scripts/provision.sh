@@ -128,6 +128,12 @@ fi
 # shellcheck source=./lib/workspace.sh
 . "$SCRIPT_DIR/lib/workspace.sh"
 ws_load "$CSP"
+
+# Before any apply. The CSP keys are read from OpenBao, but the bucket names are
+# read from .env inside the runner, and a ChangeMe there would name a bucket.
+# shellcheck source=./lib/env-perm.sh
+. "$SCRIPT_DIR/lib/env-perm.sh"
+( set -a; . "$ROOT_DIR/.env"; set +a; ENV_FILE="$ROOT_DIR/.env"; assert_no_placeholder ) || exit 1
 # shellcheck source=./lib/db-engines.sh
 . "$SCRIPT_DIR/lib/db-engines.sh"
 
@@ -190,15 +196,20 @@ bucket_owners() {
     ' || true
 }
 
-# check_bucket_name — refuse a bucket name another prefix already uses.
+# check_bucket_name — refuse an empty bucket name, or one another prefix already uses.
 #   The bucket is the one resource whose name is not derived from the prefix, so two
 #   environments share it unless .env is changed as well. Left to the apply, AWS
 #   answers BucketAlreadyOwnedByYou and NCP a conflict, neither of which says which
-#   environment owns it.
+#   environment owns it. An empty name is worse: the AWS provider makes one up
+#   (terraform-...), so a bucket nobody named would be created.
 check_bucket_name() {
     local var="TF_VAR_${CSP}_bucket_name" name owner other
     name="$( set -a; . "$ROOT_DIR/.env" 2>/dev/null; set +a; printf %s "${!var:-}" )"
-    [ -n "$name" ] || return 0
+    if [ -z "$name" ]; then
+        echo -e "${RED}=== ${var} is empty ===${NC}" >&2
+        echo "  Set a bucket name of your own in .env before provisioning the bucket." >&2
+        exit 1
+    fi
     while read -r owner other; do
         [ -n "$owner" ] || continue
         if [ "$other" = "$name" ]; then

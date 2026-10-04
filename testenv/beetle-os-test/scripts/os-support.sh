@@ -48,6 +48,7 @@ MATRIX_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cpbossupport.XXXXXX")"
 trap 'rm -rf "$MATRIX_TMP"' EXIT INT TERM
 
 require_cmd jq curl
+assert_no_placeholder || die "placeholder check failed."
 
 if [ "$AS_JSON" -eq 1 ]; then
 	bt_get "/recommendation/middleware/objectStorage/support" \

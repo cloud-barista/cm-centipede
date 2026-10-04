@@ -6,7 +6,8 @@
 # anything passed with `docker run -e` would be invisible to matrix-init.service.
 # lib/source.sh writes a per-cell env file on the host and bind-mounts it at
 # /opt/matrix/matrix.env; the image ships defaults.env so the image also runs on
-# its own, without the matrix.
+# its own, without the matrix - except for the passwords, which only matrix.env
+# carries.
 #
 # Precedence: matrix.env (mounted, per cell) > defaults.env (baked into image)
 
@@ -18,9 +19,16 @@ if [ -f /opt/matrix/matrix.env ]; then
 fi
 
 SRC_DB="${SRC_DB:-matrix_db}"
-DB_ROOT_PASS="${DB_ROOT_PASS:-testpass123}"
 SRC_DB_USER="${SRC_DB_USER:-centipede}"
-SRC_DB_PASS="${SRC_DB_PASS:-centipede_pass}"
+
+# No password has a default. Each comes from matrix.env, written by the matrix
+# from .env; an empty one would create an account nobody can log in with.
+for _v in DB_ROOT_PASS SRC_DB_PASS; do
+	if [ -z "${!_v:-}" ]; then
+		echo "[init] $_v is empty or not set - mount /opt/matrix/matrix.env with it." >&2
+		exit 1
+	fi
+done
 
 log() { echo "[$ENGINE_LABEL] $*"; }
 

@@ -21,31 +21,24 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── Servers ──────────────────────────────────────────────────────────────────
-HB_BASE=${HB_BASE:-http://localhost:8081/honeybee}
-CP_BASE=${CP_BASE:-http://localhost:8085/centipede}
-CP_AUTH=${CP_AUTH:-default:default}
+# ── Settings — from .env (cp .env.example .env) ──────────────────────────────
+# Every variable below the checks comes from there: HB_BASE, CP_BASE, CP_USER,
+# CP_PASS, HOST_IP, SRC_PORT, SRC_USER, SRC_KEY, SRC_PATH, NS_ID, INFRA_ID,
+# NODE_ID, DST_PATH, NAME, POLL. .env.example says what each one is.
+#
+# A variable already set in the shell wins over the file, so one value can be
+# changed for one run:  NODE_ID=vm-other-01-1 ./migrate.sh
+[ -f .env ] || { echo "no .env here: cp .env.example .env, then change every ChangeMe" >&2; exit 1; }
+PRESET=$(export -p)
+set -a; . ./.env; set +a
+eval "$PRESET"
 
-# ── Source — the on-premises machine (testenv/dockerenv fs-source) ───────────
-# HOST_IP is the address of the host machine the source container runs on. The
-# source is reached through the port it publishes (SRC_PORT below), so this is the
-# host's address — not the container's, and not 127.0.0.1. Set it every run:
-#   sudo HOST_IP=172.24.78.163 ./migrate.sh
-HOST_IP=${HOST_IP:-127.0.0.1}
-SRC_PORT=${SRC_PORT:-32210}
-SRC_USER=${SRC_USER:-root}
-SRC_KEY=${SRC_KEY:-../../dockerenv/ssh_keys/id_rsa}
-SRC_PATH=${SRC_PATH:-/testdata}
-
-# ── Target — the AWS VM (testenv/beetleenv) ──────────────────────────────────
-# All three ids come from: testenv/beetleenv/scripts/conn-info.sh aws --ids
-NS_ID=${NS_ID:-cpbt01}
-INFRA_ID=${INFRA_ID:-cpbt-aws-infra}
-NODE_ID=${NODE_ID:-vm-beetleenv-source-01-1}
-DST_PATH=${DST_PATH:-/home/cb-user/testdata}
-
-NAME=${NAME:-onprem-to-aws-fs}
-POLL=${POLL:-5}
+for v in CP_USER CP_PASS HOST_IP; do
+  if [ "$(printf '%s' "${!v:-}" | tr '[:upper:]' '[:lower:]')" = changeme ]; then
+    echo "$v in .env is still ChangeMe" >&2; exit 1
+  fi
+done
+CP_AUTH="$CP_USER:$CP_PASS"
 
 # =============================================================================
 # 1. Register the source group with cm-honeybee

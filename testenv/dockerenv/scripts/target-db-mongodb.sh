@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Target MongoDB setup - accounts + empty databases (shop_empty_db, hr_empty_db) only
 set -euo pipefail
+. /opt/testenv/scripts/common.sh
 
 echo "[DB-Target/MongoDB] Starting setup..."
 
@@ -18,20 +19,22 @@ until mongosh --quiet --eval "db.adminCommand('ping').ok" 2>/dev/null | grep -q 
 done
 echo "[DB-Target/MongoDB] MongoDB ready."
 
+# The JS reads the password from process.env (mongosh is Node), so the single-
+# quoted --eval bodies stay as they are.
 # ── Create accounts (the first one needs no auth, via the localhost exception) ───
 mongosh admin --quiet --eval '
 db.createUser({
     user: "root",
-    pwd: "testpass123",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [ { role: "root", db: "admin" } ]
 });
 '
 
 # Migration destination account (created while authenticated as root)
-mongosh admin -u root -p testpass123 --authenticationDatabase admin --quiet --eval '
+mongosh admin -u root -p "$DOCKERENV_PASSWORD" --authenticationDatabase admin --quiet --eval '
 db.createUser({
     user: "centipede",
-    pwd: "centipede_pass",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [ { role: "root", db: "admin" } ]
 });
 
@@ -46,12 +49,12 @@ db.createUser({
 // because a MongoDB database cannot be granted on after the fact without one.
 db.getSiblingDB("shop_empty_db").createUser({
     user: "centipede",
-    pwd: "centipede_pass",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [ { role: "readWrite", db: "shop_empty_db" } ]
 });
 db.getSiblingDB("hr_empty_db").createUser({
     user: "centipede",
-    pwd: "centipede_pass",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [ { role: "readWrite", db: "hr_empty_db" } ]
 });
 

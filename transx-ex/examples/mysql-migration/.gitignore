@@ -1,3 +1,6 @@
+# Local config copied from .env.example (the template stays tracked)
+.env
+
 # Built binary (migrate.sh runs: go build -o main .)
 /main
 

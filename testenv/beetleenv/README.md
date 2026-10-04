@@ -70,7 +70,7 @@ are cm-beetle's limit, not the CSP's: its managed RDBMS API declares
 
 ```bash
 cd beetleenv
-cp .env.example .env && chmod 600 .env    # fill in region/zones + DB password
+cp .env.example .env && chmod 600 .env    # change every ChangeMe, fill in region/zones
 
 ./scripts/up.sh                           # check the stack, create the namespace
 ./scripts/catalog.sh aws rdbms            # what aws actually offers
@@ -100,7 +100,7 @@ other even though they share one namespace.
 ## How it fits together
 
 ```
- Step 1  .env            cp .env.example .env  ->  region, zones, DB password
+ Step 1  .env            cp .env.example .env  ->  every ChangeMe, region, zones
             |
  Step 2  Start           ./scripts/up.sh
             |              └ beetle /readyz, tumblebug /readyz
@@ -203,7 +203,7 @@ BEETLEENV_AWS_ZONE=ap-northeast-2a
 BEETLEENV_AWS_ZONE2=ap-northeast-2c
 BEETLEENV_AWS_VNET_CIDR=10.0.0.0/16
 BEETLEENV_AWS_DB_ENGINES="mysql mariadb"
-BEETLEENV_AWS_DB_PASSWORD=
+BEETLEENV_AWS_DB_PASSWORD=ChangeMe
 ```
 
 `BEETLEENV_CSPS` is quoted because `.env` is sourced by the shell — an unquoted

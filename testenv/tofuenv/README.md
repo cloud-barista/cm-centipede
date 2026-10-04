@@ -27,7 +27,7 @@ resource rather than a resource of its own — see [Step 3](#step-3--provision-r
 
 ```bash
 cd tofuenv
-cp .env.example .env && chmod 600 .env    # then fill in AWS keys, a DB password, a bucket name
+cp .env.example .env && chmod 600 .env    # then change every ChangeMe: AWS keys, a DB password, a bucket name
 ./scripts/up.sh               # start OpenBao, store credentials, start the tofu runner
 ./scripts/provision.sh aws bucket
 ./scripts/conn-info.sh aws bucket
@@ -46,7 +46,7 @@ and the [AWS vs NCP](#aws-vs-ncp-at-a-glance) table.
 ```
  Step 0  Prerequisites     Docker + CSP access keys
             |
- Step 1  .env              cp .env.example .env && chmod 600 .env  ->  fill in keys
+ Step 1  .env              cp .env.example .env && chmod 600 .env  ->  change every ChangeMe
             |
  Step 2  Start             ./scripts/up.sh
             |                └ start OpenBao -> store credentials -> blank .env keys -> start runner
@@ -131,7 +131,8 @@ token and it stays in the file permanently — anything that can read it can rea
 every credential you stored — and your CSP keys sit there in plaintext until
 Step 2 registers them.
 
-Then open `.env` and fill in the values. The template documents every key; the
+Then open `.env` and change every `ChangeMe` - empty the `[CREDENTIAL]` keys of a CSP you
+do not use. The template documents every key; the
 minimum for AWS is:
 
 ```dotenv

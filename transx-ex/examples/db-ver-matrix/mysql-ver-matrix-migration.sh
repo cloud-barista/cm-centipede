@@ -104,7 +104,9 @@ DST_VERSIONS="${MYSQL_DST_VERSIONS:-8.0 8.4}"
 #   Override it only when Docker is not reachable at 127.0.0.1 from this host.
 HOST_IP="${HOST_IP:-127.0.0.1}"
 
-DB_ROOT_PASS="${DB_ROOT_PASS:-testpass123}"
+# DB_ROOT_PASS has no default: it comes from db-ver-matrix.env or the shell, and
+# is checked below, before any container starts.
+DB_ROOT_PASS="${DB_ROOT_PASS-}"
 SRC_DB="${SRC_DB:-matrix_db}"
 DST_DB="${DST_DB:-matrix_db}"
 
@@ -208,6 +210,12 @@ command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is required." >&2; ex
 command -v jq     >/dev/null 2>&1 || { echo "ERROR: jq is required."     >&2; exit 1; }
 command -v go     >/dev/null 2>&1 || { echo "ERROR: go is required."     >&2; exit 1; }
 docker info >/dev/null 2>&1        || { echo "ERROR: the docker daemon is not running." >&2; exit 1; }
+# The admin password every container is started with. ChangeMe is the value the
+# .example ships, and an empty one is refused by the official images.
+if [ "$(printf '%s' "$DB_ROOT_PASS" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" = "changeme" ]; then
+	echo "ERROR: DB_ROOT_PASS is still ChangeMe - set it in $ENV_FILE (cp db-ver-matrix.env.example db-ver-matrix.env)." >&2; exit 1
+fi
+[ -n "$DB_ROOT_PASS" ] || { echo "ERROR: DB_ROOT_PASS is empty - set it in $ENV_FILE (cp db-ver-matrix.env.example db-ver-matrix.env)." >&2; exit 1; }
 
 C_HDR="\033[1;36m"; C_SUB="\033[1;33m"; C_OK="\033[0;32m"; C_ERR="\033[0;31m"; C_WARN="\033[0;33m"; C_OFF="\033[0m"
 

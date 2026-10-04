@@ -97,5 +97,9 @@ RUN printf 'FS_SRC_PATH="/testdata"\n' > /opt/matrix/defaults.env \
 RUN systemctl enable matrix-init.service ssh.service
 
 EXPOSE 22
+# lib/source.sh rebuilds a cached image whose revision differs from its own
+# SRC_IMAGE_REVISION, so an image from before a structural change is not reused.
+LABEL beetle-fs-test.revision="env-credentials"
+
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd", "--system"]

@@ -470,6 +470,9 @@ matrix_main() {
 	require_cmd docker jq curl ssh ssh-keygen
 	docker info >/dev/null 2>&1 || die "the docker daemon is not running."
 
+	# Before --cleanup too: it calls beetle and tumblebug with these credentials.
+	assert_no_placeholder || die "placeholder check failed. Nothing was created."
+
 	local csps csp
 
 	# HOST_IP is worked out rather than configured. Done here because --cleanup
@@ -604,17 +607,13 @@ matrix_defaults() {
 	MATRIX_NAME_PREFIX="${MATRIX_NAME_PREFIX:-cpbfs}"
 	MATRIX_NS="${MATRIX_NS:-cpbfs01}"
 
+	# None of the credentials has a default: they are PLACEHOLDER_VARS, which the
+	# operator sets in .env (see assert_no_placeholder).
 	BEETLE_URL="${BEETLE_URL:-http://localhost:8056/beetle}"
-	BEETLE_USERNAME="${BEETLE_USERNAME:-default}"
-	BEETLE_PASSWORD="${BEETLE_PASSWORD:-default}"
 	TUMBLEBUG_URL="${TUMBLEBUG_URL:-http://localhost:1323/tumblebug}"
-	TUMBLEBUG_USERNAME="${TUMBLEBUG_USERNAME:-default}"
-	TUMBLEBUG_PASSWORD="${TUMBLEBUG_PASSWORD:-default}"
 
 	HB_BASE="${HB_BASE:-http://localhost:8081/honeybee}"
 	CP_BASE="${CP_BASE:-http://localhost:8085/centipede}"
-	CP_USER="${CP_USER:-default}"
-	CP_PASS="${CP_PASS:-default}"
 	HB_SOURCE_GROUP="${HB_SOURCE_GROUP:-cpbfs-matrix}"
 	# Registering a connection installs the agent, which downloads a binary and
 	# then polls for it — minutes, not seconds, on a first run.

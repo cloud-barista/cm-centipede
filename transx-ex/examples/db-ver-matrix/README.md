@@ -102,7 +102,7 @@ So `SKIP_VERSION_CHECK=1 ./mysql-ver-matrix-migration.sh` wins over the env file
 | `MODE` | `direct` | Access mode for both sides: `direct` or `ssh` |
 | `SRC_MODE` / `DST_MODE` | *(empty)* | Per-side access mode; empty falls back to `MODE` |
 | `HOST_IP` | `127.0.0.1` | Address used to reach the published container ports |
-| `DB_ROOT_PASS` | `testpass123` | Password of the image's admin account |
+| `DB_ROOT_PASS` | `ChangeMe` | Password of the image's admin account — no script default; must be changed, cannot be empty |
 | `SRC_DB` / `DST_DB` | `matrix_db` | Name of the database being migrated |
 | `<ENGINE>_SRC_VERSIONS` | per engine | Matrix rows |
 | `<ENGINE>_DST_VERSIONS` | per engine | Matrix columns |

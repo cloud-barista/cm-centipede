@@ -70,11 +70,7 @@ BEETLE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BEETLE_ROOT="$(cd "$BEETLE_LIB_DIR/../.." && pwd)"
 
 BEETLE_URL="${BEETLE_URL:-http://localhost:8056/beetle}"
-BEETLE_USERNAME="${BEETLE_USERNAME:-default}"
-BEETLE_PASSWORD="${BEETLE_PASSWORD:-default}"
 TUMBLEBUG_URL="${TUMBLEBUG_URL:-http://localhost:1323/tumblebug}"
-TUMBLEBUG_USERNAME="${TUMBLEBUG_USERNAME:-default}"
-TUMBLEBUG_PASSWORD="${TUMBLEBUG_PASSWORD:-default}"
 
 # ---------------------------------------------------------------------------
 # HTTP

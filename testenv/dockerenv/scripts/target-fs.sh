@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Target filesystem setup - prepare only an empty /testdata (migration destination)
 set -euo pipefail
+. /opt/testenv/scripts/common.sh
 
 BASE="/testdata"
 echo "[FS-Target] Preparing empty ${BASE}..."

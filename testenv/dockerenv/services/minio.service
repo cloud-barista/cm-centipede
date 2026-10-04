@@ -8,13 +8,16 @@ Type=notify
 User=root
 Group=root
 
+# The root password is the shared DOCKERENV_PASSWORD from .env, passed into the
+# container by docker-compose.yml and into this unit by PassEnvironment=. $$ keeps
+# systemd from expanding it into the command line; sh expands it, then execs minio.
+PassEnvironment=DOCKERENV_PASSWORD
 Environment="MINIO_ROOT_USER=minioadmin"
-Environment="MINIO_ROOT_PASSWORD=minioadmin123"
 Environment="MINIO_VOLUMES=/data/minio"
 Environment="MINIO_OPTS=--console-address :9001"
 
 ExecStartPre=/bin/mkdir -p /data/minio
-ExecStart=/usr/local/bin/minio server $MINIO_VOLUMES $MINIO_OPTS
+ExecStart=/bin/sh -c 'MINIO_ROOT_PASSWORD="$$DOCKERENV_PASSWORD" exec /usr/local/bin/minio server $MINIO_VOLUMES $MINIO_OPTS'
 
 Restart=on-failure
 RestartSec=5

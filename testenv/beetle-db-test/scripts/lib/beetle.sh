@@ -69,11 +69,7 @@ BEETLE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BEETLE_ROOT="$(cd "$BEETLE_LIB_DIR/../.." && pwd)"
 
 BEETLE_URL="${BEETLE_URL:-http://localhost:8056/beetle}"
-BEETLE_USERNAME="${BEETLE_USERNAME:-default}"
-BEETLE_PASSWORD="${BEETLE_PASSWORD:-default}"
 TUMBLEBUG_URL="${TUMBLEBUG_URL:-http://localhost:1323/tumblebug}"
-TUMBLEBUG_USERNAME="${TUMBLEBUG_USERNAME:-default}"
-TUMBLEBUG_PASSWORD="${TUMBLEBUG_PASSWORD:-default}"
 
 # ---------------------------------------------------------------------------
 # HTTP
@@ -388,6 +384,20 @@ _assert_ncp_password() {
 	fail "NCP_DB_PASSWORD does not satisfy NCP's rules:"
 	printf '%b\n' "$bad" >&2
 	fail "  Example: Cent1pede!2024"
+	return 1
+}
+
+# assert_src_passwords — the source accounts cannot be passwordless: the
+#   container would refuse to initialise, and honeybee could not log in.
+assert_src_passwords() {
+	local name bad=""
+	for name in SRC_DB_PASS DB_ROOT_PASS; do
+		[ -z "${!name}" ] && bad="$bad\n    $name"
+	done
+	[ -z "$bad" ] && return 0
+	fail "These must not be empty (the source database accounts are created with them):"
+	printf '%b\n' "$bad" >&2
+	fail "  Fill them in in ${ENV_FILE:-.env}."
 	return 1
 }
 

@@ -60,6 +60,10 @@ SRC_PUBKEY_FILE=""
 src_container()  { printf 'beetle-fs-test-fs-src'; }
 src_image_repo() { printf 'beetle-fs-test-src-fs'; }
 
+# Bumped whenever the image changes in a way a cached image would silently miss.
+# src_image rebuilds an image whose label does not carry this value.
+SRC_IMAGE_REVISION="env-credentials"
+
 src_ssh_port() { printf '%s' "${FS_SRC_SSH_PORT:-34922}"; }
 src_path()     { printf '%s' "${FS_SRC_PATH:-/testdata}"; }
 
@@ -145,8 +149,14 @@ src_image() {
 		return 1
 	fi
 	if [ "${FS_REBUILD_SOURCE:-0}" != "1" ] && docker image inspect "$img" >/dev/null 2>&1; then
-		printf '%s' "$img"
-		return 0
+		# An image built before the last structural change still runs, but runs the
+		# old way. Its label says which it is; one without the current revision is
+		# rebuilt rather than reused.
+		if [ "$(docker image inspect -f '{{ index .Config.Labels "beetle-fs-test.revision" }}' "$img" 2>/dev/null)" = "$SRC_IMAGE_REVISION" ]; then
+			printf '%s' "$img"
+			return 0
+		fi
+		info "the cached source image $img predates $SRC_IMAGE_REVISION — rebuilding" >&2
 	fi
 
 	info "building the source image: $img  (once, takes minutes)" >&2

@@ -71,7 +71,7 @@ src_service() {
 _src_version_cmd() {
 	local engine pass
 	engine="$(lower "$1")"
-	pass="${DB_ROOT_PASS:-testpass123}"
+	pass="$DB_ROOT_PASS"
 	#   Asked over the local socket. Over TCP, 127.0.0.1 resolves to localhost, and
 	#   root@localhost on MySQL and MariaDB uses socket authentication by package
 	#   default, so no password works there. PostgreSQL needs peer authentication
@@ -94,6 +94,10 @@ _src_version_cmd() {
 # task can want both.
 src_container() { printf 'beetle-db-test-%s-src' "$(lower "$1")"; }
 src_image_repo() { printf 'beetle-db-test-src-%s' "$(lower "$1")"; }
+
+# Bumped whenever the image changes in a way a cached image would silently miss.
+# src_image rebuilds an image whose label does not carry this value.
+SRC_IMAGE_REVISION="env-credentials"
 
 # src_db_port / src_ssh_port ENGINE — <ENGINE>_SRC_DB_PORT / _SSH_PORT
 #   These only read the value. Whether it is empty is checked once, before the
@@ -142,8 +146,14 @@ src_image() {
 		return 1
 	fi
 	if docker image inspect "$img" >/dev/null 2>&1; then
-		printf '%s' "$img"
-		return 0
+		# An image built before the last structural change still runs, but runs the
+		# old way - one from before env-credentials carries the old passwords in its
+		# defaults.env and a root login password. Its label says which it is.
+		if [ "$(docker image inspect -f '{{ index .Config.Labels "beetle-db-test.revision" }}' "$img" 2>/dev/null)" = "$SRC_IMAGE_REVISION" ]; then
+			printf '%s' "$img"
+			return 0
+		fi
+		info "the cached source image $img predates $SRC_IMAGE_REVISION — rebuilding" >&2
 	fi
 
 	info "building the source image: $img  (once per version, takes minutes)" >&2
@@ -174,9 +184,9 @@ _src_env_file() {
 	f="${MATRIX_TMP:-/tmp}/src-$(lower "$engine").env"
 	{
 		printf 'SRC_DB=%s\n'       "${SRC_DB:-matrix_db}"
-		printf 'DB_ROOT_PASS=%s\n' "${DB_ROOT_PASS:-testpass123}"
+		printf 'DB_ROOT_PASS=%s\n' "$DB_ROOT_PASS"
 		printf 'SRC_DB_USER=%s\n'  "${SRC_DB_USER:-centipede}"
-		printf 'SRC_DB_PASS=%s\n'  "${SRC_DB_PASS:-centipede_pass}"
+		printf 'SRC_DB_PASS=%s\n'  "$SRC_DB_PASS"
 		case "$(lower "$engine")" in
 		mysql)
 			printf 'MYSQL_SRC_CHARSET=%s\n'   "${MYSQL_SRC_CHARSET-utf8mb4}"

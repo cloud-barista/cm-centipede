@@ -456,6 +456,9 @@ matrix_main() {
 	require_cmd docker jq curl
 	docker info >/dev/null 2>&1 || die "the docker daemon is not running."
 
+	# Before --cleanup too: it calls beetle and tumblebug with these credentials.
+	assert_no_placeholder || die "placeholder check failed. Nothing was created."
+
 	local csps csp buckets bucket
 
 	# --cleanup — do not run the matrix; only reclaim what is left.
@@ -645,18 +648,14 @@ matrix_defaults() {
 
 	# The provisioner. Every resource call goes to beetle; tumblebug answers the
 	# namespace and the connection catalogue only.
+	# None of the credentials has a default: they are PLACEHOLDER_VARS, which the
+	# operator sets in .env (see assert_no_placeholder).
 	BEETLE_URL="${BEETLE_URL:-http://localhost:8056/beetle}"
-	BEETLE_USERNAME="${BEETLE_USERNAME:-default}"
-	BEETLE_PASSWORD="${BEETLE_PASSWORD:-default}"
 	TUMBLEBUG_URL="${TUMBLEBUG_URL:-http://localhost:1323/tumblebug}"
-	TUMBLEBUG_USERNAME="${TUMBLEBUG_USERNAME:-default}"
-	TUMBLEBUG_PASSWORD="${TUMBLEBUG_PASSWORD:-default}"
 
 	# The migration stack
 	HB_BASE="${HB_BASE:-http://localhost:8081/honeybee}"
 	CP_BASE="${CP_BASE:-http://localhost:8085/centipede}"
-	CP_USER="${CP_USER:-default}"
-	CP_PASS="${CP_PASS:-default}"
 	HB_SOURCE_GROUP="${HB_SOURCE_GROUP:-cpbos-matrix}"
 	MIGRATION_PREFIX="${MIGRATION_PREFIX:-cpbos}"
 	KEEP_MIGRATION="${KEEP_MIGRATION:-1}"
@@ -683,7 +682,6 @@ matrix_defaults() {
 	MINIO_SRC_CONSOLE_PORT="${MINIO_SRC_CONSOLE_PORT:-33901}"
 	MINIO_SRC_SSH_PORT="${MINIO_SRC_SSH_PORT:-33922}"
 	MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
-	MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin123}"
 	MINIO_VERSION="${MINIO_VERSION:-}"
 
 	ONLY_CSPS="${ONLY_CSPS:-}"

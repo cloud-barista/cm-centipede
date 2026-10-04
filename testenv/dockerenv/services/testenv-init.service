@@ -10,6 +10,9 @@ Type=oneshot
 # a script failure is not masked by tee and propagates as a service failure.
 ExecStart=/bin/bash -c 'set -o pipefail; /opt/testenv/init.sh 2>&1 | tee -a /var/log/testenv-init.log'
 RemainAfterExit=yes
+# DOCKERENV_PASSWORD reaches the container as an environment variable, but
+# systemd does not hand its own environment to the units it starts unless asked.
+PassEnvironment=DOCKERENV_PASSWORD
 TimeoutStartSec=300
 
 StandardOutput=journal

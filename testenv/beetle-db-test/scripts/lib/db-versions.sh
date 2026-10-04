@@ -80,6 +80,7 @@ db_versions_main() {
 	TUMBLEBUG_URL="${TUMBLEBUG_URL:-http://localhost:1323/tumblebug}"
 
 	require_cmd jq curl
+	assert_no_placeholder || die "placeholder check failed."
 	MATRIX_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cpbdb-ver.XXXXXX")"
 	trap 'rm -rf "$MATRIX_TMP"' EXIT
 

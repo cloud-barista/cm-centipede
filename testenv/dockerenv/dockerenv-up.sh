@@ -35,12 +35,57 @@ else
     exit 1
 fi
 
-# DB versions live in versions.env rather than .env, which the repository root
-# .gitignore excludes. Compose only auto-loads a file named .env, so the file has
-# to be passed explicitly -- and because docker-compose.yml defaults every
-# ${*_VERSION}, a missing --env-file would silently build the default versions
-# instead of failing.
-DC+=(--env-file versions.env)
+# Settings live in .env, copied from .env.example and git-ignored by the
+# repository root .gitignore. Compose would auto-load it from this directory, but
+# it is named anyway so the file in use is never in doubt.
+ENV_FILE="${SCRIPT_DIR}/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "!!! .env not found. Create it, then change every ChangeMe in it:" >&2
+    echo "      cp .env.example .env && chmod 600 .env" >&2
+    if [ -f "${SCRIPT_DIR}/versions.env" ]; then
+        echo "    versions.env is no longer read; copy its versions into .env." >&2
+    fi
+    exit 1
+fi
+DC+=(--env-file "$ENV_FILE")
+
+# DOCKERENV_PASSWORD - checked before anything is built, so a bad value never
+# leaves twelve containers failing their init one by one. Read in a subshell, so
+# nothing else in .env leaks into this script. A value set in the shell wins, as
+# it does for docker compose, so the value checked is the value the containers get.
+pw_problem="$(
+    __shell_pw="${DOCKERENV_PASSWORD-__unset__}"
+    set -a; . "$ENV_FILE"; set +a
+    [ "$__shell_pw" != "__unset__" ] && DOCKERENV_PASSWORD="$__shell_pw"
+    if [ -z "${DOCKERENV_PASSWORD+x}" ]; then
+        echo "DOCKERENV_PASSWORD is not set"
+    elif [ "$(printf '%s' "$DOCKERENV_PASSWORD" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" = "changeme" ]; then
+        echo "DOCKERENV_PASSWORD is still ChangeMe"
+    elif [ "${#DOCKERENV_PASSWORD}" -lt 8 ]; then
+        echo "DOCKERENV_PASSWORD must be at least 8 characters (MinIO refuses a shorter one)"
+    else
+        case "$DOCKERENV_PASSWORD" in
+            *[\'\"\\\$\`[:space:]]*)
+                echo "DOCKERENV_PASSWORD must not contain ' \" \\ \$ \` or whitespace (it goes into SQL, JS and shell)" ;;
+        esac
+    fi
+)"
+if [ -n "$pw_problem" ]; then
+    echo "!!! ${pw_problem}." >&2
+    echo "    Set it in ${ENV_FILE}." >&2
+    exit 1
+fi
+
+# The file now holds a password, so a mode anyone can read is worth a word.
+env_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE" 2>/dev/null || true)"
+case "$env_mode" in
+    ''|600|400) ;;
+    *) echo ">>> WARNING: ${ENV_FILE} is mode ${env_mode} and holds DOCKERENV_PASSWORD - chmod 600 is advised." >&2 ;;
+esac
+
+# The password as the containers receive it (shell first, then .env), for the
+# connection info printed at the end.
+SHARED_PW="${DOCKERENV_PASSWORD:-$( set -a; . "$ENV_FILE"; set +a; printf '%s' "${DOCKERENV_PASSWORD:-}" )}"
 
 BUILD_OPTS=""
 DO_BUILD=true
@@ -155,13 +200,13 @@ cat <<EOF
   cm-centipede TESTENV — 12 containers ready
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Shared credentials
-    SSH   : root / testpass123
+  Shared credentials  (every password is DOCKERENV_PASSWORD)
+    SSH   : root / ${SHARED_PW},  centipede / ${SHARED_PW}
             key: ${PRIV_KEY}
-    MinIO : minioadmin / minioadmin123
-    DB (shared) : centipede / centipede_pass
-    DB (admin)  : PostgreSQL -> postgres / testpass123
-                  others (MariaDB/MySQL/MongoDB) -> root / testpass123
+    MinIO : minioadmin / ${SHARED_PW}
+    DB (shared) : centipede / ${SHARED_PW}
+    DB (admin)  : PostgreSQL -> postgres / ${SHARED_PW}
+                  others (MariaDB/MySQL/MongoDB) -> root / ${SHARED_PW}
 
   ┌─ Filesystem ────────────────────────────────────────────────────────────
     fs-source        SSH  localhost:32210   (/testdata fully populated)

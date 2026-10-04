@@ -21,37 +21,29 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── Servers ──────────────────────────────────────────────────────────────────
-HB_BASE=${HB_BASE:-http://localhost:8081/honeybee}
-CP_BASE=${CP_BASE:-http://localhost:8085/centipede}
-CP_AUTH=${CP_AUTH:-default:default}
-
-# ── Source — the on-premises MySQL (testenv/dockerenv mysql-source) ──────────
-# HOST_IP is the address of the host machine the source container runs on. MySQL
-# is reached through the port it publishes (SRC_PORT below), so this is the
-# host's address — not the container's, and not 127.0.0.1. Set it every run:
-#   DB_PASSWORD=... HOST_IP=172.24.78.163 ./migrate.sh
-HOST_IP=${HOST_IP:-127.0.0.1}
-SRC_PORT=${SRC_PORT:-33406}
-SRC_DB_USER=${SRC_DB_USER:-centipede}
-SRC_DB_PASS=${SRC_DB_PASS:-centipede_pass}
-SRC_DB=${SRC_DB:-shop_db}
-
-# ── Target — the AWS RDS instance (testenv/beetleenv) ────────────────────────
-# NS_ID and RDBMS_ID come from: testenv/beetleenv/scripts/conn-info.sh aws --ids
+# ── Settings — from .env (cp .env.example .env) ──────────────────────────────
+# Every variable below the checks comes from there: HB_BASE, CP_BASE, CP_USER,
+# CP_PASS, HOST_IP, SRC_PORT, SRC_DB_USER, SRC_DB_PASS, SRC_DB, NS_ID, RDBMS_ID,
+# DB_PASSWORD, DST_DB, NAME, POLL. .env.example says what each one is.
 #
-# DB_PASSWORD is the instance's master password, and it has NO default on
-# purpose: cm-beetle takes it when the instance is created and never hands it
-# back, so cm-centipede has to be told. It is the same value as
-# BEETLEENV_AWS_DB_PASSWORD in testenv/beetleenv/.env. Unset, the line below
-# stops the script here rather than at the plan call.
-NS_ID=${NS_ID:-cpbt01}
-RDBMS_ID=${RDBMS_ID:-cpbt-aws-db-mysql}
-DB_PASSWORD=${DB_PASSWORD:?required — the RDS instance master password, the same value as BEETLEENV_AWS_DB_PASSWORD in testenv/beetleenv/.env}
-DST_DB=${DST_DB:-shop_db}
+# A variable already set in the shell wins over the file, so one value can be
+# changed for one run - and the two passwords can be kept out of the file:
+#   SRC_DB_PASS=... DB_PASSWORD=... ./migrate.sh
+[ -f .env ] || { echo "no .env here: cp .env.example .env, then change every ChangeMe" >&2; exit 1; }
+PRESET=$(export -p)
+set -a; . ./.env; set +a
+eval "$PRESET"
 
-NAME=${NAME:-onprem-to-aws-mysql}
-POLL=${POLL:-5}
+for v in CP_USER CP_PASS HOST_IP SRC_DB_PASS DB_PASSWORD; do
+  if [ "$(printf '%s' "${!v:-}" | tr '[:upper:]' '[:lower:]')" = changeme ]; then
+    echo "$v in .env is still ChangeMe" >&2; exit 1
+  fi
+done
+# The passwords cannot be empty: one left empty in .env has to come in from the shell.
+for v in SRC_DB_PASS DB_PASSWORD; do
+  [ -n "${!v:-}" ] || { echo "$v is empty: set it in .env, or pass it in ($v=... ./migrate.sh)" >&2; exit 1; }
+done
+CP_AUTH="$CP_USER:$CP_PASS"
 
 # =============================================================================
 # 1. Register the source group with cm-honeybee

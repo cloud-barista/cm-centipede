@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Source PostgreSQL setup - accounts + load shop_db and hr_db from sql/
 set -euo pipefail
+. /opt/testenv/scripts/common.sh
 
 echo "[PostgreSQL] Starting setup..."
 
@@ -19,12 +20,14 @@ done
 echo "[PostgreSQL] PostgreSQL is ready."
 
 # ── Set the postgres password + create accounts ───────────────────────────────
-sudo -u postgres psql <<'SQL'
-ALTER USER postgres WITH PASSWORD 'testpass123';
+# The password goes in as a psql variable (:'pw' quotes it as a literal), so the
+# heredoc stays quoted and nothing in it is touched by the shell.
+sudo -u postgres psql -v pw="$DOCKERENV_PASSWORD" <<'SQL'
+ALTER USER postgres WITH PASSWORD :'pw';
 
-CREATE USER centipede WITH PASSWORD 'centipede_pass' SUPERUSER CREATEDB CREATEROLE;
+CREATE USER centipede WITH PASSWORD :'pw' SUPERUSER CREATEDB CREATEROLE;
 
-CREATE USER readonly WITH PASSWORD 'readonly_pass';
+CREATE USER readonly WITH PASSWORD :'pw';
 SQL
 
 echo "[PostgreSQL] Users created."

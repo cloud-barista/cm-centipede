@@ -103,7 +103,7 @@ these lists fails during `docker build`, before a container ever starts.
 cd testenv/tofu-db-test
 
 cp .env.example .env && chmod 600 .env
-# fill in the CSP keys and the DB password, then:
+# change every ChangeMe (blank the [CREDENTIAL] keys of a CSP you do not use), then:
 
 ./scripts/up.sh                 # OpenBao + credential registration + tofu runner
 
@@ -134,7 +134,7 @@ read a `.env` anyone else can. See [Credentials](#credentials).
 ```
  Step 0  Prerequisites      docker, jq, curl + a CSP access key
             |               + cm-honeybee and cm-centipede running
- Step 1  .env               cp from .example, chmod 600, fill in keys
+ Step 1  .env               cp from .example, chmod 600, change every ChangeMe
             |
  Step 2  ./scripts/up.sh    OpenBao up -> init or unseal -> store credentials
             |                -> blank the keys in .env -> tofu runner up

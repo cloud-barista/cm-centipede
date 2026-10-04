@@ -21,9 +21,14 @@ else
     exit 1
 fi
 
-# See dockerenv-up.sh: versions.env has to be passed explicitly, and down needs
-# the same variables so it resolves the same image names as up.
-DC+=(--env-file versions.env)
+# See dockerenv-up.sh: down reads the same .env, so it resolves the same image
+# names as up and satisfies docker-compose.yml's required DOCKERENV_PASSWORD. It
+# does not check the value - stopping containers needs no password of its own.
+if [ ! -f "${SCRIPT_DIR}/.env" ]; then
+    echo "!!! .env not found (cp .env.example .env). docker compose needs it to resolve the stack." >&2
+    exit 1
+fi
+DC+=(--env-file "${SCRIPT_DIR}/.env")
 
 DOWN_OPTS=()
 for arg in "$@"; do

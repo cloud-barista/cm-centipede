@@ -77,6 +77,7 @@ db_versions_main() {
 	VAULT_ADDR="${VAULT_ADDR:-http://localhost:38210}"
 
 	require_cmd docker jq curl
+	assert_no_placeholder || die "placeholder check failed."
 	MATRIX_TMP="$(mktemp -d "${TMPDIR:-/tmp}/cptfm-ver.XXXXXX")"
 	trap 'rm -rf "$MATRIX_TMP"' EXIT
 
