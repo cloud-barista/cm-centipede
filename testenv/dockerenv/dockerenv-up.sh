@@ -208,32 +208,34 @@ cat <<EOF
     DB (admin)  : PostgreSQL -> postgres / ${SHARED_PW}
                   others (MariaDB/MySQL/MongoDB) -> root / ${SHARED_PW}
 
+  Ports are shown as  localhost:<host port>-><container port>  (as in docker ps)
+
   ┌─ Filesystem ────────────────────────────────────────────────────────────
-    fs-source        SSH  localhost:32210   (/testdata fully populated)
-    fs-target        SSH  localhost:32211   (/testdata empty)
+    fs-source          SSH localhost:32210->22   (/testdata fully populated)
+    fs-target          SSH localhost:32211->22   (/testdata empty)
 
   ┌─ Object Storage (MinIO) ────────────────────────────────────────────────
-    minio-source     SSH  localhost:32220   API 9000->39000  console http://localhost:39001
-    minio-target     SSH  localhost:32221   API 9000->39010  console http://localhost:39011
+    minio-source       SSH localhost:32220->22   API localhost:39000->9000    console localhost:39001->9001  (http://localhost:39001)
+    minio-target       SSH localhost:32221->22   API localhost:39010->9000    console localhost:39011->9001  (http://localhost:39011)
 
 ${BUCKET_LINES}
     target buckets   same 6 buckets, all empty
 
   ┌─ MariaDB ───────────────────────────────────────────────────────────────
-    mariadb-source   SSH  localhost:32230   DB  localhost:33306   (shop_db, hr_db)
-    mariadb-target   SSH  localhost:32231   DB  localhost:33307   (empty shop_empty_db, hr_empty_db)
+    mariadb-source     SSH localhost:32230->22   DB  localhost:33306->3306    (shop_db, hr_db)
+    mariadb-target     SSH localhost:32231->22   DB  localhost:33307->3306    (empty shop_empty_db, hr_empty_db)
 
   ┌─ MySQL ─────────────────────────────────────────────────────────────────
-    mysql-source     SSH  localhost:32240   DB  localhost:33406   (shop_db, hr_db)
-    mysql-target     SSH  localhost:32241   DB  localhost:33407   (empty shop_empty_db, hr_empty_db)
+    mysql-source       SSH localhost:32240->22   DB  localhost:33406->3306    (shop_db, hr_db)
+    mysql-target       SSH localhost:32241->22   DB  localhost:33407->3306    (empty shop_empty_db, hr_empty_db)
 
   ┌─ PostgreSQL ────────────────────────────────────────────────────────────
-    postgresql-source SSH localhost:32250   DB  localhost:35432   (shop_db, hr_db)
-    postgresql-target SSH localhost:32251   DB  localhost:35433   (empty shop_empty_db, hr_empty_db)
+    postgresql-source  SSH localhost:32250->22   DB  localhost:35432->5432    (shop_db, hr_db)
+    postgresql-target  SSH localhost:32251->22   DB  localhost:35433->5432    (empty shop_empty_db, hr_empty_db)
 
   ┌─ MongoDB ───────────────────────────────────────────────────────────────
-    mongodb-source   SSH  localhost:32260   DB  localhost:37017   (shop_db, hr_db)
-    mongodb-target   SSH  localhost:32261   DB  localhost:37018   (empty shop_empty_db, hr_empty_db)
+    mongodb-source     SSH localhost:32260->22   DB  localhost:37017->27017   (shop_db, hr_db)
+    mongodb-target     SSH localhost:32261->22   DB  localhost:37018->27017   (empty shop_empty_db, hr_empty_db)
 
   Shut down: ./dockerenv-down.sh
 
