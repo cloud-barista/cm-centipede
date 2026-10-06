@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/cloud-barista/cm-centipede/transx-ex/storagex/filter"
@@ -181,7 +180,7 @@ func inspectLocalFilesystem(root string, flt *FilterOption, m fsMetricResolved) 
 	if err != nil {
 		return nil, err
 	}
-	rootDepth := strings.Count(absRoot, "/")
+	rootDepth := strings.Count(absRoot, string(filepath.Separator))
 	needFileScan := m.needFileScan()
 
 	// Device id of the scan root's parent, for detecting whether the root itself
@@ -192,7 +191,7 @@ func inspectLocalFilesystem(root string, flt *FilterOption, m fsMetricResolved) 
 	// used to detect mount points: a dir whose device differs from its parent is one.
 	devByPath := make(map[string]uint64)
 	mountOf := func(abs string, dev uint64, devOK bool) bool {
-		if abs == "/" {
+		if filepath.Dir(abs) == abs {
 			return true
 		}
 		if !devOK {
@@ -251,12 +250,12 @@ func inspectLocalFilesystem(root string, flt *FilterOption, m fsMetricResolved) 
 		if abs != absRoot && isVirtualFS(abs) {
 			return filepath.SkipDir
 		}
-		dev, devOK := devFromInfo(info)
+		dev, devOK := devFromInfo(abs, info)
 		if devOK {
 			devByPath[abs] = dev
 		}
 
-		depth := strings.Count(abs, "/") - rootDepth
+		depth := strings.Count(abs, string(filepath.Separator)) - rootDepth
 		if flt != nil && flt.MaxDepth > 0 && depth > flt.MaxDepth {
 			// MaxDepth bounds the folder listing only. File metrics scan the whole
 			// tree, so keep descending when any is requested; otherwise prune.
@@ -573,23 +572,13 @@ func specialPermChar(hasExec bool, c byte) byte {
 	return c - ('a' - 'A')
 }
 
-// devFromInfo returns the device id (st_dev) from a FileInfo, or false when the
-// underlying platform data is unavailable.
-func devFromInfo(info os.FileInfo) (uint64, bool) {
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, false
-	}
-	return uint64(st.Dev), true
-}
-
 // statDev returns the device id of a local path.
 func statDev(path string) (uint64, bool) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return 0, false
 	}
-	return devFromInfo(info)
+	return devFromInfo(path, info)
 }
 
 // sshDev returns the device id (st_dev) of a remote path via `stat`.
