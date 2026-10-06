@@ -28,6 +28,9 @@ type Params struct {
 	PrivateKeyPath string
 	BasePath       string // e.g. /home/ubuntu/testdata
 	Concurrency    int
+	// Connections is how many SSH connections the Concurrency workers are spread
+	// over, round robin. 0 or 1 means one.
+	Connections int
 
 	// OnFile, when set, is called with the size of each file once it is
 	// transferred, so the caller can report progress. Called from the workers.
@@ -58,7 +61,11 @@ func dial(p Params) (*ssh.Client, *sftp.Client, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
-	fc, err := sftp.NewClient(sc)
+	// Concurrent writes let one file go out as many in-flight requests instead of
+	// one 32 KiB write at a time waiting for its reply - the difference between
+	// being bound by the round trip and by the bandwidth. ReadFrom only uses it
+	// when it can tell the source's size, which an *os.File tells it.
+	fc, err := sftp.NewClient(sc, sftp.UseConcurrentWrites(true))
 	if err != nil {
 		_ = sc.Close()
 		return nil, nil, fmt.Errorf("sftp client: %w", err)
@@ -93,17 +100,43 @@ func CheckExisting(_ context.Context, p Params) error {
 }
 
 // Transfer uploads files to <BasePath>/<leaf>/<rel>. Returns the count transferred.
+//
+// The workers are spread over p.Connections SSH connections, because one TCP
+// connection is a ceiling of its own over a long path, however many requests
+// share it. Each directory is created once: the set of directories is small
+// next to the number of files, and a MkdirAll per file is a stat round trip
+// per file, taken under a lock.
 func Transfer(_ context.Context, p Params, files []generate.File, plan layout.Plan) (int, error) {
-	sc, fc, err := dial(p)
-	if err != nil {
-		return 0, err
+	conns := p.Connections
+	if conns < 1 {
+		conns = 1
 	}
-	defer sc.Close()
-	defer fc.Close()
-
 	conc := p.Concurrency
 	if conc < 1 {
 		conc = 1
+	}
+	if conns > conc {
+		conns = conc // a connection without a worker would only cost a login
+	}
+	clients := make([]*sftp.Client, 0, conns)
+	defer func() {
+		for _, fc := range clients {
+			_ = fc.Close()
+		}
+	}()
+	var sshClients []*ssh.Client
+	defer func() {
+		for _, sc := range sshClients {
+			_ = sc.Close()
+		}
+	}()
+	for i := 0; i < conns; i++ {
+		sc, fc, err := dial(p)
+		if err != nil {
+			return 0, err
+		}
+		sshClients = append(sshClients, sc)
+		clients = append(clients, fc)
 	}
 
 	type job struct {
@@ -113,22 +146,33 @@ func Transfer(_ context.Context, p Params, files []generate.File, plan layout.Pl
 	jobs := make(chan job)
 
 	var (
-		mkmu     sync.Mutex // serialize mkdir to avoid concurrent-create races
+		dirMu    sync.Mutex
+		madeDirs = map[string]bool{}
 		wg       sync.WaitGroup
 		mu       sync.Mutex
 		firstErr error
 		count    int
 	)
-	ensureDir := func(dir string) error {
-		mkmu.Lock()
-		defer mkmu.Unlock()
-		return fc.MkdirAll(dir)
+	// ensureDir creates a directory the first time any worker needs it. The
+	// lock is held across MkdirAll so two workers never race on the same tree;
+	// once a directory is known, it costs nothing.
+	ensureDir := func(fc *sftp.Client, dir string) error {
+		dirMu.Lock()
+		defer dirMu.Unlock()
+		if madeDirs[dir] {
+			return nil
+		}
+		if err := fc.MkdirAll(dir); err != nil {
+			return err
+		}
+		madeDirs[dir] = true
+		return nil
 	}
-	worker := func() {
+	worker := func(fc *sftp.Client) {
 		defer wg.Done()
 		for j := range jobs {
 			remote := path.Join(p.BasePath, plan.Rel(j.idx, j.file.Rel))
-			err := ensureDir(path.Dir(remote))
+			err := ensureDir(fc, path.Dir(remote))
 			if err == nil {
 				err = copyFile(fc, j.file.Abs, remote)
 			}
@@ -148,7 +192,7 @@ func Transfer(_ context.Context, p Params, files []generate.File, plan layout.Pl
 	}
 	wg.Add(conc)
 	for i := 0; i < conc; i++ {
-		go worker()
+		go worker(clients[i%conns])
 	}
 	for i, f := range files {
 		jobs <- job{idx: i, file: f}

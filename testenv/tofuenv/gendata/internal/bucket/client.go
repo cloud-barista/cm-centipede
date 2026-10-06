@@ -60,9 +60,20 @@ func NewClient(ci S3ConnInfo) (Client, error) {
 	return &minioClient{client: c}, nil
 }
 
+// uploadPartSize and uploadPartThreads shape the multipart upload of a large
+// file: a file under uploadPartSize goes up as one PUT, a larger one as
+// uploadPartSize parts, uploadPartThreads of them at a time. Most dummy files
+// are ~1 MiB and never reach it; the parallelism there is the worker count.
+const (
+	uploadPartSize    = 32 << 20
+	uploadPartThreads = 4
+)
+
 func (u *minioClient) Upload(ctx context.Context, bucket, key string, r io.Reader, size int64) error {
 	_, err := u.client.PutObject(ctx, bucket, key, r, size, minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
+		PartSize:    uploadPartSize,
+		NumThreads:  uploadPartThreads,
 	})
 	return err
 }

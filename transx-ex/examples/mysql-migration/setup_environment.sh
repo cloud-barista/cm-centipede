@@ -46,18 +46,53 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# =============================================================================
+# Settings — .env (cp .env.example .env)
+# =============================================================================
+# A real shell variable wins over the file: snapshot the environment, read the
+# file, then restore the snapshot.
+ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
+if [[ -f "${ENV_FILE}" ]]; then
+  __ENV_PRESET="$(export -p)"
+  set -a; . "${ENV_FILE}"; set +a
+  eval "${__ENV_PRESET}"
+  unset __ENV_PRESET
+fi
+
+# The container passwords have no default. ChangeMe is what the .example ships;
+# empty is refused by the mysql image; " and \ would break the generated config.json.
+check_passwords() {
+  local v val
+  for v in SRC_PASS DST_PASS; do
+    val="${!v:-}"
+    if [[ -z "${val}" ]]; then
+      echo -e "${RED}${v} is empty — set it in ${ENV_FILE} (cp .env.example .env).${NC}" >&2; exit 1
+    elif [[ "$(printf '%s' "${val}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" == "changeme" ]]; then
+      echo -e "${RED}${v} is still ChangeMe — change it in ${ENV_FILE}.${NC}" >&2; exit 1
+    elif [[ "${val}" == *[\"\\]* ]]; then
+      echo -e "${RED}${v} must not contain \" or \\ (it is written into config.json).${NC}" >&2; exit 1
+    fi
+  done
+}
+
+# cleanup and help need no password; everything else starts or reads containers.
+case "${COMMAND}" in
+  cleanup|-h|--help) ;;
+  *) check_passwords ;;
+esac
+
 SRC_IMAGE="mysql:${SRC_VERSION}"
 DST_IMAGE="mysql:${DST_VERSION}"
 SRC_CONTAINER="mysql_src"
 DST_CONTAINER="mysql_dst"
 SRC_PORT=3306
 DST_PORT=3307
-SRC_PASS="srcpass"
-DST_PASS="dstpass"
+SRC_PASS="${SRC_PASS:-}"
+DST_PASS="${DST_PASS:-}"
 SRC_DB="testdb_src"
 DST_DB="testdb_dst"
-# Override with env vars when the containers are not on this machine
-# (e.g. SRC_HOST=192.168.1.10 ./setup_environment.sh all)
+# Override in .env (or the shell) when the containers are not on
+# this machine (e.g. SRC_HOST=192.168.1.10 ./setup_environment.sh all)
 SRC_HOST="${SRC_HOST:-127.0.0.1}"
 DST_HOST="${DST_HOST:-127.0.0.1}"
 
@@ -488,12 +523,12 @@ display_final_info() {
   echo ""
   echo -e "${YELLOW}Source container:${NC}"
   echo -e "  Image:    ${SRC_IMAGE}"
-  echo -e "  MySQL:    ${SRC_HOST}:${SRC_PORT}  (root / ${SRC_PASS})"
+  echo -e "  MySQL:    ${SRC_HOST}:${SRC_PORT}  (root / SRC_PASS in .env)"
   echo -e "  Database: ${SRC_DB}"
   echo ""
   echo -e "${YELLOW}Target container:${NC}"
   echo -e "  Image:    ${DST_IMAGE}"
-  echo -e "  MySQL:    ${DST_HOST}:${DST_PORT}  (root / ${DST_PASS})"
+  echo -e "  MySQL:    ${DST_HOST}:${DST_PORT}  (root / DST_PASS in .env)"
   echo -e "  Database: ${DST_DB}  (empty, ready for restore)"
   echo ""
   echo -e "${YELLOW}Run migration:${NC}"

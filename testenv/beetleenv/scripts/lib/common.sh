@@ -122,6 +122,31 @@ assert_env() {
     return 1
 }
 
+# The keys .env.example ships as ChangeMe. Each must be set by the operator, to a
+# value of their choosing or to empty; whether empty is enough is need_env's call.
+PLACEHOLDER_ENV=(BEETLE_USERNAME BEETLE_PASSWORD TUMBLEBUG_USERNAME TUMBLEBUG_PASSWORD
+                 BEETLEENV_AWS_DB_PASSWORD BEETLEENV_NCP_DB_PASSWORD)
+
+# assert_no_placeholder — refuse to run while any of PLACEHOLDER_ENV is unset or
+#   still holds ChangeMe (case-insensitive, surrounding whitespace ignored).
+#   Every offender is listed at once, like assert_env.
+assert_no_placeholder() {
+    local name v bad=()
+    for name in "${PLACEHOLDER_ENV[@]}"; do
+        if [ -z "${!name+x}" ]; then
+            bad+=("${name}    (not set)")
+            continue
+        fi
+        v="$(printf '%s' "${!name}" | tr '[:upper:]' '[:lower:]')"
+        v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+        [ "$v" = "changeme" ] && bad+=("${name}    (still ChangeMe)")
+    done
+    if [ "${#bad[@]}" -eq 0 ]; then return 0; fi
+    log_error "These keys in ${ENV_FILE} must be changed from ChangeMe (an empty value is allowed):"
+    printf '         %s\n' "${bad[@]}" >&2
+    return 1
+}
+
 # ------------------------------------------------------------------------------
 # CSP naming
 # ------------------------------------------------------------------------------
@@ -281,6 +306,7 @@ preflight_env() {
 
     load_env
     check_env_perm
+    assert_no_placeholder || exit 1
 
     need_env BEETLE_URL "# e.g. http://localhost:8056/beetle"
     # Not reachable without this, whichever script asked - so this one exits.

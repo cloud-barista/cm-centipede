@@ -39,6 +39,9 @@ fi
 # shellcheck source=./lib/env-perm.sh
 . "$SCRIPT_DIR/lib/env-perm.sh"
 check_env_perm "$ROOT_DIR/.env" || exit 1
+# In a subshell, so .env is read for the check only and nothing it sets leaks
+# into the docker compose calls below.
+( set -a; . "$ROOT_DIR/.env"; set +a; ENV_FILE="$ROOT_DIR/.env"; assert_no_placeholder ) || exit 1
 
 echo -e "${CYAN}[1/4] Starting OpenBao...${NC}"
 docker compose up -d openbao

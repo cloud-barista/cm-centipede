@@ -209,6 +209,20 @@ vault_db_password() {
 	cat "$cache"
 }
 
+# assert_src_passwords — the source accounts cannot be passwordless: the
+#   container would refuse to initialise, and honeybee could not log in.
+assert_src_passwords() {
+	local name bad=""
+	for name in SRC_DB_PASS DB_ROOT_PASS; do
+		[ -z "${!name}" ] && bad="$bad\n    $name"
+	done
+	[ -z "$bad" ] && return 0
+	fail "These must not be empty (the source database accounts are created with them):"
+	printf '%b\n' "$bad" >&2
+	fail "  Fill them in in ${ENV_FILE:-.env}."
+	return 1
+}
+
 # assert_db_password CSP — check the password is really stored, before anything is created.
 assert_db_password() {
 	local csp="$1"

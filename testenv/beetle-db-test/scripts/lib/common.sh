@@ -122,6 +122,32 @@ csp_env_bool() {
 	case "$v" in true|1|yes) printf 'true' ;; false|0|no) printf 'false' ;; *) printf '%s' "$3" ;; esac
 }
 
+# The variables .env.example ships as ChangeMe. Each must be set by the operator,
+# to a value of their choosing or to empty; none falls back to a script default.
+PLACEHOLDER_VARS="BEETLE_USERNAME BEETLE_PASSWORD TUMBLEBUG_USERNAME TUMBLEBUG_PASSWORD
+CP_USER CP_PASS SRC_DB_PASS DB_ROOT_PASS AWS_DB_PASSWORD NCP_DB_PASSWORD"
+
+# assert_no_placeholder — refuse to run while any of PLACEHOLDER_VARS is unset or
+#   still holds ChangeMe (case-insensitive, surrounding whitespace ignored).
+#   Every offender is listed at once.
+assert_no_placeholder() {
+	local name v bad=""
+	for name in $PLACEHOLDER_VARS; do
+		if [ -z "${!name+x}" ]; then
+			bad="$bad\n    $name  (not set)"
+			continue
+		fi
+		v="$(lower "${!name}")"
+		v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+		[ "$v" = "changeme" ] && bad="$bad\n    $name  (still ChangeMe)"
+	done
+	[ -z "$bad" ] && return 0
+	fail "These settings must be changed from ChangeMe (an empty value is allowed):"
+	printf '%b\n' "$bad" >&2
+	fail "  Edit ${ENV_FILE:-.env}, or set them as shell variables."
+	return 1
+}
+
 # load_env_file PATH — read the env file, but let real shell variables win.
 #   Precedence: CLI option > real shell variable > env file > script default
 load_env_file() {

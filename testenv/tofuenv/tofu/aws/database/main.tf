@@ -2,6 +2,10 @@ locals {
   db_password = data.vault_kv_secret_v2.db.data["AWS_DB_PASSWORD"]
 
   want_parameter_group = var.aws_secure_transport == "off"
+
+  want_mysql    = contains(var.aws_db_engines, "mysql")
+  want_mariadb  = contains(var.aws_db_engines, "mariadb")
+  want_postgres = contains(var.aws_db_engines, "postgres")
 }
 
 # ---------------------------------------------------------------------------
@@ -85,13 +89,13 @@ resource "aws_security_group" "rds" {
 #   destroying and re-provisioning the module rather than re-applying it.
 # ---------------------------------------------------------------------------
 data "aws_rds_engine_version" "mysql" {
-  count   = local.want_parameter_group ? 1 : 0
+  count   = local.want_parameter_group && local.want_mysql ? 1 : 0
   engine  = "mysql"
   version = var.aws_mysql_version
 }
 
 resource "aws_db_parameter_group" "mysql" {
-  count = local.want_parameter_group ? 1 : 0
+  count = local.want_parameter_group && local.want_mysql ? 1 : 0
 
   name_prefix = "${var.aws_name_prefix}-mysql-"
   family      = data.aws_rds_engine_version.mysql[0].parameter_group_family
@@ -110,13 +114,13 @@ resource "aws_db_parameter_group" "mysql" {
 }
 
 data "aws_rds_engine_version" "mariadb" {
-  count   = local.want_parameter_group ? 1 : 0
+  count   = local.want_parameter_group && local.want_mariadb ? 1 : 0
   engine  = "mariadb"
   version = var.aws_mariadb_version
 }
 
 resource "aws_db_parameter_group" "mariadb" {
-  count = local.want_parameter_group ? 1 : 0
+  count = local.want_parameter_group && local.want_mariadb ? 1 : 0
 
   name_prefix = "${var.aws_name_prefix}-mariadb-"
   family      = data.aws_rds_engine_version.mariadb[0].parameter_group_family
@@ -134,13 +138,13 @@ resource "aws_db_parameter_group" "mariadb" {
 }
 
 data "aws_rds_engine_version" "postgres" {
-  count   = local.want_parameter_group ? 1 : 0
+  count   = local.want_parameter_group && local.want_postgres ? 1 : 0
   engine  = "postgres"
   version = var.aws_postgres_version
 }
 
 resource "aws_db_parameter_group" "postgres" {
-  count = local.want_parameter_group ? 1 : 0
+  count = local.want_parameter_group && local.want_postgres ? 1 : 0
 
   name_prefix = "${var.aws_name_prefix}-postgres-"
   family      = data.aws_rds_engine_version.postgres[0].parameter_group_family
@@ -168,13 +172,19 @@ resource "aws_db_parameter_group" "postgres" {
 #   the database module.)
 #   TF_VAR_aws_secure_transport is fixed at creation time for the same reason: a
 #   parameter group attached later would leave postgres pending-reboot.
+#   Each engine exists only when var.aws_db_engines names it, so provision.sh /
+#   deprovision.sh --engine can add or remove one without touching the others. The
+#   subnet group and security group stay while any engine is left.
 # ---------------------------------------------------------------------------
 resource "aws_db_instance" "mysql" {
+  count = local.want_mysql ? 1 : 0
+
   identifier             = "${var.aws_name_prefix}-mysql"
   engine                 = "mysql"
   engine_version         = var.aws_mysql_version
   instance_class         = var.aws_db_instance_class
   allocated_storage      = var.aws_db_allocated_storage
+  storage_type           = var.aws_db_storage_type
   db_name                = var.aws_db_name
   username               = var.aws_db_username
   password               = local.db_password
@@ -190,11 +200,14 @@ resource "aws_db_instance" "mysql" {
 }
 
 resource "aws_db_instance" "mariadb" {
+  count = local.want_mariadb ? 1 : 0
+
   identifier             = "${var.aws_name_prefix}-mariadb"
   engine                 = "mariadb"
   engine_version         = var.aws_mariadb_version
   instance_class         = var.aws_db_instance_class
   allocated_storage      = var.aws_db_allocated_storage
+  storage_type           = var.aws_db_storage_type
   db_name                = var.aws_db_name
   username               = var.aws_db_username
   password               = local.db_password
@@ -210,11 +223,14 @@ resource "aws_db_instance" "mariadb" {
 }
 
 resource "aws_db_instance" "postgres" {
+  count = local.want_postgres ? 1 : 0
+
   identifier             = "${var.aws_name_prefix}-postgres"
   engine                 = "postgres"
   engine_version         = var.aws_postgres_version
   instance_class         = var.aws_db_instance_class
   allocated_storage      = var.aws_db_allocated_storage
+  storage_type           = var.aws_db_storage_type
   db_name                = var.aws_db_name
   username               = var.aws_db_username
   password               = local.db_password
@@ -227,4 +243,20 @@ resource "aws_db_instance" "postgres" {
   apply_immediately      = true
 
   tags = { Project = "cm-centipede", ManagedBy = "opentofu", Engine = "postgres" }
+}
+
+# The instances were single resources before they took a count. These carry an
+# environment provisioned back then over to index [0], instead of planning to
+# destroy and recreate a database that is already there.
+moved {
+  from = aws_db_instance.mysql
+  to   = aws_db_instance.mysql[0]
+}
+moved {
+  from = aws_db_instance.mariadb
+  to   = aws_db_instance.mariadb[0]
+}
+moved {
+  from = aws_db_instance.postgres
+  to   = aws_db_instance.postgres[0]
 }

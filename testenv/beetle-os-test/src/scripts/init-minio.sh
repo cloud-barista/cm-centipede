@@ -44,7 +44,13 @@ echo "[MinIO] settings from $ENV_FILE"
 
 MINIO_ENDPOINT="http://localhost:9000"
 MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
-MINIO_PASS="${MINIO_ROOT_PASSWORD:-minioadmin123}"
+# No default: minio.service reads the password from matrix.env too, so a value
+# made up here could only disagree with the server.
+MINIO_PASS="${MINIO_ROOT_PASSWORD:-}"
+if [ -z "$MINIO_PASS" ]; then
+    echo "[MinIO] ERROR: MINIO_ROOT_PASSWORD is empty or not set - mount /opt/matrix/matrix.env with it." >&2
+    exit 1
+fi
 BUCKETS="${OS_SRC_BUCKETS:-raw-data processed-data images documents backups logs}"
 ALIAS="local"
 DATA="/tmp/minio-seed"

@@ -45,6 +45,30 @@ variable "aws_db_allocated_storage" {
   default     = 20
 }
 
+variable "aws_db_storage_type" {
+  description = "RDS storage type. gp3 gives 3000 IOPS / 125 MiB/s at any size under 400 GB; gp2 gives 3 IOPS per GB (150 at 50 GB) once its burst credits run out"
+  type        = string
+  default     = "gp3"
+  validation {
+    condition     = contains(["gp2", "gp3"], var.aws_db_storage_type)
+    error_message = "aws_db_storage_type must be gp2 or gp3."
+  }
+}
+
+# Which engines this module runs. Not set in .env: provision.sh and deprovision.sh
+# work it out from --engine and from what the state already holds, and export it
+# for each apply. The default - every engine - is what a plain apply gets.
+variable "aws_db_engines" {
+  description = "RDS engines to run: any of mysql, mariadb, postgres"
+  type        = list(string)
+  default     = ["mysql", "mariadb", "postgres"]
+
+  validation {
+    condition     = alltrue([for e in var.aws_db_engines : contains(["mysql", "mariadb", "postgres"], e)])
+    error_message = "aws_db_engines may only contain mysql, mariadb and postgres."
+  }
+}
+
 # DB engine versions, set through .env (TF_VAR_*).
 # Defaults: mysql 8.0 / mariadb 10.6 / postgres 14.
 # The versions RDS supports change over time; check with:

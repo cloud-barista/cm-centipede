@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Source MinIO setup - create 6 buckets and upload the test objects
 set -euo pipefail
+. /opt/testenv/scripts/common.sh
 
 MINIO_ENDPOINT="http://localhost:9000"
 MINIO_USER="minioadmin"
-MINIO_PASS="minioadmin123"
+MINIO_PASS="$DOCKERENV_PASSWORD"
 ALIAS="local"
 TMPDIR_DATA="/tmp/minio-testdata"
 

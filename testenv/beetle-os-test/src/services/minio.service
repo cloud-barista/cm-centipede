@@ -8,13 +8,13 @@ Type=notify
 User=root
 Group=root
 
-# The root account is baked in rather than read from /opt/matrix/matrix.env,
-# because systemd reads a unit's Environment= at unit-load time and the init
-# script has to agree with whatever the server was actually started with. The
-# same two values are written into defaults.env, and scripts/lib/source.sh
-# refuses to start a container whose .env asks for different ones.
-Environment="MINIO_ROOT_USER=minioadmin"
-Environment="MINIO_ROOT_PASSWORD=minioadmin123"
+# The root account comes from /opt/matrix/matrix.env, the per-run settings file
+# lib/source.sh writes from .env and bind-mounts in. EnvironmentFile= is read
+# when the unit starts, not when it loads, and the bind mount is in place before
+# systemd starts anything - so the server runs on the .env pair, and init-minio.sh
+# reads the very same file. Nothing is baked in: without matrix.env the unit
+# fails to start rather than come up on a password nobody chose.
+EnvironmentFile=/opt/matrix/matrix.env
 Environment="MINIO_VOLUMES=/data/minio"
 Environment="MINIO_OPTS=--console-address :9001"
 

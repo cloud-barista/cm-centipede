@@ -44,8 +44,6 @@ CP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$CP_LIB_DIR/common.sh"
 
 CP_BASE="${CP_BASE:-http://localhost:8085/centipede}"
-CP_USER="${CP_USER:-default}"
-CP_PASS="${CP_PASS:-default}"
 
 # What a cell reads back
 CP_PLAN=""            # the plan JSON

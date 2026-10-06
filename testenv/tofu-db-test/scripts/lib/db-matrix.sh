@@ -678,6 +678,9 @@ matrix_main() {
 	require_cmd docker jq curl
 	docker info >/dev/null 2>&1 || die "the docker daemon is not running."
 
+	# Before --cleanup too, like everything else that reads .env.
+	assert_no_placeholder || die "placeholder check failed. Nothing was created."
+
 	# --cleanup — do not run the matrix; only reclaim what is left.
 	if [ "${CLEANUP_ONLY:-0}" = "1" ]; then
 		banner "$CSP_TITLE — reclaiming what is left in tofu state"
@@ -784,6 +787,7 @@ matrix_main() {
 
 	sub "2) tofu stack / credentials"
 	tofu_preflight
+	assert_src_passwords || die "credential check failed. Nothing was created."
 	assert_db_password "$CSP" || die "credential check failed. Nothing was created."
 
 	sub "3) target versions"
@@ -841,8 +845,6 @@ matrix_defaults() {
 	# The migration stack
 	HB_BASE="${HB_BASE:-http://localhost:8081/honeybee}"
 	CP_BASE="${CP_BASE:-http://localhost:8085/centipede}"
-	CP_USER="${CP_USER:-default}"
-	CP_PASS="${CP_PASS:-default}"
 	HB_SOURCE_GROUP="${HB_SOURCE_GROUP:-cptfm-matrix}"
 	MIGRATION_PREFIX="${MIGRATION_PREFIX:-cptfm}"
 	KEEP_MIGRATION="${KEEP_MIGRATION:-1}"
@@ -856,9 +858,7 @@ matrix_defaults() {
 	MODE="${MODE:-direct}"
 
 	HOST_IP="${HOST_IP:-127.0.0.1}"
-	DB_ROOT_PASS="${DB_ROOT_PASS:-testpass123}"
 	SRC_DB_USER="${SRC_DB_USER:-centipede}"
-	SRC_DB_PASS="${SRC_DB_PASS:-centipede_pass}"
 	SRC_DB="${SRC_DB:-matrix_db}"
 	DST_DB="${DST_DB:-matrix_db}"
 	SRC_PROVIDER="${SRC_PROVIDER:-onprem}"

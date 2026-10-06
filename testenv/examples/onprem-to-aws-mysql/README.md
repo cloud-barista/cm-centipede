@@ -61,7 +61,7 @@ Check that the two servers this example talks to are answering:
 
 ```bash
 curl -s http://localhost:8081/honeybee/readyz
-curl -s -u default:default http://localhost:8085/centipede/readyz
+curl -s -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/readyz
 ```
 
 > **cm-centipede has to reach the same cm-beetle.** The target is named as a
@@ -88,7 +88,7 @@ The container this example uses is **`mysql-source`**:
 | | |
 |---|---|
 | MySQL | `<host>:33406` |
-| accounts | `root` / `testpass123` · `centipede` / `centipede_pass` |
+| accounts | `root` · `centipede` — password: `DOCKERENV_PASSWORD` in `testenv/dockerenv/.env` |
 | databases | `shop_db` · `hr_db` |
 
 This example migrates **`shop_db`**, which is deliberately more than tables:
@@ -132,7 +132,7 @@ CSPs disagree on the format: AWS reports `major.minor` (`8.0`, `8.4`), NCP the
 full string.
 
 The version also has to be **at least the source's**. `mysql-source` runs 8.0 by
-default (`MYSQL_VERSION` in `testenv/dockerenv/versions.env`), so 8.0 and 8.4
+default (`MYSQL_VERSION` in `testenv/dockerenv/.env`), so 8.0 and 8.4
 both work; asking for a target older than the source is refused in step 5 — see
 the downgrade note there.
 
@@ -204,10 +204,10 @@ curl -s -X POST http://localhost:8081/honeybee/source_group/$SG_ID/connection_in
         "name": "onprem-to-aws-mysql-src",
         "db_type": "mysql",
         "db_access_type": "direct",
-        "db_host": "172.24.78.163",
+        "db_host": "'"$HOST_IP"'",
         "db_port": "33406",
         "db_username": "centipede",
-        "db_password": "centipede_pass"
+        "db_password": "'"$SRC_DB_PASS"'"
       }'
 ```
 
@@ -302,12 +302,14 @@ The nesting reads oddly at first: the outer `databases` is one entry per
 
 ## 5. Migrate with cm-centipede
 
-> Every cm-centipede call needs BasicAuth — `-u default:default` by default.
+> Every cm-centipede call needs BasicAuth — `-u "$CP_USER:$CP_PASS"` below, the
+> credentials from cm-centipede's own config. Load them from this folder's `.env`
+> once per shell: `set -a; . ./.env; set +a`.
 
 ### Build the plan
 
 ```bash
-curl -s -X POST -u default:default http://localhost:8085/centipede/plans/target \
+curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/plans/target \
   -H 'Content-Type: application/json' \
   -d '{
         "source": <the /db/refined response, unchanged>,
@@ -390,7 +392,7 @@ kinds**, so an excluded object is reported as excluded rather than as missing.
 ### Run it
 
 ```bash
-curl -s -X POST -u default:default http://localhost:8085/centipede/migration \
+curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/migration \
   -H 'Content-Type: application/json' \
   -d '{
         "name": "onprem-to-aws-mysql",
@@ -410,7 +412,7 @@ leaves whatever it had already written either way.
 Creating the migration starts it, so the call returns immediately. Poll:
 
 ```bash
-curl -s -u default:default http://localhost:8085/centipede/migration/$MIG_ID
+curl -s -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/migration/$MIG_ID
 ```
 
 ```json
@@ -436,9 +438,9 @@ This is the verdict, and it is cm-centipede's rather than something you assemble
 It re-reads **both databases** and compares three things.
 
 ```bash
-curl -s -X POST -u default:default \
+curl -s -X POST -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID/validation
-curl -s -u default:default \
+curl -s -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID/validation
 ```
 
@@ -488,7 +490,7 @@ wholesale reports a readable sample instead of one line per table.
 Per-item detail, including anything a rollback did.
 
 ```bash
-curl -s -u default:default \
+curl -s -u "$CP_USER:$CP_PASS" \
   "http://localhost:8085/centipede/migration/$MIG_ID/logs?page=1&pageSize=100"
 ```
 
@@ -525,7 +527,7 @@ In this order — cm-centipede's record first, then what it referred to.
 
 ```bash
 # the migration record (the plan and the logs go with it)
-curl -s -X DELETE -u default:default \
+curl -s -X DELETE -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID
 
 # the honeybee registration
@@ -557,7 +559,8 @@ make down
 source that exists and an instance that exists.
 
 ```bash
-DB_PASSWORD=... ./migrate.sh
+cp .env.example .env && chmod 600 .env    # once: change every ChangeMe
+./migrate.sh
 ```
 
 It is the happy path and nothing else: no retries, no error handling, no cleanup.
@@ -570,27 +573,32 @@ request body is written exactly as it goes on the wire — the same JSON as the
 sections above. `jq` appears only to pull a single value out of a response
 (an id, a status, the plan), never to build a body.
 
-Everything it needs is a variable at the top, overridable from the environment:
+Everything it needs comes from `.env` (copied from `.env.example`), and a variable
+set in the shell wins over the file. It stops before its first call while
+`CP_USER`, `CP_PASS`, `HOST_IP`, `SRC_DB_PASS` or `DB_PASSWORD` is still `ChangeMe`.
 
-| Variable | Default | |
+| Variable | `.env.example` | |
 |---|---|---|
 | `HB_BASE` | `http://localhost:8081/honeybee` | where cm-honeybee answers |
 | `CP_BASE` | `http://localhost:8085/centipede` | where cm-centipede answers |
-| `CP_AUTH` | `default:default` | cm-centipede's BasicAuth |
-| `HOST_IP` | `127.0.0.1` | the host machine the source container runs on — set this |
+| `CP_USER` / `CP_PASS` | `ChangeMe` | cm-centipede's BasicAuth — must be changed |
+| `HOST_IP` | `ChangeMe` | the host machine the source container runs on — must be changed |
 | `SRC_PORT` | `33406` | MySQL's port on that host |
 | `SRC_DB_USER` | `centipede` | the source account |
-| `SRC_DB_PASS` | `centipede_pass` | its password |
+| `SRC_DB_PASS` | `ChangeMe` | its password — `DOCKERENV_PASSWORD` in `testenv/dockerenv/.env` |
 | `SRC_DB` | `shop_db` | the database to migrate |
 | `NS_ID` | `cpbt01` | from `conn-info.sh aws --ids` |
 | `RDBMS_ID` | `cpbt-aws-db-mysql` | " |
-| `DB_PASSWORD` | **none — required** | the RDS instance's master password |
+| `DB_PASSWORD` | `ChangeMe` | the RDS instance's master password — must be changed |
 | `DST_DB` | `shop_db` | what to call the database on the target |
 
-**`DB_PASSWORD` has no default on purpose.** Unset, the script stops on its first
-line rather than at the plan call several steps later. It is the same value as
-`BEETLEENV_AWS_DB_PASSWORD` in `testenv/beetleenv/.env`.
+**`DB_PASSWORD` has no default on purpose.** While it is still `ChangeMe` or empty,
+the script stops before its first call rather than at the plan call several steps
+later. It is the same value as `BEETLEENV_AWS_DB_PASSWORD` in `testenv/beetleenv/.env`.
+The two passwords written into `.env` sit there in plain text, protected only by
+its mode; to keep them off disk, leave them empty in `.env` and pass them in
+(`SRC_DB_PASS=... DB_PASSWORD=... ./migrate.sh`).
 
 ```bash
-DB_PASSWORD=... HOST_IP=172.24.78.163 SRC_DB=hr_db DST_DB=hr_db ./migrate.sh
+HOST_IP=172.24.78.163 SRC_DB=hr_db DST_DB=hr_db ./migrate.sh
 ```

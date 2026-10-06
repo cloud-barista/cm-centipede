@@ -35,12 +35,57 @@ else
     exit 1
 fi
 
-# DB versions live in versions.env rather than .env, which the repository root
-# .gitignore excludes. Compose only auto-loads a file named .env, so the file has
-# to be passed explicitly -- and because docker-compose.yml defaults every
-# ${*_VERSION}, a missing --env-file would silently build the default versions
-# instead of failing.
-DC+=(--env-file versions.env)
+# Settings live in .env, copied from .env.example and git-ignored by the
+# repository root .gitignore. Compose would auto-load it from this directory, but
+# it is named anyway so the file in use is never in doubt.
+ENV_FILE="${SCRIPT_DIR}/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "!!! .env not found. Create it, then change every ChangeMe in it:" >&2
+    echo "      cp .env.example .env && chmod 600 .env" >&2
+    if [ -f "${SCRIPT_DIR}/versions.env" ]; then
+        echo "    versions.env is no longer read; copy its versions into .env." >&2
+    fi
+    exit 1
+fi
+DC+=(--env-file "$ENV_FILE")
+
+# DOCKERENV_PASSWORD - checked before anything is built, so a bad value never
+# leaves twelve containers failing their init one by one. Read in a subshell, so
+# nothing else in .env leaks into this script. A value set in the shell wins, as
+# it does for docker compose, so the value checked is the value the containers get.
+pw_problem="$(
+    __shell_pw="${DOCKERENV_PASSWORD-__unset__}"
+    set -a; . "$ENV_FILE"; set +a
+    [ "$__shell_pw" != "__unset__" ] && DOCKERENV_PASSWORD="$__shell_pw"
+    if [ -z "${DOCKERENV_PASSWORD+x}" ]; then
+        echo "DOCKERENV_PASSWORD is not set"
+    elif [ "$(printf '%s' "$DOCKERENV_PASSWORD" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" = "changeme" ]; then
+        echo "DOCKERENV_PASSWORD is still ChangeMe"
+    elif [ "${#DOCKERENV_PASSWORD}" -lt 8 ]; then
+        echo "DOCKERENV_PASSWORD must be at least 8 characters (MinIO refuses a shorter one)"
+    else
+        case "$DOCKERENV_PASSWORD" in
+            *[\'\"\\\$\`[:space:]]*)
+                echo "DOCKERENV_PASSWORD must not contain ' \" \\ \$ \` or whitespace (it goes into SQL, JS and shell)" ;;
+        esac
+    fi
+)"
+if [ -n "$pw_problem" ]; then
+    echo "!!! ${pw_problem}." >&2
+    echo "    Set it in ${ENV_FILE}." >&2
+    exit 1
+fi
+
+# The file now holds a password, so a mode anyone can read is worth a word.
+env_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE" 2>/dev/null || true)"
+case "$env_mode" in
+    ''|600|400) ;;
+    *) echo ">>> WARNING: ${ENV_FILE} is mode ${env_mode} and holds DOCKERENV_PASSWORD - chmod 600 is advised." >&2 ;;
+esac
+
+# The password as the containers receive it (shell first, then .env), for the
+# connection info printed at the end.
+SHARED_PW="${DOCKERENV_PASSWORD:-$( set -a; . "$ENV_FILE"; set +a; printf '%s' "${DOCKERENV_PASSWORD:-}" )}"
 
 BUILD_OPTS=""
 DO_BUILD=true
@@ -155,40 +200,42 @@ cat <<EOF
   cm-centipede TESTENV — 12 containers ready
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Shared credentials
-    SSH   : root / testpass123
+  Shared credentials  (every password is DOCKERENV_PASSWORD)
+    SSH   : root / ${SHARED_PW},  centipede / ${SHARED_PW}
             key: ${PRIV_KEY}
-    MinIO : minioadmin / minioadmin123
-    DB (shared) : centipede / centipede_pass
-    DB (admin)  : PostgreSQL -> postgres / testpass123
-                  others (MariaDB/MySQL/MongoDB) -> root / testpass123
+    MinIO : minioadmin / ${SHARED_PW}
+    DB (shared) : centipede / ${SHARED_PW}
+    DB (admin)  : PostgreSQL -> postgres / ${SHARED_PW}
+                  others (MariaDB/MySQL/MongoDB) -> root / ${SHARED_PW}
+
+  Ports are shown as  localhost:<host port>-><container port>  (as in docker ps)
 
   ┌─ Filesystem ────────────────────────────────────────────────────────────
-    fs-source        SSH  localhost:32210   (/testdata fully populated)
-    fs-target        SSH  localhost:32211   (/testdata empty)
+    fs-source          SSH localhost:32210->22   (/testdata fully populated)
+    fs-target          SSH localhost:32211->22   (/testdata empty)
 
   ┌─ Object Storage (MinIO) ────────────────────────────────────────────────
-    minio-source     SSH  localhost:32220   API 9000->39000  console http://localhost:39001
-    minio-target     SSH  localhost:32221   API 9000->39010  console http://localhost:39011
+    minio-source       SSH localhost:32220->22   API localhost:39000->9000    console localhost:39001->9001  (http://localhost:39001)
+    minio-target       SSH localhost:32221->22   API localhost:39010->9000    console localhost:39011->9001  (http://localhost:39011)
 
 ${BUCKET_LINES}
     target buckets   same 6 buckets, all empty
 
   ┌─ MariaDB ───────────────────────────────────────────────────────────────
-    mariadb-source   SSH  localhost:32230   DB  localhost:33306   (shop_db, hr_db)
-    mariadb-target   SSH  localhost:32231   DB  localhost:33307   (empty shop_empty_db, hr_empty_db)
+    mariadb-source     SSH localhost:32230->22   DB  localhost:33306->3306    (shop_db, hr_db)
+    mariadb-target     SSH localhost:32231->22   DB  localhost:33307->3306    (empty shop_empty_db, hr_empty_db)
 
   ┌─ MySQL ─────────────────────────────────────────────────────────────────
-    mysql-source     SSH  localhost:32240   DB  localhost:33406   (shop_db, hr_db)
-    mysql-target     SSH  localhost:32241   DB  localhost:33407   (empty shop_empty_db, hr_empty_db)
+    mysql-source       SSH localhost:32240->22   DB  localhost:33406->3306    (shop_db, hr_db)
+    mysql-target       SSH localhost:32241->22   DB  localhost:33407->3306    (empty shop_empty_db, hr_empty_db)
 
   ┌─ PostgreSQL ────────────────────────────────────────────────────────────
-    postgresql-source SSH localhost:32250   DB  localhost:35432   (shop_db, hr_db)
-    postgresql-target SSH localhost:32251   DB  localhost:35433   (empty shop_empty_db, hr_empty_db)
+    postgresql-source  SSH localhost:32250->22   DB  localhost:35432->5432    (shop_db, hr_db)
+    postgresql-target  SSH localhost:32251->22   DB  localhost:35433->5432    (empty shop_empty_db, hr_empty_db)
 
   ┌─ MongoDB ───────────────────────────────────────────────────────────────
-    mongodb-source   SSH  localhost:32260   DB  localhost:37017   (shop_db, hr_db)
-    mongodb-target   SSH  localhost:32261   DB  localhost:37018   (empty shop_empty_db, hr_empty_db)
+    mongodb-source     SSH localhost:32260->22   DB  localhost:37017->27017   (shop_db, hr_db)
+    mongodb-target     SSH localhost:32261->22   DB  localhost:37018->27017   (empty shop_empty_db, hr_empty_db)
 
   Shut down: ./dockerenv-down.sh
 

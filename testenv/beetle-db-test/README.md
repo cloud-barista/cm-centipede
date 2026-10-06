@@ -123,7 +123,7 @@ yet. They cost nothing to keep and are ready the day beetle opens those engines.
 cd testenv/beetle-db-test
 
 cp .env.example .env && chmod 600 .env
-# fill in AWS_DB_PASSWORD (or NCP_DB_PASSWORD), then:
+# change every ChangeMe (an empty value where empty is allowed), then:
 
 ./scripts/aws-db-matrix.sh --engines mysql --src-versions "8.0" --dst-versions "8.0"
 ```
@@ -570,7 +570,9 @@ CLI option  >  real shell variable  >  .env  >  script default
 | `HOST_IP` | `127.0.0.1` | how honeybee reaches a source container's published port |
 | `<CSP>_ZONE` / `_ZONE2` | | two different zones — a managed RDBMS wants both |
 | `<CSP>_VNET_CIDR` | | a /16, unless you set the subnet CIDRs yourself |
-| `<CSP>_DB_PASSWORD` | | the managed instance's master password — the one secret here |
+| `BEETLE_USERNAME` / `_PASSWORD`, `TUMBLEBUG_USERNAME` / `_PASSWORD`, `CP_USER` / `CP_PASS` | `ChangeMe` | API credentials; no script default. Must be changed, empty allowed |
+| `SRC_DB_PASS` / `DB_ROOT_PASS` | `ChangeMe` | source database accounts; no default anywhere, cannot be empty |
+| `<CSP>_DB_PASSWORD` | `ChangeMe` | the managed instance's master password. Must be changed; empty only for a CSP you do not run |
 | `<CSP>_DB_SRC_*` | 2 / 4096 / 100 | the source profile beetle sizes the target from |
 | `<CSP>_ENGINES` | | engines to run on this CSP |
 | `<CSP>_<ENGINE>_SRC_VERSIONS` | | rows: apt repository versions |

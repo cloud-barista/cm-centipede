@@ -263,8 +263,8 @@ of one:
 
 | Target | Limit | From |
 |---|---|---|
-| filesystem | VM root volume | `TF_VAR_aws_vm_volume_size` (20 GB); unknown on NCP, so the check is skipped |
-| database | instance storage | AWS `TF_VAR_aws_db_allocated_storage` (20 GB); NCP a fixed 10 GB |
+| filesystem | VM root volume | `TF_VAR_aws_vm_volume_size` (20 GB); NCP the vm module's `volume_size` output (`TF_VAR_ncp_vm_volume_size`, 50 GB), skipped for a VM built before it existed |
+| database | instance storage | AWS `TF_VAR_aws_db_allocated_storage` (20 GB); NCP not checked - Cloud DB storage grows by itself |
 
 This is not tidiness. A managed instance that fills its volume goes read-only or
 into `STORAGE_FULL`, and on both CSPs the way back is deprovision and provision
@@ -277,10 +277,11 @@ again. `--force` skips the check along with the existing-data one.
 ```json
 {
   "layout":        { "folderDepth": 3, "folderBreadth": 3, "maxFiles": 1000 },
-  "objectStorage": { "basePrefix": "gendata/", "concurrency": 10, "endpointOverride": "", "bucketLookup": "auto" },
-  "filesystem":    { "basePath": "/home/ubuntu/testdata", "concurrency": 10 },
+  "objectStorage": { "basePrefix": "gendata/", "concurrency": 32, "endpointOverride": "", "bucketLookup": "auto" },
+  "filesystem":    { "basePath": "/home/ubuntu/testdata", "concurrency": 10, "connections": 4 },
+  "generate":      { "workers": 0 },
   "dummy":         { "sizeCSV": 1, "sizeTXT": 1, "sizeSQL": 1, "sizeJSON": 1, "sizeXML": 1, "sizePNG": 1, "sizeGIF": 1, "sizeZIP": 1 },
-  "database":      { "sizeMB": 0, "batchSize": 1000, "idOffset": 1000000, "seed": 42,
+  "database":      { "sizeMB": 0, "batchSize": 1000, "idOffset": 1000000, "seed": 42, "workers": 4,
                      "weights": { "order_items": 30, "orders": 20, "reviews": 20, "customers": 12, "inventory_log": 10, "products": 8 } }
 }
 ```
@@ -319,10 +320,18 @@ files than leaves leaves some folders out. Shared by the bucket and filesystem t
 The run log's `dummy` line and the manifest's `files` show the plan that was actually
 used.
 
-**`objectStorage`** — upload tuning. `endpointOverride` points at any S3-compatible
-endpoint, such as a local MinIO. `bucketLookup` is `auto`, `dns` or `path`.
+**`objectStorage`** — upload tuning. `concurrency` is how many objects go up at once
+(most are ~1 MiB, so it is the round trips that add up); a file over 32 MiB goes up as
+32 MiB parts, four at a time. `endpointOverride` points at any S3-compatible endpoint,
+such as a local MinIO. `bucketLookup` is `auto`, `dns` or `path`.
 
-**`filesystem`** — default transfer path and concurrency. The default path is owned by
+**`generate`** — `workers` is how many dummy files are written at once, `0` for one
+per CPU. Each file depends only on its own seed, so the files are the same whatever
+the count.
+
+**`filesystem`** — default transfer path and parallelism: `concurrency` files at once,
+spread over `connections` SSH connections, since one TCP connection over a long path
+caps the throughput however many requests share it. The default path is owned by
 `ubuntu`, so no sudo is needed. If the vm module exports a `data_path` output, that
 value wins — which is how NCP ends up at `/root/testdata`, since NCP images log in as
 `root`.
@@ -333,6 +342,9 @@ ever. `idOffset` is the primary key the generated rows start at, far above the
 fixture's own ids so the two never collide and "fixture or bulk" stays answerable
 from the id alone. `seed` makes a run reproducible — the same seed puts logically
 identical rows into every engine, so a migration can be checked by comparing them.
+`workers` is how many connections write the rows at once on MySQL, MariaDB and
+MongoDB (PostgreSQL's COPY stays on one); the rows are still generated in order on one
+goroutine, so the seed gives the same data whatever the count.
 `weights` splits `sizeMB` across the tables by share of bytes and is normalized by
 its own sum, so switching one table off does not mean rebalancing the rest.
 

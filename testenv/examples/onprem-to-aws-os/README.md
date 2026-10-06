@@ -60,7 +60,7 @@ Check that the two servers this example talks to are answering:
 
 ```bash
 curl -s http://localhost:8081/honeybee/readyz
-curl -s -u default:default http://localhost:8085/centipede/readyz
+curl -s -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/readyz
 ```
 
 ---
@@ -82,7 +82,7 @@ The container this example uses is **`minio-source`**:
 |---|---|
 | S3 API | `<host>:39000` |
 | console | `http://<host>:39001` |
-| account | `minioadmin` / `minioadmin123` |
+| account | `minioadmin` — password: `DOCKERENV_PASSWORD` in `testenv/dockerenv/.env` |
 | buckets | `raw-data` · `processed-data` · `images` · `documents` · `backups` · `logs` |
 
 This example migrates **`images`**, which holds nine objects under two prefixes:
@@ -155,9 +155,9 @@ curl -s -X POST http://localhost:8081/honeybee/source_group/$SG_ID/connection_in
   -d '{
         "name": "onprem-to-aws-os-src",
         "os_access_type": "direct",
-        "os_endpoint": "http://172.24.78.163:39000",
+        "os_endpoint": "http://'"$HOST_IP"':39000",
         "os_access_key_id": "minioadmin",
-        "os_secret_access_key": "minioadmin123",
+        "os_secret_access_key": "'"$SRC_SECRET_KEY"'",
         "os_use_ssl": false,
         "os_scan_bucket": "images"
       }'
@@ -246,12 +246,14 @@ plan has to name it exactly, **trailing slash and all**. honeybee builds it as
 
 ## 5. Migrate with cm-centipede
 
-> Every cm-centipede call needs BasicAuth — `-u default:default` by default.
+> Every cm-centipede call needs BasicAuth — `-u "$CP_USER:$CP_PASS"` below, the
+> credentials from cm-centipede's own config. Load them from this folder's `.env`
+> once per shell: `set -a; . ./.env; set +a`.
 
 ### Build the plan
 
 ```bash
-curl -s -X POST -u default:default http://localhost:8085/centipede/plans/target \
+curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/plans/target \
   -H 'Content-Type: application/json' \
   -d '{
         "source": <the /objectstorage/refined response, unchanged>,
@@ -356,7 +358,7 @@ The response says what was decided:
 ### Run it
 
 ```bash
-curl -s -X POST -u default:default http://localhost:8085/centipede/migration \
+curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/migration \
   -H 'Content-Type: application/json' \
   -d '{
         "name": "onprem-to-aws-os",
@@ -370,7 +372,7 @@ Take **`.data.id`** — the `migrationId`, the handle for everything that follow
 Creating the migration starts it, so the call returns immediately. Poll:
 
 ```bash
-curl -s -u default:default http://localhost:8085/centipede/migration/$MIG_ID
+curl -s -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/migration/$MIG_ID
 ```
 
 ```json
@@ -396,9 +398,9 @@ This is the verdict, and it is cm-centipede's rather than something you assemble
 It re-lists **both buckets** and compares them object by object.
 
 ```bash
-curl -s -X POST -u default:default \
+curl -s -X POST -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID/validation
-curl -s -u default:default \
+curl -s -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID/validation
 ```
 
@@ -458,7 +460,7 @@ wholesale reports a readable sample instead of one line per object.
 Per-item detail, including anything a failure left behind.
 
 ```bash
-curl -s -u default:default \
+curl -s -u "$CP_USER:$CP_PASS" \
   "http://localhost:8085/centipede/migration/$MIG_ID/logs?page=1&pageSize=100"
 ```
 
@@ -493,7 +495,7 @@ In this order — cm-centipede's record first, then what it referred to.
 
 ```bash
 # the migration record (the plan and the logs go with it)
-curl -s -X DELETE -u default:default \
+curl -s -X DELETE -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID
 
 # the honeybee registration
@@ -525,6 +527,7 @@ up.
 source that exists and a bucket that exists.
 
 ```bash
+cp .env.example .env && chmod 600 .env    # once: change every ChangeMe
 ./migrate.sh
 ```
 
@@ -538,17 +541,22 @@ request body is written exactly as it goes on the wire — the same JSON as the
 sections above. `jq` appears only to pull a single value out of a response
 (an id, a status, the plan), never to build a body.
 
-Everything it needs is a variable at the top, overridable from the environment:
+Everything it needs comes from `.env` (copied from `.env.example`), and a variable
+set in the shell wins over the file. It stops before its first call while
+`CP_USER`, `CP_PASS`, `HOST_IP` or `SRC_SECRET_KEY` is still `ChangeMe`, or while
+`SRC_SECRET_KEY` is empty. Written into `.env` the secret key sits there in plain
+text, protected only by its mode; to keep it off disk, leave it empty in `.env` and
+pass it in (`SRC_SECRET_KEY=... ./migrate.sh`).
 
-| Variable | Default | |
+| Variable | `.env.example` | |
 |---|---|---|
 | `HB_BASE` | `http://localhost:8081/honeybee` | where cm-honeybee answers |
 | `CP_BASE` | `http://localhost:8085/centipede` | where cm-centipede answers |
-| `CP_AUTH` | `default:default` | cm-centipede's BasicAuth |
-| `HOST_IP` | `127.0.0.1` | the host machine the source container runs on — set this |
+| `CP_USER` / `CP_PASS` | `ChangeMe` | cm-centipede's BasicAuth — must be changed |
+| `HOST_IP` | `ChangeMe` | the host machine the source container runs on — must be changed |
 | `SRC_PORT` | `39000` | MinIO's S3 API port |
 | `SRC_ACCESS_KEY` | `minioadmin` | the source's access key |
-| `SRC_SECRET_KEY` | `minioadmin123` | the source's secret key |
+| `SRC_SECRET_KEY` | `ChangeMe` | the source's secret key — `DOCKERENV_PASSWORD` in `testenv/dockerenv/.env` |
 | `SRC_BUCKET` | `images` | the bucket to migrate |
 | `NS_ID` | `cpbt01` | from `conn-info.sh aws --ids` |
 | `OS_ID` | `cpbt-aws-bucket` | " |

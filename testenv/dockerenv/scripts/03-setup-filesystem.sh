@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Source filesystem setup - build the full /testdata file tree
 set -euo pipefail
+. /opt/testenv/scripts/common.sh
 
 BASE="/testdata"
 echo "[Filesystem] Creating test dataset under ${BASE}..."

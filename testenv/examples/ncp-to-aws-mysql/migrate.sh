@@ -23,47 +23,31 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── Servers ──────────────────────────────────────────────────────────────────
-HB_BASE=${HB_BASE:-http://localhost:8081/honeybee}
-CP_BASE=${CP_BASE:-http://localhost:8085/centipede}
-CP_AUTH=${CP_AUTH:-default:default}
+# ── Settings — from .env (cp .env.example .env) ──────────────────────────────
+# Every variable below the checks comes from there: HB_BASE, CP_BASE, CP_USER,
+# CP_PASS, SRC_PROVIDER, SRC_HOST, SRC_PORT, SRC_DB_USER, SRC_DB_PASS, SRC_DB,
+# NS_ID, RDBMS_ID, DB_PASSWORD, DST_DB, NAME, POLL. .env.example says what each
+# one is.
+#
+# A variable already set in the shell wins over the file, so one value can be
+# changed for one run - and the two passwords can be kept out of the file:
+#   SRC_DB_PASS=... DB_PASSWORD=... ./migrate.sh
+[ -f .env ] || { echo "no .env here: cp .env.example .env, then change every ChangeMe" >&2; exit 1; }
+PRESET=$(export -p)
+set -a; . ./.env; set +a
+eval "$PRESET"
 
-# ── Source — the NCP managed MySQL (testenv/tofuenv) ─────────────────────────
-# Unlike the object storage example there is no region to resolve here: a db
-# connection carries its own host and port, so provider_name records where the
-# data lives and nothing is derived from it.
-#
-# SRC_HOST is the PUBLIC DOMAIN of the DB server, and it has no default because
-# it cannot be known in advance: it is issued once per server from the NCP
-# console — there is no API for it — and only then does tofu report it.
-#
-#   testenv/tofuenv/scripts/conn-info.sh ncp database
-#
-# SRC_DB_PASS has no default either: tofuenv keeps it in OpenBao (secret/db/ncp)
-# and blanks NCP_DB_PASSWORD out of .env, so it is passed in rather than read
-# from a file.
-SRC_PROVIDER=${SRC_PROVIDER:-ncp}
-SRC_HOST=${SRC_HOST:?required — the MySQL public domain, from tofuenv: ./scripts/conn-info.sh ncp database}
-SRC_PORT=${SRC_PORT:-3306}
-SRC_DB_USER=${SRC_DB_USER:-dbadmin}
-SRC_DB_PASS=${SRC_DB_PASS:?required — the NCP DB master password, from OpenBao secret/db/ncp}
-SRC_DB=${SRC_DB:-testdb}
-
-# ── Target — the AWS RDS instance (testenv/beetleenv) ────────────────────────
-# NS_ID and RDBMS_ID come from: testenv/beetleenv/scripts/conn-info.sh aws --ids
-#
-# DB_PASSWORD is the instance's master password, and it has NO default on
-# purpose: cm-beetle takes it when the instance is created and never hands it
-# back, so cm-centipede has to be told. It is the same value as
-# BEETLEENV_AWS_DB_PASSWORD in testenv/beetleenv/.env. Unset, the line below
-# stops the script here rather than at the plan call.
-NS_ID=${NS_ID:-cpbt01}
-RDBMS_ID=${RDBMS_ID:-cpbt-aws-db-mysql}
-DB_PASSWORD=${DB_PASSWORD:?required — the RDS instance master password, the same value as BEETLEENV_AWS_DB_PASSWORD in testenv/beetleenv/.env}
-DST_DB=${DST_DB:-testdb}
-
-NAME=${NAME:-ncp-to-aws-mysql}
-POLL=${POLL:-5}
+for v in CP_USER CP_PASS SRC_HOST SRC_DB_PASS DB_PASSWORD; do
+  if [ "$(printf '%s' "${!v:-}" | tr '[:upper:]' '[:lower:]')" = changeme ]; then
+    echo "$v in .env is still ChangeMe" >&2; exit 1
+  fi
+done
+# These three cannot be empty. A password left empty in .env has to come in from
+# the shell, and SRC_HOST does not exist until the public domain is issued.
+for v in SRC_HOST SRC_DB_PASS DB_PASSWORD; do
+  [ -n "${!v:-}" ] || { echo "$v is empty: set it in .env, or pass it in ($v=... ./migrate.sh)" >&2; exit 1; }
+done
+CP_AUTH="$CP_USER:$CP_PASS"
 
 # =============================================================================
 # 1. Register the source group with cm-honeybee

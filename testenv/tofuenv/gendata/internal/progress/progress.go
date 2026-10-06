@@ -19,6 +19,9 @@ import (
 const (
 	redrawEvery = 200 * time.Millisecond
 	mib         = 1 << 20
+	// recentWindow is how far back the "now" rate looks. The overall rate is an
+	// average since the start, which hides a step that is slowing down.
+	recentWindow = 5 * time.Second
 )
 
 // Counter tracks one step. It is safe for concurrent use: the upload and
@@ -35,6 +38,11 @@ type Counter struct {
 	bytes    int64
 	lastDraw time.Time
 	lastStep int // the last 10% step logged, when not on a terminal
+
+	// The "now" rate: bytes over the last full window, refreshed as it passes.
+	winStart time.Time
+	winBytes int64
+	nowRate  int64
 }
 
 // New starts a Counter for a step of totalFiles files, totalBytes in all.
@@ -45,6 +53,7 @@ func New(label string, totalFiles int, totalBytes int64) *Counter {
 		totalBytes: totalBytes,
 		tty:        isTerminal(os.Stderr),
 		start:      time.Now(),
+		winStart:   time.Now(),
 	}
 }
 
@@ -54,6 +63,12 @@ func (c *Counter) Add(size int64) {
 	defer c.mu.Unlock()
 	c.files++
 	c.bytes += size
+	if now := time.Now(); now.Sub(c.winStart) >= recentWindow {
+		if !c.winStart.IsZero() {
+			c.nowRate = rate(c.bytes-c.winBytes, now.Sub(c.winStart))
+		}
+		c.winStart, c.winBytes = now, c.bytes
+	}
 	if c.files >= c.totalFiles {
 		return // Finish reports the end
 	}
@@ -88,7 +103,7 @@ func (c *Counter) Finish() {
 }
 
 // line renders the in-flight report:
-// "bucket: 120/800 files (15%), 120.0 MiB / 800.0 MiB, 12.3 MiB/s, 55s left".
+// "bucket: 120/800 files (15%), 120.0 MiB / 800.0 MiB, 12.3 MiB/s (now 9.8 MiB/s), 55s left".
 func (c *Counter) line(now time.Time) string {
 	elapsed := now.Sub(c.start)
 	pct := 0
@@ -99,8 +114,12 @@ func (c *Counter) line(now time.Time) string {
 	if r := rate(c.bytes, elapsed); r > 0 && c.totalBytes > c.bytes {
 		left = (time.Duration(float64(c.totalBytes-c.bytes)/float64(r)) * time.Second).Round(time.Second).String()
 	}
-	return fmt.Sprintf("%s: %d/%d files (%d%%), %s / %s, %s/s, %s left", c.label,
-		c.files, c.totalFiles, pct, size(c.bytes), size(c.totalBytes), size(rate(c.bytes, elapsed)), left)
+	recent := ""
+	if c.nowRate > 0 {
+		recent = fmt.Sprintf(" (now %s/s)", size(c.nowRate))
+	}
+	return fmt.Sprintf("%s: %d/%d files (%d%%), %s / %s, %s/s%s, %s left", c.label,
+		c.files, c.totalFiles, pct, size(c.bytes), size(c.totalBytes), size(rate(c.bytes, elapsed)), recent, left)
 }
 
 // rate is bytes per second, 0 before any time has passed.

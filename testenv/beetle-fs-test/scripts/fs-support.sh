@@ -50,6 +50,7 @@ done
 [ -n "$WANT_CSPS" ] || WANT_CSPS="$FS_CSPS"
 
 require_cmd jq curl
+assert_no_placeholder || die "placeholder check failed."
 
 # Read-only: no run log, no API log. Nothing here is worth reproducing from a
 # curl line, and writing a run header for a status check makes the matrix's own

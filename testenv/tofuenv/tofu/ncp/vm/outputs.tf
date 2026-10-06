@@ -16,6 +16,13 @@ output "private_ip" {
   value = ncloud_server.vm.private_ip
 }
 
+output "volume_size" {
+  description = "Boot disk size in GB, the one disk the test data lands on (gen-data.sh checks the dummy total against it)"
+  # The variable rather than the server attribute: an output is recorded at apply
+  # time, so it is still what the VM was built with, and it is in GB for certain.
+  value = var.ncp_vm_volume_size
+}
+
 output "ssh_user" {
   description = "SSH account (NCP-provided images use root)"
   value       = local.ssh_user

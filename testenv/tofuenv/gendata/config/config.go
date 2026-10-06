@@ -31,6 +31,16 @@ type ObjectStorageConfig struct {
 type FilesystemConfig struct {
 	BasePath    string `json:"basePath"`
 	Concurrency int    `json:"concurrency"`
+	// Connections is how many SSH connections the Concurrency transfers are
+	// spread over. Over the internet one TCP connection carries only so much,
+	// however many SFTP requests share it.
+	Connections int `json:"connections"`
+}
+
+// GenerateConfig tunes the local dummy file generation.
+type GenerateConfig struct {
+	// Workers is how many files are written at once; 0 means one per CPU.
+	Workers int `json:"workers"`
 }
 
 // DummyConfig sets per-format dummy data size in MB (0 = skip).
@@ -105,6 +115,10 @@ type DatabaseConfig struct {
 	// Weights splits SizeMB across the tables, by share of bytes. The keys are
 	// table names, validated by internal/database, which owns the table list.
 	Weights map[string]int `json:"weights"`
+	// Workers is how many connections write the rows at once (MySQL, MariaDB
+	// and MongoDB; PostgreSQL's COPY stays on one). The rows are still generated
+	// on one goroutine, in order, so the seed gives the same data either way.
+	Workers int `json:"workers"`
 }
 
 // Config is the parsed config.json.
@@ -113,6 +127,7 @@ type Config struct {
 	ObjectStorage ObjectStorageConfig `json:"objectStorage"`
 	Filesystem    FilesystemConfig    `json:"filesystem"`
 	Dummy         DummyConfig         `json:"dummy"`
+	Generate      GenerateConfig      `json:"generate"`
 	Database      DatabaseConfig      `json:"database"`
 }
 
@@ -138,7 +153,7 @@ func (c *Config) applyDefaults() {
 		c.ObjectStorage.BasePrefix += "/"
 	}
 	if c.ObjectStorage.Concurrency < 1 {
-		c.ObjectStorage.Concurrency = 10
+		c.ObjectStorage.Concurrency = 32
 	}
 	if c.ObjectStorage.BucketLookup == "" {
 		c.ObjectStorage.BucketLookup = "auto"
@@ -148,6 +163,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Filesystem.Concurrency < 1 {
 		c.Filesystem.Concurrency = 10
+	}
+	if c.Filesystem.Connections < 1 {
+		c.Filesystem.Connections = 4
+	}
+	if c.Generate.Workers < 0 {
+		c.Generate.Workers = 0
 	}
 	if c.Layout.FolderBreadth < 1 {
 		c.Layout.FolderBreadth = 1
@@ -166,6 +187,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Database.Seed == 0 {
 		c.Database.Seed = 42
+	}
+	if c.Database.Workers < 1 {
+		c.Database.Workers = 4
 	}
 	// Weights deliberately keep no default here: internal/database owns the table
 	// list, and filling in a copy of it would give the two a chance to disagree.

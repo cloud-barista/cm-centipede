@@ -43,6 +43,10 @@ check_env_perm "$ENV_FILE" || exit 1
 
 # Load .env
 set -a; . "$ENV_FILE"; set +a
+
+# Before anything is registered: a ChangeMe would otherwise be stored in OpenBao
+# as if it were a real key.
+assert_no_placeholder || exit 1
 VAULT_ADDR="${VAULT_ADDR:-http://localhost:38210}"
 
 if [ -z "${VAULT_TOKEN:-}" ]; then

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -25,6 +26,15 @@ const (
 	EnvDummySizes  = "GENDATA_DUMMY_SIZES"
 	EnvDBSizeMB    = "GENDATA_DB_SIZE_MB"
 	EnvMaxFiles    = "GENDATA_DUMMY_MAX_FILES"
+	EnvTmpDir      = "GENDATA_TMP_DIR"
+
+	// How many at once - the parallelism of each step. All optional; config.json
+	// holds the defaults.
+	EnvGenWorkers        = "GENDATA_GEN_WORKERS"        // files generated at once (0 = one per CPU)
+	EnvUploadConcurrency = "GENDATA_UPLOAD_CONCURRENCY" // objects uploaded at once
+	EnvSFTPConcurrency   = "GENDATA_SFTP_CONCURRENCY"   // files transferred at once
+	EnvSFTPConnections   = "GENDATA_SFTP_CONNECTIONS"   // SSH connections they share
+	EnvDBWorkers         = "GENDATA_DB_WORKERS"         // DB connections writing bulk rows
 )
 
 // EnvKeys lists every recognized variable, in the order they are documented.
@@ -36,7 +46,29 @@ const (
 // Having the list come from the binary keeps the script from growing a second
 // copy that drifts.
 func EnvKeys() []string {
-	return []string{EnvDummySizeMB, EnvDummySizes, EnvMaxFiles, EnvDBSizeMB}
+	return []string{EnvDummySizeMB, EnvDummySizes, EnvMaxFiles, EnvDBSizeMB, EnvTmpDir,
+		EnvGenWorkers, EnvUploadConcurrency, EnvSFTPConcurrency, EnvSFTPConnections, EnvDBWorkers}
+}
+
+// TmpDir returns where the dummy files are staged before they are uploaded, or
+// "" for the system temp directory.
+//
+// A key of gendata's own rather than TMPDIR: tofuenv's .env is also sourced by
+// the scripts that run tofu inside the runner container, and a host path in
+// TMPDIR would reach tofu there, where it does not exist. GENDATA_TMP_DIR is read
+// by gendata and nothing else.
+//
+// The path must be absolute. gen-data.sh runs gendata from its own directory, so
+// a relative one would land somewhere the person writing .env did not mean.
+func TmpDir() (string, error) {
+	v, ok := envValue(EnvTmpDir)
+	if !ok {
+		return "", nil
+	}
+	if !filepath.IsAbs(v) {
+		return "", fmt.Errorf("%s=%q must be an absolute path", EnvTmpDir, v)
+	}
+	return filepath.Clean(v), nil
 }
 
 // Origins records where each group of settings ended up coming from, so that the
@@ -109,6 +141,32 @@ func ApplyEnv(c *Config) (Origins, error) {
 		}
 		c.Layout.MaxFiles = n
 		o.MaxFiles = "env"
+	}
+	// The parallelism knobs. 0 means "one per CPU" for generation only; for the
+	// others it would mean nothing runs, so it is refused.
+	for _, k := range []struct {
+		key    string
+		dst    *int
+		zeroOK bool
+	}{
+		{EnvGenWorkers, &c.Generate.Workers, true},
+		{EnvUploadConcurrency, &c.ObjectStorage.Concurrency, false},
+		{EnvSFTPConcurrency, &c.Filesystem.Concurrency, false},
+		{EnvSFTPConnections, &c.Filesystem.Connections, false},
+		{EnvDBWorkers, &c.Database.Workers, false},
+	} {
+		v, ok := envValue(k.key)
+		if !ok {
+			continue
+		}
+		n, err := envInt(k.key, v)
+		if err != nil {
+			return o, err
+		}
+		if n == 0 && !k.zeroOK {
+			return o, fmt.Errorf("%s=0: at least 1 is needed", k.key)
+		}
+		*k.dst = n
 	}
 	if v, ok := envValue(EnvDBSizeMB); ok {
 		mb, err := envInt(EnvDBSizeMB, v)

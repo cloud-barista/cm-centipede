@@ -27,7 +27,7 @@ resource rather than a resource of its own — see [Step 3](#step-3--provision-r
 
 ```bash
 cd tofuenv
-cp .env.example .env && chmod 600 .env    # then fill in AWS keys, a DB password, a bucket name
+cp .env.example .env && chmod 600 .env    # then change every ChangeMe: AWS keys, a DB password, a bucket name
 ./scripts/up.sh               # start OpenBao, store credentials, start the tofu runner
 ./scripts/provision.sh aws bucket
 ./scripts/conn-info.sh aws bucket
@@ -46,7 +46,7 @@ and the [AWS vs NCP](#aws-vs-ncp-at-a-glance) table.
 ```
  Step 0  Prerequisites     Docker + CSP access keys
             |
- Step 1  .env              cp .env.example .env && chmod 600 .env  ->  fill in keys
+ Step 1  .env              cp .env.example .env && chmod 600 .env  ->  change every ChangeMe
             |
  Step 2  Start             ./scripts/up.sh
             |                └ start OpenBao -> store credentials -> blank .env keys -> start runner
@@ -60,7 +60,7 @@ and the [AWS vs NCP](#aws-vs-ncp-at-a-glance) table.
             |
  Step 5  Test data         ./scripts/gen-data.sh --target all      (optional)
             |
- Step 6  Connect           ./scripts/conn-info.sh                  (all connection info at once)
+ Step 6  Connect           ./scripts/conn-info.sh                  (every environment; --prefix for one)
             |
  Step 7  Destroy           ./scripts/deprovision.sh aws bucket
             |                └ for NCP, the network module is removed once nothing needs it
@@ -131,7 +131,8 @@ token and it stays in the file permanently — anything that can read it can rea
 every credential you stored — and your CSP keys sit there in plaintext until
 Step 2 registers them.
 
-Then open `.env` and fill in the values. The template documents every key; the
+Then open `.env` and change every `ChangeMe` - empty the `[CREDENTIAL]` keys of a CSP you
+do not use. The template documents every key; the
 minimum for AWS is:
 
 ```dotenv
@@ -277,7 +278,7 @@ re-running `up.sh` is safe.
 ## Step 3 — Provision resources
 
 ```
-./scripts/provision.sh <csp> <resource> [--force]
+./scripts/provision.sh <csp> <resource> [--engine e1,e2] [--force]
 ```
 
 | CSP | Valid resources |
@@ -292,7 +293,7 @@ reported and skipped, so nothing is created and nothing is charged:
 === aws/bucket (prefix cptf) is already provisioned - nothing to do ===
   bucket_name = "cptf-aws-bucket-test"
   ...
-  Connection info  :  ./scripts/conn-info.sh aws bucket
+  Connection info  :  ./scripts/conn-info.sh aws bucket --prefix cptf
   Re-apply anyway  :  ./scripts/provision.sh aws bucket --force
   Destroy          :  ./scripts/deprovision.sh aws bucket
 ```
@@ -303,13 +304,36 @@ on NCP, remember that changing a managed DB variable re-creates the database.
 `TF_VAR_aws_secure_transport` is the one AWS value `--force` cannot apply properly —
 see [Step 1](#step-1--create-env).
 
+**One database engine at a time** — `--engine` (database only) provisions just the
+engines named, comma-separated, using the same names as `gen-data.sh --engine`:
+
+| CSP | Engines |
+|---|---|
+| `aws` | `mysql`, `mariadb`, `postgresql` |
+| `ncp` | `mysql`, `postgresql`, `mongodb` |
+
+```bash
+./scripts/provision.sh aws database --engine postgresql        # PostgreSQL only
+./scripts/provision.sh aws database --engine mysql             # adds MySQL; PostgreSQL stays
+./scripts/provision.sh ncp database --engine mysql,mongodb
+```
+
+- Engines already running are always kept: `--engine` only ever adds.
+- Without `--engine`, a fresh database module gets every engine, as before.
+- The skip check is per engine: the run is a no-op only when every engine named is
+  already there.
+- `--force` without `--engine` re-applies the engines the prefix already runs, so one
+  you removed with `deprovision.sh --engine` does not come back.
+- The engine list is worked out by the script and handed to tofu as
+  `TF_VAR_<csp>_db_engines`. It is not a `.env` setting.
+
 **AWS**
 
 ```bash
 ./scripts/aws-db-versions.sh           # optional: list engine versions, instance classes, AMI
 ./scripts/provision.sh aws bucket
 ./scripts/provision.sh aws vm          # Ubuntu 22.04, for filesystem migration tests
-./scripts/provision.sh aws database    # RDS: MySQL + MariaDB + PostgreSQL
+./scripts/provision.sh aws database    # RDS: MySQL + MariaDB + PostgreSQL (or --engine)
 ```
 
 **AWS vm with NFS (EFS)** — set `TF_VAR_aws_nfs_enabled=true` before `provision.sh aws vm`
@@ -343,8 +367,22 @@ elsewhere and the data stays on the local disk while EFS is mounted on its own.
 ./scripts/ncp-db-versions.sh           # optional: list engine versions, images and specs
 ./scripts/provision.sh ncp bucket
 ./scripts/provision.sh ncp vm
-./scripts/provision.sh ncp database    # managed: MySQL + PostgreSQL + MongoDB
+./scripts/provision.sh ncp database    # managed: MySQL + PostgreSQL + MongoDB (or --engine)
 ```
+
+**Sizing on NCP** — all set in `.env`, and all fixed at creation (changing one on a
+provisioned resource re-creates it):
+
+| What | Variable | Default |
+|---|---|---|
+| VM spec | `TF_VAR_ncp_server_spec_code` | `s2-g3` — list with `./scripts/ncp-db-versions.sh server` |
+| VM boot disk (GB) | `TF_VAR_ncp_vm_volume_size` | `50` (NCP's own default is 10). The VM's only disk, so the filesystem test data lands on it; the init script grows the root filesystem to fill it |
+| DB spec, per engine | `TF_VAR_ncp_{mysql,postgres,mongodb}_product_code` | empty = NCP's default spec — list with `./scripts/ncp-db-versions.sh <engine>`, which shows the specs of the version `.env` sets, grouped by image |
+| DB image, per engine | `TF_VAR_ncp_{mysql,postgres,mongodb}_image_product_code` | empty = NCP's choice. Set it with the spec: the `[image ...]` code the spec is listed under, since a spec only works with its own image. The plan refuses an image that is not one of the version's |
+
+The managed DBs have no storage size setting; the provider exposes none. Cloud DB
+storage grows by itself as data is written, so `gen-data.sh` does not cap the bulk size
+on NCP.
 
 NCP has no default VPC, so `vm` and `database` resolve a VPC, PUBLIC subnet and ACG
 **by name** from the `network` module. You never provision that module yourself:
@@ -379,7 +417,7 @@ nothing outside the VPC can connect.
 
 ```
 NCP console > Database > Cloud DB for <engine> > select the DB server
-  > DB Management > Public Domain Management > Request      (once per engine, so 3 times)
+  > DB Management > Public Domain Management > Request      (once per provisioned engine)
 ```
 
 Then pull it into the tofu state and verify:
@@ -393,6 +431,8 @@ Then pull it into the tofu state and verify:
 - If you destroy and re-create a database, you must **request the domain again**.
 - All three NCP engines are managed, so **none of them is exempt** — each needs its own
   public domain request.
+- Only the engines you provisioned are checked. One left out with `--engine` is listed
+  as `(not provisioned)` and not waited on.
 
 ---
 
@@ -442,7 +482,7 @@ what lets gendata have a single input path.
 | Option | Default | Values |
 |---|---|---|
 | `--target` | `all` | `bucket`, `filesystem`, `database`, `all` |
-| `--engine` | `all` | `mysql`, `mariadb`, `postgresql`, `mongodb`, `all`. An engine the provider does not serve has no host output and is skipped |
+| `--engine` | `all` | `mysql`, `mariadb`, `postgresql`, `mongodb`, `all`. An engine the provider does not serve, or one not provisioned (`provision.sh --engine`), has no host output and is skipped |
 | `--provider` | `aws` | `aws`, `ncp` |
 | `--dry-run` | off | Generate dummy files only; skip upload, transfer and load |
 | `--force` | off | Skip the existing-data check (allows overwrite and `DROP`) |
@@ -457,6 +497,8 @@ GENDATA_DUMMY_SIZE_MB=8          # bucket + filesystem: total MB over all eight 
 #GENDATA_DUMMY_SIZES=png=0,gif=0,zip=100
 #GENDATA_DUMMY_MAX_FILES=1000    # at most this many dummy files; 0 = no limit
 GENDATA_DB_SIZE_MB=0             # database: bulk rows added after the shop_db fixture, in MB
+#GENDATA_TMP_DIR=/data/gendata-tmp  # where dummy files are staged locally; default /tmp
+#GENDATA_DB_WORKERS=4             # parallelism - see the table below
 ```
 
 | Variable | Sets |
@@ -465,6 +507,12 @@ GENDATA_DB_SIZE_MB=0             # database: bulk rows added after the shop_db f
 | `GENDATA_DUMMY_SIZES` | Per-format sizes in MB. The formats named keep their size, and what is left of the total is split over the others; `0` switches a format off. With a total of `1000`, `png=0,gif=0,zip=100` gives zip 100 MB and the five text formats 180 MB each. Naming more than the total is an error |
 | `GENDATA_DUMMY_MAX_FILES` | The most dummy files to generate, `1000` by default (`layout.maxFiles` in `config.json`); `0` means no limit. Over it the total size is kept and the files grow instead — see below |
 | `GENDATA_DB_SIZE_MB` | Bulk rows added to each database after the `shop_db` fixture, in MB. `0` loads the fixture only |
+| `GENDATA_GEN_WORKERS` | Dummy files generated at once. `0` (default) is one per CPU; the files are the same whatever the count |
+| `GENDATA_UPLOAD_CONCURRENCY` | `bucket`: objects uploaded at once (default 32) |
+| `GENDATA_SFTP_CONCURRENCY` | `filesystem`: files transferred at once (default 10) |
+| `GENDATA_SFTP_CONNECTIONS` | `filesystem`: SSH connections those transfers are spread over (default 4) |
+| `GENDATA_DB_WORKERS` | `database`: connections writing the bulk rows at once on MySQL, MariaDB and MongoDB (default 4). PostgreSQL's COPY stays on one. The rows are the same whatever the count |
+| `GENDATA_TMP_DIR` | Where the dummy files are staged on this machine before upload or transfer, and deleted afterwards. Unset means the system temp directory (`/tmp`). Must be an absolute path; created if missing. Use it when the dummy total is large, since all of it lands here first. A run stopped with Ctrl-C leaves its `gendata-*` directory behind |
 
 - Sizes are **in MB**, and each MB is one file of about 1 MiB.
 - They are **not** `TF_VAR_*`, since OpenTofu never reads them. `gen-data.sh` sources
@@ -472,7 +520,10 @@ GENDATA_DB_SIZE_MB=0             # database: bulk rows added after the shop_db f
   reported when `gen-data.sh` runs. A value it cannot parse, such as `1G`, fails the run.
 - **Mind the capacity.** The dummy files have to fit on the VM's volume
   (`TF_VAR_aws_vm_volume_size`, 20 GB), and the bulk rows have to fit in the database
-  storage (AWS 20 GB, NCP a fixed 10 GB). gendata refuses a request over 80% of either.
+  storage (AWS 20 GB). gendata refuses a request over 80% of either. NCP Cloud DB storage
+  grows by itself as data is written, so the database check is skipped there.
+  On NCP the VM's boot disk is `TF_VAR_ncp_vm_volume_size` (50 GB by default; NCP's own
+  default is 10 GB), and the check uses the size the VM was actually built with.
   A `data_path` on the VM's EFS mount (`TF_VAR_aws_nfs_enabled=true`) is not checked:
   EFS grows with what is written.
 - The database size is an estimate of rows, and each engine adds its own overhead.
@@ -526,27 +577,32 @@ of accumulating copies. A summary of the last run is written per environment, to
 ### `conn-info.sh` — everything at once (recommended)
 
 ```
-./scripts/conn-info.sh [aws|ncp] [network|bucket|vm|database|all] [--reveal]
+./scripts/conn-info.sh [aws|ncp] [network|bucket|vm|database|all] [--prefix <name>] [--reveal]
 ```
 
 ```bash
-./scripts/conn-info.sh                        # all AWS resources, secrets masked
-./scripts/conn-info.sh ncp all
-./scripts/conn-info.sh aws database
-./scripts/conn-info.sh ncp database --reveal  # print passwords and URIs in clear text
+./scripts/conn-info.sh                                   # every environment, both CSPs, secrets masked
+./scripts/conn-info.sh aws database                      # the DBs of every AWS environment
+./scripts/conn-info.sh ncp --prefix cptf                 # one environment
+./scripts/conn-info.sh ncp database --prefix cptf --reveal  # its passwords and URIs in clear text
 ```
 
 | Argument | Default | Values |
 |---|---|---|
-| csp | `aws` | `aws`, `ncp` |
+| csp | both | `aws`, `ncp` |
 | resource | `all` | `bucket`, `vm`, `database`, `all`, plus `network` for NCP |
+| `--prefix` | every prefix | One environment's prefix. `.env` does not need to select it |
 | `--reveal` | off | Print sensitive values in clear text instead of `<sensitive>` |
 
-Resources that do not exist yet are skipped. For NCP `database`, a warning is printed
-for any engine whose public domain has not been issued.
+**Every environment is shown by default**, one block per prefix, the one `.env`
+selects first and marked `*`. Only tofu state is read, so this works for any prefix
+without touching `.env`. Modules that hold no resources are left out. For NCP
+`database`, a warning is printed for any engine whose public domain has not been
+issued.
 
 `--reveal` prints passwords and connection URIs to your terminal — be careful with
-scrollback, logs and screen sharing.
+scrollback, logs and screen sharing. Without `--prefix` it does so for **every**
+environment at once, and says so first; add `--prefix` to reveal one.
 
 ### Connecting to a VM
 
@@ -596,7 +652,7 @@ done; `<engine>_private_domain` only resolves inside the VPC.
 **Destroy what you provisioned. RDS instances, servers and public IPs are billed.**
 
 ```
-./scripts/deprovision.sh <csp> <resource>
+./scripts/deprovision.sh <csp> <resource> [--engine e1,e2]
 ```
 
 ```bash
@@ -612,6 +668,26 @@ On NCP, the same three resources — the `network` module is not one of them:
 ./scripts/deprovision.sh ncp vm
 ./scripts/deprovision.sh ncp bucket
 ```
+
+**One database engine at a time** — `--engine` destroys just the engines named; the
+others keep running:
+
+```bash
+./scripts/deprovision.sh aws database --engine postgresql
+./scripts/deprovision.sh ncp database --engine mongodb
+```
+
+- It is a targeted destroy of those engines' own resources (the instance, plus its
+  parameter group on AWS or its ACG rule on NCP). The engines that stay are not
+  re-applied, so a `.env` change made since cannot re-create them.
+- Removing the **last** engine left destroys the whole database module — subnet group
+  and security group included — exactly like a run without `--engine`.
+- OpenTofu warns that `-target` is in effect and that outputs may be incomplete — expected
+  here. The script follows the destroy with a refresh-only apply, which changes nothing
+  but clears the removed engine's `*_host` / `*_port`, so `conn-info.sh` and `gen-data.sh`
+  stop seeing it.
+- Naming an engine that is not running is reported and does nothing.
+- On NCP, the `network` module stays while any engine is left.
 
 **`ncp bucket` is emptied first.** NCP's bucket resource has no `force_destroy` — the
 one `tofu/aws/bucket` sets on `aws_s3_bucket` — and the S3 API refuses to delete a
@@ -643,7 +719,8 @@ A module that tracks no resource is reported and skipped rather than destroyed �
 be a no-op that still costs a full plan.
 
 Because only `vm` and `database` reference the VPC, the script destroys the prefix's
-`network` module for you as soon as **neither of them is left in that prefix**. Destroy them in either order;
+`network` module for you as soon as **neither of them is left in that prefix** (a
+database with even one engine left still counts). Destroy them in either order;
 whichever goes last takes the VPC, subnet and ACG with it. While one of them is still
 provisioned, you will see `Keeping ncp/network: another module still uses it.`
 
@@ -721,7 +798,9 @@ tofu/<csp>/<module>/terraform.tfstate.d/<prefix>/terraform.tfstate
 ```
 
 **Every script acts on the prefix `.env` sets, and only on it** — `provision.sh`,
-`deprovision.sh`, `conn-info.sh`, `gen-data.sh` and `ncp-db-domain.sh` alike. The rest of
+`deprovision.sh`, `gen-data.sh` and `ncp-db-domain.sh` alike. The read-only ones look at
+all of them: `list.sh` lists every environment, and `conn-info.sh` shows every
+environment's connection info (`--prefix <name>` for one). The rest of
 `.env` (bucket name, engine versions, NFS, ...) describes that one environment too.
 
 So changing a prefix does not rename, replace or break anything:

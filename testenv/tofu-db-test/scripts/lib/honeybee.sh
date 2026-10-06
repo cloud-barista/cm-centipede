@@ -111,7 +111,7 @@ _hb_conn_body() {
 		jq -n --arg n "$name" --arg t "$(lower "$engine")" --arg db "$db" \
 			--arg host "$HOST_IP" --arg sport "$(src_ssh_port "$engine")" \
 			--arg iport "$(src_internal_port "$engine")" \
-			--arg u "${SRC_DB_USER:-centipede}" --arg w "${SRC_DB_PASS:-centipede_pass}" \
+			--arg u "${SRC_DB_USER:-centipede}" --arg w "$SRC_DB_PASS" \
 			--arg key "$(cat "$(src_ssh_key_path)")" \
 			'{name:$n, description:"matrix source (ssh-tunnel)",
 			  db_type:$t, db_access_type:"ssh-tunnel", db_name:$db,
@@ -121,7 +121,7 @@ _hb_conn_body() {
 	else
 		jq -n --arg n "$name" --arg t "$(lower "$engine")" --arg db "$db" \
 			--arg host "$HOST_IP" --arg port "$(src_db_port "$engine")" \
-			--arg u "${SRC_DB_USER:-centipede}" --arg w "${SRC_DB_PASS:-centipede_pass}" \
+			--arg u "${SRC_DB_USER:-centipede}" --arg w "$SRC_DB_PASS" \
 			'{name:$n, description:"matrix source (direct)",
 			  db_type:$t, db_access_type:"direct", db_name:$db,
 			  db_host:$host, db_port:$port,

@@ -66,7 +66,7 @@ Check that the two servers this example talks to are answering:
 
 ```bash
 curl -s http://localhost:8081/honeybee/readyz
-curl -s -u default:default http://localhost:8085/centipede/readyz
+curl -s -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/readyz
 ```
 
 ---
@@ -227,10 +227,10 @@ curl -s -X POST http://localhost:8081/honeybee/source_group/$SG_ID/connection_in
         "name": "ncp-to-aws-mysql-src",
         "db_type": "mysql",
         "db_access_type": "direct",
-        "db_host": "<the public domain from step 2>",
+        "db_host": "'"$SRC_HOST"'",
         "db_port": "3306",
         "db_username": "dbadmin",
-        "db_password": "<NCP_DB_PASSWORD>",
+        "db_password": "'"$SRC_DB_PASS"'",
         "db_tls_mode": "prefer"
       }'
 ```
@@ -328,12 +328,14 @@ The nesting reads oddly at first: the outer `databases` is one entry per
 
 ## 5. Migrate with cm-centipede
 
-> Every cm-centipede call needs BasicAuth — `-u default:default` by default.
+> Every cm-centipede call needs BasicAuth — `-u "$CP_USER:$CP_PASS"` below, the
+> credentials from cm-centipede's own config. Load them from this folder's `.env`
+> once per shell: `set -a; . ./.env; set +a`.
 
 ### Build the plan
 
 ```bash
-curl -s -X POST -u default:default http://localhost:8085/centipede/plans/target \
+curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/plans/target \
   -H 'Content-Type: application/json' \
   -d '{
         "source": <the /db/refined response, unchanged>,
@@ -429,7 +431,7 @@ anything else.
 ### Run it
 
 ```bash
-curl -s -X POST -u default:default http://localhost:8085/centipede/migration \
+curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/migration \
   -H 'Content-Type: application/json' \
   -d '{
         "name": "ncp-to-aws-mysql",
@@ -449,7 +451,7 @@ leaves whatever it had already written either way.
 Creating the migration starts it, so the call returns immediately. Poll:
 
 ```bash
-curl -s -u default:default http://localhost:8085/centipede/migration/$MIG_ID
+curl -s -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/migration/$MIG_ID
 ```
 
 ```json
@@ -479,9 +481,9 @@ This is the verdict, and it is cm-centipede's rather than something you assemble
 It re-reads **both databases** and compares three things.
 
 ```bash
-curl -s -X POST -u default:default \
+curl -s -X POST -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID/validation
-curl -s -u default:default \
+curl -s -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID/validation
 ```
 
@@ -535,7 +537,7 @@ wholesale reports a readable sample instead of one line per table.
 Per-item detail, including anything a rollback did.
 
 ```bash
-curl -s -u default:default \
+curl -s -u "$CP_USER:$CP_PASS" \
   "http://localhost:8085/centipede/migration/$MIG_ID/logs?page=1&pageSize=100"
 ```
 
@@ -572,7 +574,7 @@ In this order — cm-centipede's record first, then what it referred to.
 
 ```bash
 # the migration record (the plan and the logs go with it)
-curl -s -X DELETE -u default:default \
+curl -s -X DELETE -u "$CP_USER:$CP_PASS" \
   http://localhost:8085/centipede/migration/$MIG_ID
 
 # the honeybee registration
@@ -612,7 +614,8 @@ follow straight on. `./scripts/status.sh` there shows what is still up.
 source database that holds data and an instance that exists.
 
 ```bash
-SRC_HOST=... SRC_DB_PASS=... DB_PASSWORD=... ./migrate.sh
+cp .env.example .env && chmod 600 .env    # once: change every ChangeMe
+./migrate.sh
 ```
 
 It is the happy path and nothing else: no retries, no error handling, no cleanup.
@@ -625,29 +628,32 @@ request body is written exactly as it goes on the wire — the same JSON as the
 sections above. `jq` appears only to pull a single value out of a response
 (an id, a status, the plan), never to build a body.
 
-Everything it needs is a variable at the top, overridable from the environment:
+Everything it needs comes from `.env` (copied from `.env.example`), and a variable
+set in the shell wins over the file. It stops before its first call while
+`CP_USER`, `CP_PASS`, `SRC_HOST`, `SRC_DB_PASS` or `DB_PASSWORD` is still `ChangeMe`.
 
-| Variable | Default | |
+| Variable | `.env.example` | |
 |---|---|---|
 | `HB_BASE` | `http://localhost:8081/honeybee` | where cm-honeybee answers |
 | `CP_BASE` | `http://localhost:8085/centipede` | where cm-centipede answers |
-| `CP_AUTH` | `default:default` | cm-centipede's BasicAuth |
+| `CP_USER` / `CP_PASS` | `ChangeMe` | cm-centipede's BasicAuth — must be changed |
 | `SRC_PROVIDER` | `ncp` | the source cloud |
-| `SRC_HOST` | **none — required** | the MySQL public domain, from `conn-info.sh ncp database` |
+| `SRC_HOST` | `ChangeMe` | the MySQL public domain, from `conn-info.sh ncp database` |
 | `SRC_PORT` | `3306` | the tofu module pins it, so there is no `.env` key |
 | `SRC_DB_USER` | `dbadmin` | `TF_VAR_ncp_db_username` |
-| `SRC_DB_PASS` | **none — required** | `NCP_DB_PASSWORD`, kept in OpenBao |
+| `SRC_DB_PASS` | `ChangeMe` | `NCP_DB_PASSWORD`, kept in OpenBao |
 | `SRC_DB` | `testdb` | `TF_VAR_ncp_db_name` |
 | `NS_ID` | `cpbt01` | from `conn-info.sh aws --ids` |
 | `RDBMS_ID` | `cpbt-aws-db-mysql` | " |
-| `DB_PASSWORD` | **none — required** | the RDS instance's master password |
+| `DB_PASSWORD` | `ChangeMe` | the RDS instance's master password |
 | `DST_DB` | `testdb` | what to call the database on the target |
 
-**Three values have no default on purpose.** Unset, the script stops on its first
-lines rather than several steps later. `SRC_HOST` cannot have one — the public
-domain does not exist until it is issued — and the two passwords are secrets
-tofuenv and beetleenv keep out of their `.env` files.
+**Three values have no default on purpose.** While one is still `ChangeMe` or
+empty, the script stops before its first call rather than several steps later.
+`SRC_HOST` cannot have one — the public domain does not exist until it is issued.
+The two passwords written into `.env` sit there in plain text, protected only by
+its mode; to keep them off disk, leave them empty in `.env` and pass them in:
 
 ```bash
-SRC_HOST=... SRC_DB_PASS=... DB_PASSWORD=... DST_DB=testdb ./migrate.sh
+SRC_DB_PASS=... DB_PASSWORD=... ./migrate.sh
 ```

@@ -14,7 +14,7 @@ with `dockerenv-up.sh` / `dockerenv-down.sh`, thin wrappers around `docker compo
 | database | mariadb, mysql, postgresql, mongodb — each source / target | SSH + DB |
 
 Four DBMSs are supported — **MariaDB, MySQL, PostgreSQL, MongoDB** — and the DB version is
-selected in the `versions.env` file.
+selected in `.env`, together with the one password every account uses (`DOCKERENV_PASSWORD`).
 
 ---
 
@@ -23,7 +23,7 @@ selected in the `versions.env` file.
 ```
 dockerenv/
 ├── docker-compose.yml             # 12 service definitions (with healthchecks)
-├── versions.env                   # DB version settings (passed as build args via --env-file)
+├── .env.example                   # copy to .env: DOCKERENV_PASSWORD + DB versions (.env is git-ignored)
 ├── dockerenv-up.sh                # build -> up --wait -> inject SSH keys -> print connection info
 ├── dockerenv-down.sh              # stop everything
 ├── compose/                       # per-role Dockerfiles (ROLE build arg splits source/target)
@@ -68,6 +68,10 @@ dockerenv/
 ```bash
 cd dockerenv
 
+# Once: create .env and set DOCKERENV_PASSWORD (ChangeMe is refused; 8+ characters,
+# none of ' " \ $ ` or whitespace)
+cp .env.example .env && chmod 600 .env
+
 # Start all 12 containers (build -> wait for healthy -> inject SSH keys -> print connection info)
 ./dockerenv-up.sh
 
@@ -88,16 +92,16 @@ prints the connection info.
 
 ### Working with individual services
 
-You can also drive `docker compose` directly. Pass `--env-file versions.env` on any command that
-builds or creates containers — compose only auto-loads a file named `.env`, and every
-`${*_VERSION}` in `docker-compose.yml` has a default, so omitting it silently builds the default
-DB versions instead of failing.
+You can also drive `docker compose` directly from this directory; it reads `.env` on its own.
+`docker-compose.yml` requires `DOCKERENV_PASSWORD`, so compose stops with a message when `.env`
+is missing it. Unlike `dockerenv-up.sh`, compose does not refuse `ChangeMe` - the containers do,
+by failing their init (`/var/log/testenv-init.log`).
 
 ```bash
 # Start only specific services
-docker compose --env-file versions.env up -d --wait mariadb-source mariadb-target
+docker compose up -d --wait mariadb-source mariadb-target
 
-# Status / logs (no build args involved, so --env-file is optional)
+# Status / logs
 docker compose ps
 docker compose logs -f minio-source
 ```
@@ -106,17 +110,17 @@ docker compose logs -f minio-source
 
 ## Supported DB Versions
 
-DB versions are set in `versions.env`. When unset, the **default version** (marked ⭐) is built.
+DB versions are set in `.env`. When unset, the **default version** (marked ⭐) is built.
 
 | Item | MongoDB | MariaDB | MySQL | PostgreSQL |
 |------|---------|---------|-------|------------|
 | **Default** | 7.0 ⭐ | 10.6 ⭐ | 8.0 ⭐ | 14 ⭐ |
 | **Supported** | 6.0 · 7.0 ⭐ · 8.0 | 10.6 ⭐ · 10.11 · 11.4 · 11.8 | 8.0 ⭐ · 8.4 | 13 · 14 ⭐ · 15 · 16 · 17 |
 | **Repository** | MongoDB official apt repo | MariaDB official repo (`mariadb_repo_setup`) | Oracle official apt repo (`mysql-apt-config`) | PostgreSQL PGDG apt repo |
-| **`versions.env` variable** | `MONGODB_VERSION` | `MARIADB_VERSION` | `MYSQL_VERSION` | `POSTGRESQL_VERSION` |
+| **`.env` variable** | `MONGODB_VERSION` | `MARIADB_VERSION` | `MYSQL_VERSION` | `POSTGRESQL_VERSION` |
 
 ```bash
-# versions.env example
+# .env example
 MARIADB_VERSION=10.11
 MONGODB_VERSION=8.0
 POSTGRESQL_VERSION=16
@@ -169,13 +173,17 @@ Each container exposes only **one role plus SSH**, so none of the 12 containers 
 
 ### Shared credentials
 
+Every password is `DOCKERENV_PASSWORD` from `.env`. It is set when each container starts
+(`scripts/common.sh`), never baked into an image, so changing it takes a container restart, not
+a rebuild. It is visible in `docker inspect`, as any container environment variable is.
+
 | Target | Account |
 |--------|---------|
-| SSH | root / `testpass123` (key: `ssh_keys/id_rsa`) |
-| MinIO | minioadmin / `minioadmin123` |
-| MariaDB / MySQL | root / `testpass123` · centipede / `centipede_pass` |
-| PostgreSQL | postgres / `testpass123` · centipede / `centipede_pass` |
-| MongoDB | root / `testpass123` · centipede / `centipede_pass` |
+| SSH | root, centipede (key: `ssh_keys/id_rsa`) |
+| MinIO | minioadmin |
+| MariaDB / MySQL | root · centipede · readonly (source only) |
+| PostgreSQL | postgres · centipede · readonly (source only) |
+| MongoDB | root · centipede · readonly (source only) |
 
 ### Addresses (via host ports)
 
@@ -467,7 +475,7 @@ systemd boot
 ### SSH (per-container ports in [Port Assignment](#port-assignment))
 
 ```bash
-ssh -p 32230 root@localhost                      # mariadb-source (pw: testpass123)
+ssh -p 32230 root@localhost                      # mariadb-source (pw: DOCKERENV_PASSWORD)
 ssh -i ssh_keys/id_rsa -p 32230 root@localhost   # key based
 ```
 
@@ -482,17 +490,20 @@ docker exec -it centipede-testenv-fs-source      bash
 ### DB connection examples
 
 ```bash
-# MariaDB / MySQL
-docker exec -it centipede-testenv-mariadb-source mysql -u root -ptestpass123
-docker exec centipede-testenv-mariadb-source mysql -u root -ptestpass123 -e "SHOW DATABASES;"
+# The examples that need the password read it from .env first
+set -a; . ./.env; set +a
+
+# MariaDB / MySQL (root@localhost authenticates over the socket, no password)
+docker exec -it centipede-testenv-mariadb-source mysql -u root
+docker exec centipede-testenv-mariadb-source mysql -u root -e "SHOW DATABASES;"
 
 # PostgreSQL
 docker exec -it centipede-testenv-postgresql-source psql -U postgres
 docker exec centipede-testenv-postgresql-source psql -U postgres -c "\l"
 
 # MongoDB
-docker exec -it centipede-testenv-mongodb-source mongosh -u root -p testpass123 --authenticationDatabase admin
-docker exec centipede-testenv-mongodb-source mongosh -u root -p testpass123 --authenticationDatabase admin --eval "show dbs"
+docker exec -it centipede-testenv-mongodb-source mongosh -u root -p "$DOCKERENV_PASSWORD" --authenticationDatabase admin
+docker exec centipede-testenv-mongodb-source mongosh -u root -p "$DOCKERENV_PASSWORD" --authenticationDatabase admin --eval "show dbs"
 
 # MinIO
 docker exec centipede-testenv-minio-source mc ls local
@@ -549,7 +560,7 @@ systemctl status testenv-init     # role initialization (every container)
 | Base OS | Ubuntu 22.04 LTS |
 | Init system | systemd (`--privileged` + `cgroup: host`) |
 | Orchestration | Docker Compose (12 services, healthcheck-driven `--wait`) |
-| DBMS | MariaDB · MySQL · PostgreSQL · MongoDB (versions set in `versions.env`) |
+| DBMS | MariaDB · MySQL · PostgreSQL · MongoDB (versions set in `.env`) |
 | Object storage | MinIO (latest stable binary) |
 | Client tooling | mc (MinIO Client) |
 

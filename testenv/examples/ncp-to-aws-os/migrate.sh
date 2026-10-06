@@ -21,41 +21,35 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── Servers ──────────────────────────────────────────────────────────────────
-HB_BASE=${HB_BASE:-http://localhost:8081/honeybee}
-CP_BASE=${CP_BASE:-http://localhost:8085/centipede}
-CP_AUTH=${CP_AUTH:-default:default}
-
-# ── Source — the NCP bucket (testenv/tofuenv) ────────────────────────────────
-# There is no address to supply: NCP Object Storage is somewhere both cm-honeybee
-# and cm-centipede already know how to find. What they cannot work out is which
-# NCP, so the region is named — one value, on the source group. See the README's
-# step 4.
-#
-#   SRC_REGION  region_name on the source group, and the region that appears in
-#               the HOST: "<region>.object.ncloudstorage.com". Lowercase:
-#               tofuenv writes TF_VAR_ncp_region as "KR" and the host is "kr.…".
+# ── Settings — from .env (cp .env.example .env) ──────────────────────────────
+# Every variable below the checks comes from there: HB_BASE, CP_BASE, CP_USER,
+# CP_PASS, SRC_PROVIDER, SRC_REGION, SRC_BUCKET, SRC_ACCESS_KEY, SRC_SECRET_KEY,
+# NS_ID, OS_ID, NAME, POLL. .env.example says what each one is.
 #
 # NCP signs its requests with "kr-standard" rather than "kr", but that is not
 # named here and there is no connection field for it: honeybee leaves the signing
 # region unset for NCP, which makes the S3 SDK ask the bucket for its location
 # and sign with the answer.
 #
-# The keys have no defaults: tofuenv moves them into OpenBao and blanks them out
-# of .env, so they are passed in rather than read from a file.
-SRC_PROVIDER=${SRC_PROVIDER:-ncp}
-SRC_REGION=${SRC_REGION:-kr}
-SRC_BUCKET=${SRC_BUCKET:-cptf-ncp-bucket-test}
-SRC_ACCESS_KEY=${SRC_ACCESS_KEY:?required — the NCP access key, from OpenBao secret/csp/ncp}
-SRC_SECRET_KEY=${SRC_SECRET_KEY:?required — the NCP secret key, from OpenBao secret/csp/ncp}
+# A variable already set in the shell wins over the file, so one value can be
+# changed for one run - and the two keys can be kept out of the file:
+#   SRC_ACCESS_KEY=... SRC_SECRET_KEY=... ./migrate.sh
+[ -f .env ] || { echo "no .env here: cp .env.example .env, then change every ChangeMe" >&2; exit 1; }
+PRESET=$(export -p)
+set -a; . ./.env; set +a
+eval "$PRESET"
 
-# ── Target — the AWS bucket (testenv/beetleenv) ──────────────────────────────
-# Both ids come from: testenv/beetleenv/scripts/conn-info.sh aws --ids
-NS_ID=${NS_ID:-cpbt01}
-OS_ID=${OS_ID:-cpbt-aws-bucket}
-
-NAME=${NAME:-ncp-to-aws-os}
-POLL=${POLL:-5}
+for v in CP_USER CP_PASS SRC_BUCKET SRC_ACCESS_KEY SRC_SECRET_KEY; do
+  if [ "$(printf '%s' "${!v:-}" | tr '[:upper:]' '[:lower:]')" = changeme ]; then
+    echo "$v in .env is still ChangeMe" >&2; exit 1
+  fi
+done
+# These three cannot be empty. A key left empty in .env has to come in from the
+# shell, and the bucket is the one tofuenv named after TF_VAR_ncp_bucket_name.
+for v in SRC_BUCKET SRC_ACCESS_KEY SRC_SECRET_KEY; do
+  [ -n "${!v:-}" ] || { echo "$v is empty: set it in .env, or pass it in ($v=... ./migrate.sh)" >&2; exit 1; }
+done
+CP_AUTH="$CP_USER:$CP_PASS"
 
 # =============================================================================
 # 1. Register the source group with cm-honeybee

@@ -62,7 +62,7 @@ survive a `make down` and every later `make up`.
 cd testenv/beetle-os-test
 
 cp .env.example .env && chmod 600 .env
-# the defaults work against a deployments stack; set the regions you use, then:
+# change every ChangeMe (MINIO_ROOT_PASSWORD cannot be empty), set the regions you use, then:
 
 ./scripts/os-support.sh                     # (optional) is everything registered
 ./scripts/os-matrix.sh --only aws:raw-data  # one cell
@@ -182,11 +182,14 @@ for. `assert_env_mounted` checks for a regular file inside the container and
 stops the run with the reason. This is what happens when the matrix itself runs
 inside a container against a shared docker daemon.
 
-**The MinIO root account is baked into the unit.** `minio.service` carries
-`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` as `Environment=`, and systemd reads a
-unit's environment when the unit loads — so changing them in `.env` alone would
-leave the server on the old pair while honeybee is handed the new one, failing as
-a 403 several steps later. `assert_minio_account` refuses the mismatch up front.
+**The MinIO root account comes from `.env`, per run.** `minio.service` reads
+`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` with `EnvironmentFile=` from the same
+`matrix.env` the seed reads, and systemd reads that file when the unit starts — so
+the server, the seed and honeybee always share one pair, and nothing is baked into
+the image. `assert_minio_account` refuses, up front, a pair MinIO would not start
+with (user under 3 characters, password under 8) or one the quoted settings file
+cannot carry (`"` `\` `$` `` ` ``). A cached image from before this change is
+rebuilt automatically: `src_image` checks its `beetle-os-test.revision` label.
 
 Container name `beetle-os-test-minio-src`, published ports in the **33xxx** band,
 resource prefix `cpbos` — so this folder, `beetle-db-test`, `beetleenv`,
@@ -337,12 +340,13 @@ CLI option  >  real shell variable  >  .env  >  script default
 | `OS_SRC_BUCKETS` | the six above | the rows, and what the source seeds |
 | `BEETLE_URL` / `TUMBLEBUG_URL` | `:8056/beetle` / `:1323/tumblebug` | where the provisioner answers |
 | `HB_BASE` / `CP_BASE` | `:8081` / `:8085` | where cm-honeybee and cm-centipede answer |
+| `BEETLE_USERNAME` / `_PASSWORD`, `TUMBLEBUG_USERNAME` / `_PASSWORD`, `CP_USER` / `CP_PASS` | `ChangeMe` | API credentials; no script default. Must be changed, empty allowed |
 | `MATRIX_NS` | `cpbos01` | the cb-tumblebug namespace — this folder's own |
 | `MATRIX_NAME_PREFIX` | `cpbos` | 2-6 chars; every bucket is `<prefix>-<csp>-os-<bucket>`, and `--cleanup` matches on it |
 | `<CSP>_REGION` | | must match the region the connection was registered under |
 | `HOST_IP` | `127.0.0.1` | how honeybee reaches the source container's published port |
 | `MINIO_SRC_API_PORT` | `33900` | published S3 port (console `33901`, SSH `33922`) |
-| `MINIO_ROOT_USER` / `_PASSWORD` | `minioadmin` / `minioadmin123` | must match `src/services/minio.service` |
+| `MINIO_ROOT_USER` / `_PASSWORD` | `minioadmin` / `ChangeMe` | the MinIO root account, read by `minio.service` at start. Password has no default, must be changed, 8+ characters |
 | `MINIO_VERSION` | *(empty)* | empty takes the current release; pin a `RELEASE.*` tag for a reproducible result |
 | `KEEP_BUCKET` | `0` | `1` leaves every target bucket in place (they hold objects) |
 | `KEEP_ON_FAIL` | `0` | `1` leaves a failed cell's bucket — **partial data** |

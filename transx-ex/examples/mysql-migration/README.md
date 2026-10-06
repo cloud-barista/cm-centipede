@@ -24,7 +24,7 @@ Host Machine
 │   │  (MySQL SOURCE)      │        │  (MySQL TARGET)      │   │
 │   │  port: 3306          │        │  port: 3307          │   │
 │   │  db:   testdb_src    │        │  db:   testdb_dst    │   │
-│   │  pass: srcpass       │        │  pass: dstpass       │   │
+│   │  pass: SRC_PASS      │        │  pass: DST_PASS      │   │
 │   └──────────┬───────────┘        └──────────▲───────────┘  │
 │              │                               │              │
 │              │   transxex.MigrateDBMS()      │              │
@@ -71,6 +71,9 @@ Source and destination can use **different versions** — useful for cross-versi
 
 ```bash
 chmod +x setup_environment.sh migrate.sh
+
+# Once: set SRC_PASS / DST_PASS (ChangeMe is refused; no " or \)
+cp .env.example .env && chmod 600 .env
 
 # Same version (latest → latest)
 ./setup_environment.sh all
@@ -170,8 +173,10 @@ overrides the `scope` field, so no per-scope file is needed.
 
 The generated `config.json` holds real hosts and passwords, so it is ignored by
 git and removed by `./setup_environment.sh cleanup`. To target your own servers,
-copy `template-config.json` and edit it, or export `SRC_HOST`/`DST_HOST` before
-running the setup script.
+copy `template-config.json` and edit it, or set `SRC_HOST`/`DST_HOST` in
+`.env` (or export them) before running the setup script. The
+container passwords come from `.env` too — `SRC_PASS` / `DST_PASS`,
+shipped as `ChangeMe` and refused until changed.
 
 ### `config.json` (as generated)
 
@@ -185,7 +190,7 @@ running the setup script.
       "host": "127.0.0.1",
       "port": 3306,
       "username": "root",
-      "password": "srcpass"
+      "password": "<SRC_PASS from .env>"
     }
   },
   "destination": {
@@ -196,7 +201,7 @@ running the setup script.
       "host": "127.0.0.1",
       "port": 3307,
       "username": "root",
-      "password": "dstpass"
+      "password": "<DST_PASS from .env>"
     }
   },
   "scope": "full",
@@ -275,7 +280,8 @@ The setup script enables `event_scheduler` and `log_bin_trust_function_creators`
 automatically. If it still fails:
 
 ```bash
-docker exec mysql_src mysql -uroot -psrcpass \
+set -a; . ./.env; set +a    # SRC_PASS
+docker exec -e MYSQL_PWD="$SRC_PASS" mysql_src mysql -uroot \
   -e "SET GLOBAL event_scheduler = ON; SET GLOBAL log_bin_trust_function_creators = 1;"
 ```
 

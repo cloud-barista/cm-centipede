@@ -19,6 +19,9 @@ x-testenv-common: &testenv-common
   restart: "no"
   environment:
     TZ: Asia/Seoul
+    # The one password every account uses, from .env. Read when the container
+    # starts (scripts/common.sh), never baked into an image.
+    DOCKERENV_PASSWORD: ${DOCKERENV_PASSWORD:?set DOCKERENV_PASSWORD in .env (cp .env.example .env)}
   tmpfs:
     - /run
     - /tmp:exec

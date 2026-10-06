@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Source MongoDB setup - accounts + load shop_db and hr_db from sql/ (mongosh)
 set -euo pipefail
+. /opt/testenv/scripts/common.sh
 
 echo "[MongoDB] Starting setup..."
 
@@ -18,25 +19,27 @@ until mongosh --quiet --eval "db.adminCommand('ping').ok" 2>/dev/null | grep -q 
 done
 echo "[MongoDB] MongoDB is ready."
 
+# The JS reads the password from process.env (mongosh is Node), so the single-
+# quoted --eval bodies stay as they are.
 # ── Create accounts (the first one needs no auth, via the localhost exception) ───
 mongosh admin --quiet --eval '
 db.createUser({
     user: "root",
-    pwd: "testpass123",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [ { role: "root", db: "admin" } ]
 });
 '
 
 # Application + read-only accounts (created while authenticated as root)
-mongosh admin -u root -p testpass123 --authenticationDatabase admin --quiet --eval '
+mongosh admin -u root -p "$DOCKERENV_PASSWORD" --authenticationDatabase admin --quiet --eval '
 db.createUser({
     user: "centipede",
-    pwd: "centipede_pass",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [ { role: "root", db: "admin" } ]
 });
 db.createUser({
     user: "readonly",
-    pwd: "readonly_pass",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [
         { role: "read", db: "shop_db" },
         { role: "read", db: "hr_db" }
@@ -50,12 +53,12 @@ db.createUser({
 // at the path database instead.
 db.getSiblingDB("shop_db").createUser({
     user: "centipede",
-    pwd: "centipede_pass",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [ { role: "readWrite", db: "shop_db" } ]
 });
 db.getSiblingDB("hr_db").createUser({
     user: "centipede",
-    pwd: "centipede_pass",
+    pwd: process.env.DOCKERENV_PASSWORD,
     roles: [ { role: "readWrite", db: "hr_db" } ]
 });
 '
@@ -63,11 +66,11 @@ echo "[MongoDB] Users created."
 
 # ── Initialize the test databases ─────────────────────────────────────────────
 echo "[MongoDB] Loading shop_db..."
-mongosh -u root -p testpass123 --authenticationDatabase admin < /opt/testenv/sql/shop_db_mongo.js
+mongosh -u root -p "$DOCKERENV_PASSWORD" --authenticationDatabase admin < /opt/testenv/sql/shop_db_mongo.js
 echo "[MongoDB] shop_db loaded."
 
 echo "[MongoDB] Loading hr_db..."
-mongosh -u root -p testpass123 --authenticationDatabase admin < /opt/testenv/sql/hr_db_mongo.js
+mongosh -u root -p "$DOCKERENV_PASSWORD" --authenticationDatabase admin < /opt/testenv/sql/hr_db_mongo.js
 echo "[MongoDB] hr_db loaded."
 
 echo "[MongoDB] Setup complete."

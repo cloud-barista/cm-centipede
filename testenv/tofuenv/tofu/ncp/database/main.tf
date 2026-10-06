@@ -23,6 +23,12 @@ locals {
   # 10000-65535, so 27017 is used. Provider validation passes; whether the API
   # accepts it is confirmed by the first apply.
   mongodb_port = 27017
+
+  # Each engine exists only when var.ncp_db_engines names it, so provision.sh /
+  # deprovision.sh --engine can add or remove one without touching the others.
+  want_mysql    = contains(var.ncp_db_engines, "mysql")
+  want_postgres = contains(var.ncp_db_engines, "postgres")
+  want_mongodb  = contains(var.ncp_db_engines, "mongodb")
 }
 
 # ---------------------------------------------------------------------------
@@ -51,9 +57,12 @@ locals {
 # Fail-fast engine version check
 #   Verifies at plan time that the requested version string exists in the catalog.
 #   The filter is an exact match, so a partial version like "8.0" is caught here
-#   instead of failing after a 30-minute apply.
+#   instead of failing after a 30-minute apply. An engine that is not wanted is
+#   not looked up, and its precondition is never evaluated.
 # ---------------------------------------------------------------------------
 data "ncloud_mysql_image_products" "pinned" {
+  count = local.want_mysql ? 1 : 0
+
   filter {
     name   = "engine_version_code"
     values = [var.ncp_mysql_version]
@@ -61,6 +70,8 @@ data "ncloud_mysql_image_products" "pinned" {
 }
 
 data "ncloud_postgresql_image_products" "pinned" {
+  count = local.want_postgres ? 1 : 0
+
   filter {
     name   = "engine_version_code"
     values = [var.ncp_postgres_version]
@@ -68,6 +79,8 @@ data "ncloud_postgresql_image_products" "pinned" {
 }
 
 data "ncloud_mongodb_image_products" "pinned" {
+  count = local.want_mongodb ? 1 : 0
+
   filter {
     name   = "engine_version_code"
     values = [var.ncp_mongodb_version]
@@ -75,9 +88,25 @@ data "ncloud_mongodb_image_products" "pinned" {
 }
 
 locals {
-  mysql_version_ok    = length(data.ncloud_mysql_image_products.pinned.image_product_list) > 0
-  postgres_version_ok = length(data.ncloud_postgresql_image_products.pinned.image_product_list) > 0
-  mongodb_version_ok  = length(data.ncloud_mongodb_image_products.pinned.image_product_list) > 0
+  mysql_version_ok    = try(length(data.ncloud_mysql_image_products.pinned[0].image_product_list) > 0, false)
+  postgres_version_ok = try(length(data.ncloud_postgresql_image_products.pinned[0].image_product_list) > 0, false)
+  mongodb_version_ok  = try(length(data.ncloud_mongodb_image_products.pinned[0].image_product_list) > 0, false)
+
+  # The images each pinned version comes as. A TF_VAR_ncp_*_image_product_code
+  # must be one of them; checking at plan time beats a refusal 30 minutes in.
+  mysql_images    = try([for i in data.ncloud_mysql_image_products.pinned[0].image_product_list : i.product_code], [])
+  postgres_images = try([for i in data.ncloud_postgresql_image_products.pinned[0].image_product_list : i.product_code], [])
+  mongodb_images  = try([for i in data.ncloud_mongodb_image_products.pinned[0].image_product_list : i.product_code], [])
+
+  mysql_image_ok    = var.ncp_mysql_image_product_code == "" || contains(local.mysql_images, var.ncp_mysql_image_product_code)
+  postgres_image_ok = var.ncp_postgres_image_product_code == "" || contains(local.postgres_images, var.ncp_postgres_image_product_code)
+  mongodb_image_ok  = var.ncp_mongodb_image_product_code == "" || contains(local.mongodb_images, var.ncp_mongodb_image_product_code)
+
+  # The pinned MongoDB image's generation (G2 / G3), "" when none is pinned.
+  mongodb_image_generation = try([
+    for i in data.ncloud_mongodb_image_products.pinned[0].image_product_list :
+    i.generation_code if i.product_code == var.ncp_mongodb_image_product_code
+  ][0], "")
 }
 
 # ---------------------------------------------------------------------------
@@ -88,6 +117,8 @@ locals {
 #   There is no vpc_no argument; the provider derives it from subnet_no.
 # ---------------------------------------------------------------------------
 resource "ncloud_mysql" "this" {
+  count = local.want_mysql ? 1 : 0
+
   service_name        = "${var.ncp_name_prefix}-mysql"
   server_name_prefix  = "${var.ncp_name_prefix}-mysql"
   user_name           = var.ncp_db_username
@@ -99,11 +130,17 @@ resource "ncloud_mysql" "this" {
   is_backup           = false
   port                = local.mysql_port
   engine_version_code = var.ncp_mysql_version
+  image_product_code  = var.ncp_mysql_image_product_code == "" ? null : var.ncp_mysql_image_product_code
+  product_code        = var.ncp_mysql_product_code == "" ? null : var.ncp_mysql_product_code
 
   lifecycle {
     precondition {
       condition     = local.mysql_version_ok
       error_message = "TF_VAR_ncp_mysql_version='${var.ncp_mysql_version}' is not in the supported list. It must be a full version string such as 8.0.36; run ./scripts/ncp-db-versions.sh mysql to list them."
+    }
+    precondition {
+      condition     = local.mysql_image_ok
+      error_message = "TF_VAR_ncp_mysql_image_product_code='${var.ncp_mysql_image_product_code}' is not an image of MySQL ${var.ncp_mysql_version}. Run ./scripts/ncp-db-versions.sh mysql and copy an [image ...] code."
     }
   }
 }
@@ -115,6 +152,8 @@ resource "ncloud_mysql" "this" {
 #   data_storage_type keeps its default (the docs' data_storage_type_code is a typo).
 # ---------------------------------------------------------------------------
 resource "ncloud_postgresql" "this" {
+  count = local.want_postgres ? 1 : 0
+
   service_name        = "${var.ncp_name_prefix}-postgresql"
   server_name_prefix  = "${var.ncp_name_prefix}-pg"
   user_name           = var.ncp_db_username
@@ -127,11 +166,17 @@ resource "ncloud_postgresql" "this" {
   backup              = false
   port                = local.postgres_port
   engine_version_code = var.ncp_postgres_version
+  image_product_code  = var.ncp_postgres_image_product_code == "" ? null : var.ncp_postgres_image_product_code
+  product_code        = var.ncp_postgres_product_code == "" ? null : var.ncp_postgres_product_code
 
   lifecycle {
     precondition {
       condition     = local.postgres_version_ok
       error_message = "TF_VAR_ncp_postgres_version='${var.ncp_postgres_version}' is not in the supported list. It must be a full version string such as 14.22; run ./scripts/ncp-db-versions.sh postgresql to list them."
+    }
+    precondition {
+      condition     = local.postgres_image_ok
+      error_message = "TF_VAR_ncp_postgres_image_product_code='${var.ncp_postgres_image_product_code}' is not an image of PostgreSQL ${var.ncp_postgres_version}. Run ./scripts/ncp-db-versions.sh postgresql and copy an [image ...] code."
     }
   }
 }
@@ -154,8 +199,24 @@ resource "ncloud_postgresql" "this" {
 #   Type (SSD) specification is not supported by the KR region, the G3 generation."
 #   The codes the provider accepts are HDD, SSD, FB1, CB1, FB2 and CB2; CB2 is the
 #   common block storage generation that KR / G3 serves.
+#   The storage type follows the server generation, and the other way round is
+#   refused too: a G2 spec with CB2 answers 5001451, "The Data Storage Type (CB2)
+#   specification is not supported by the KR region, the G2 generation." The
+#   generation is the product code's last field (...G002 / ...G003) or the pinned
+#   image's generation_code, so a G2 spec or a G2 image gets SSD and everything
+#   else - G3, or nothing pinned, which NCP builds as G3 - keeps CB2.
 # ---------------------------------------------------------------------------
+locals {
+  mongodb_g2 = (
+    can(regex("\\.G002$", var.ncp_mongodb_product_code)) ||
+    contains(["G2", "G002"], upper(local.mongodb_image_generation))
+  )
+  mongodb_data_storage_type = local.mongodb_g2 ? "SSD" : "CB2"
+}
+
 resource "ncloud_mongodb" "this" {
+  count = local.want_mongodb ? 1 : 0
+
   service_name        = "${var.ncp_name_prefix}-mongodb"
   server_name_prefix  = "${var.ncp_name_prefix}-mongo"
   user_name           = var.ncp_db_username
@@ -165,13 +226,26 @@ resource "ncloud_mongodb" "this" {
   cluster_type_code   = "STAND_ALONE"
   member_port         = local.mongodb_port
   compress_code       = "SNPP"
-  data_storage_type   = "CB2"
+  data_storage_type   = local.mongodb_data_storage_type
   engine_version_code = var.ncp_mongodb_version
+  image_product_code  = var.ncp_mongodb_image_product_code == "" ? null : var.ncp_mongodb_image_product_code
+  member_product_code = var.ncp_mongodb_product_code == "" ? null : var.ncp_mongodb_product_code
 
   lifecycle {
     precondition {
       condition     = local.mongodb_version_ok
       error_message = "TF_VAR_ncp_mongodb_version='${var.ncp_mongodb_version}' is not in the supported list. It must be a full version string such as 7.0.28; run ./scripts/ncp-db-versions.sh mongodb to list them."
+    }
+    precondition {
+      condition     = local.mongodb_image_ok
+      error_message = "TF_VAR_ncp_mongodb_image_product_code='${var.ncp_mongodb_image_product_code}' is not an image of MongoDB ${var.ncp_mongodb_version}. Run ./scripts/ncp-db-versions.sh mongodb and copy an [image ...] code."
+    }
+    # STAND_ALONE runs one member server, so only a member spec fits. A config
+    # server, mongos or arbiter code is refused by NCP 30 minutes in with
+    # 5001234 "The product code could not be found."; the role is in the code.
+    precondition {
+      condition     = !can(regex("\\.(CFGSV|MNGOS|ARBIT)\\.", var.ncp_mongodb_product_code))
+      error_message = "TF_VAR_ncp_mongodb_product_code='${var.ncp_mongodb_product_code}' is a config server / mongos / arbiter spec. The STAND_ALONE cluster needs a member spec; run ./scripts/ncp-db-versions.sh mongodb, which lists member specs only."
     }
   }
 }
@@ -183,15 +257,18 @@ resource "ncloud_mongodb" "this" {
 #   A STAND_ALONE MongoDB has exactly one server, so [0] is used instead.
 # ---------------------------------------------------------------------------
 locals {
+  # An engine that is not wanted has no resource, and every value below is null.
   mysql_master = try(
-    [for s in ncloud_mysql.this.mysql_server_list : s if s.server_role == "M"][0],
-    ncloud_mysql.this.mysql_server_list[0]
+    [for s in ncloud_mysql.this[0].mysql_server_list : s if s.server_role == "M"][0],
+    ncloud_mysql.this[0].mysql_server_list[0],
+    null
   )
   postgres_primary = try(
-    [for s in ncloud_postgresql.this.postgresql_server_list : s if s.server_role == "M"][0],
-    ncloud_postgresql.this.postgresql_server_list[0]
+    [for s in ncloud_postgresql.this[0].postgresql_server_list : s if s.server_role == "M"][0],
+    ncloud_postgresql.this[0].postgresql_server_list[0],
+    null
   )
-  mongodb_server = ncloud_mongodb.this.mongodb_server_list[0]
+  mongodb_server = try(ncloud_mongodb.this[0].mongodb_server_list[0], null)
 
   # The public domain is null until it is issued from the console. An empty string
   # means the same thing, so both are normalized to null.
@@ -224,7 +301,9 @@ locals {
 #   have it recreated.
 # ---------------------------------------------------------------------------
 resource "ncloud_access_control_group_rule" "mysql" {
-  access_control_group_no = ncloud_mysql.this.access_control_group_no_list[0]
+  count = local.want_mysql ? 1 : 0
+
+  access_control_group_no = ncloud_mysql.this[0].access_control_group_no_list[0]
 
   inbound {
     protocol    = "TCP"
@@ -239,7 +318,9 @@ resource "ncloud_access_control_group_rule" "mysql" {
 }
 
 resource "ncloud_access_control_group_rule" "postgresql" {
-  access_control_group_no = ncloud_postgresql.this.access_control_group_no_list[0]
+  count = local.want_postgres ? 1 : 0
+
+  access_control_group_no = ncloud_postgresql.this[0].access_control_group_no_list[0]
 
   inbound {
     protocol    = "TCP"
@@ -254,7 +335,9 @@ resource "ncloud_access_control_group_rule" "postgresql" {
 }
 
 resource "ncloud_access_control_group_rule" "mongodb" {
-  access_control_group_no = ncloud_mongodb.this.access_control_group_no_list[0]
+  count = local.want_mongodb ? 1 : 0
+
+  access_control_group_no = ncloud_mongodb.this[0].access_control_group_no_list[0]
 
   inbound {
     protocol    = "TCP"
@@ -266,4 +349,32 @@ resource "ncloud_access_control_group_rule" "mongodb" {
   lifecycle {
     ignore_changes = [inbound, outbound]
   }
+}
+
+# The engines were single resources before they took a count. These carry an
+# environment provisioned back then over to index [0]; without them every managed
+# DB would be planned for a 30-minute re-creation.
+moved {
+  from = ncloud_mysql.this
+  to   = ncloud_mysql.this[0]
+}
+moved {
+  from = ncloud_postgresql.this
+  to   = ncloud_postgresql.this[0]
+}
+moved {
+  from = ncloud_mongodb.this
+  to   = ncloud_mongodb.this[0]
+}
+moved {
+  from = ncloud_access_control_group_rule.mysql
+  to   = ncloud_access_control_group_rule.mysql[0]
+}
+moved {
+  from = ncloud_access_control_group_rule.postgresql
+  to   = ncloud_access_control_group_rule.postgresql[0]
+}
+moved {
+  from = ncloud_access_control_group_rule.mongodb
+  to   = ncloud_access_control_group_rule.mongodb[0]
 }

@@ -14,7 +14,8 @@
 #
 #     Once issued, this script refreshes the tofu state so that the
 #     *_public_domain / *_host outputs pick the new value up, then verifies that
-#     every managed engine has one.
+#     every provisioned engine has one. An engine left out with
+#     provision.sh --engine is listed as not provisioned and not waited on.
 #
 #   Notes:
 #     - Acts on the workspace of the prefix .env sets (TF_VAR_ncp_name_prefix).
@@ -66,17 +67,30 @@ fi
 
 echo
 echo -e "${CYAN}=== public domain status ===${NC}"
-MISSING=0
+MISSING=0; FOUND=0
 for engine in mysql postgres mongodb; do
+    # A null port means the engine is not provisioned at all (provision.sh --engine
+    # runs a subset), which is not the same as a domain still waiting to be issued.
+    port="$(echo "$JSON" | jq -r --arg k "${engine}_port" '.[$k].value // ""')"
+    if [ -z "$port" ]; then
+        echo -e "  -        ${engine}  (not provisioned)"
+        continue
+    fi
+    FOUND=$((FOUND + 1))
     domain="$(echo "$JSON" | jq -r --arg k "${engine}_public_domain" '.[$k].value // ""')"
     if [ -z "$domain" ] || [ "$domain" = "null" ]; then
         echo -e "  ${RED}MISSING${NC}  ${engine}  — issue a public domain in the NCP console"
         MISSING=$((MISSING + 1))
     else
-        port="$(echo "$JSON" | jq -r --arg k "${engine}_port" '.[$k].value // ""')"
         echo -e "  ${GREEN}OK${NC}       ${engine}  ${domain}:${port}"
     fi
 done
+
+if [ "$FOUND" -eq 0 ]; then
+    echo
+    echo -e "${RED}No managed DB is provisioned. Provision one first: ./scripts/provision.sh ncp database${NC}" >&2
+    exit 1
+fi
 
 echo
 if [ "$MISSING" -gt 0 ]; then
@@ -88,5 +102,5 @@ if [ "$MISSING" -gt 0 ]; then
 fi
 
 echo -e "${GREEN}All managed DBs have a public domain.${NC}"
-echo "  Connection info :  ./scripts/conn-info.sh ncp database --reveal"
+echo "  Connection info :  ./scripts/conn-info.sh ncp database --prefix ${WS_PREFIX} --reveal"
 echo "  Test data       :  ./scripts/gen-data.sh --provider ncp --target database"

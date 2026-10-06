@@ -126,7 +126,7 @@ _hb_conn_body() {
 	jq -n --arg n "$name" --arg d "matrix source bucket $bucket (direct)" \
 		--arg ep "$(src_endpoint)" \
 		--arg ak "${MINIO_ROOT_USER:-minioadmin}" \
-		--arg sk "${MINIO_ROOT_PASSWORD:-minioadmin123}" \
+		--arg sk "$MINIO_ROOT_PASSWORD" \
 		--arg bucket "$bucket" \
 		'{name:$n, description:$d,
 		  os_access_type:"direct",

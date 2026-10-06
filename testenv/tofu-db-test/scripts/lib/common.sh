@@ -7,6 +7,9 @@
 if [ -n "${MATRIX_COMMON_SH:-}" ]; then return 0; fi
 MATRIX_COMMON_SH=1
 
+# shellcheck source=./env-perm.sh
+. "$(dirname "${BASH_SOURCE[0]}")/env-perm.sh"
+
 C_HDR="\033[1;36m"; C_SUB="\033[1;33m"; C_OK="\033[0;32m"
 C_ERR="\033[0;31m"; C_WARN="\033[0;33m"; C_OFF="\033[0m"
 

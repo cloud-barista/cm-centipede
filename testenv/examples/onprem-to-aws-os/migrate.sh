@@ -21,29 +21,27 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── Servers ──────────────────────────────────────────────────────────────────
-HB_BASE=${HB_BASE:-http://localhost:8081/honeybee}
-CP_BASE=${CP_BASE:-http://localhost:8085/centipede}
-CP_AUTH=${CP_AUTH:-default:default}
+# ── Settings — from .env (cp .env.example .env) ──────────────────────────────
+# Every variable below the checks comes from there: HB_BASE, CP_BASE, CP_USER,
+# CP_PASS, HOST_IP, SRC_PORT, SRC_ACCESS_KEY, SRC_SECRET_KEY, SRC_BUCKET, NS_ID,
+# OS_ID, NAME, POLL. .env.example says what each one is.
+#
+# A variable already set in the shell wins over the file, so one value can be
+# changed for one run - and the secret key can be kept out of the file:
+#   SRC_SECRET_KEY=... ./migrate.sh
+[ -f .env ] || { echo "no .env here: cp .env.example .env, then change every ChangeMe" >&2; exit 1; }
+PRESET=$(export -p)
+set -a; . ./.env; set +a
+eval "$PRESET"
 
-# ── Source — the on-premises MinIO (testenv/dockerenv minio-source) ──────────
-# HOST_IP is the address of the host machine the source container runs on. MinIO
-# is reached through the port it publishes (SRC_PORT below), so this is the
-# host's address — not the container's, and not 127.0.0.1. Set it every run:
-#   HOST_IP=172.24.78.163 ./migrate.sh
-HOST_IP=${HOST_IP:-127.0.0.1}
-SRC_PORT=${SRC_PORT:-39000}
-SRC_ACCESS_KEY=${SRC_ACCESS_KEY:-minioadmin}
-SRC_SECRET_KEY=${SRC_SECRET_KEY:-minioadmin123}
-SRC_BUCKET=${SRC_BUCKET:-images}
-
-# ── Target — the AWS bucket (testenv/beetleenv) ──────────────────────────────
-# Both ids come from: testenv/beetleenv/scripts/conn-info.sh aws --ids
-NS_ID=${NS_ID:-cpbt01}
-OS_ID=${OS_ID:-cpbt-aws-bucket}
-
-NAME=${NAME:-onprem-to-aws-os}
-POLL=${POLL:-5}
+for v in CP_USER CP_PASS HOST_IP SRC_SECRET_KEY; do
+  if [ "$(printf '%s' "${!v:-}" | tr '[:upper:]' '[:lower:]')" = changeme ]; then
+    echo "$v in .env is still ChangeMe" >&2; exit 1
+  fi
+done
+# The secret key cannot be empty: left empty in .env, it has to come in from the shell.
+[ -n "${SRC_SECRET_KEY:-}" ] || { echo "SRC_SECRET_KEY is empty: set it in .env, or pass it in (SRC_SECRET_KEY=... ./migrate.sh)" >&2; exit 1; }
+CP_AUTH="$CP_USER:$CP_PASS"
 
 # =============================================================================
 # 1. Register the source group with cm-honeybee

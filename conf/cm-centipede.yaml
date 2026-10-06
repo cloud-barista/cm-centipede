@@ -1,3 +1,7 @@
+# Every value shipped as ChangeMe must be replaced before cm-centipede starts:
+# the server refuses to run while any of them is still "changeme" (compared
+# case-insensitively). Set them here or through the matching CENTIPEDE_*
+# environment variables.
 centipede:
   self:
     endpoint: localhost:8085
@@ -6,8 +10,8 @@ centipede:
     privateKeyPath: ~/.cm-honeybee/honeybee.key
   beetle:
     endpoint: http://localhost:8056
-    username: default
-    password: default
+    username: ChangeMe
+    password: ChangeMe
   tumblebug:
     # Object storage transfers only (transx-ex reaches managed buckets through
     # cb-tumblebug). Not selectable as a connection source.
@@ -17,16 +21,17 @@ centipede:
     # client appends "/beetle". An endpoint that already carries the prefix is
     # left unchanged.
     endpoint: http://localhost:1323
-    username: default
-    password: default
+    username: ChangeMe
+    password: ChangeMe
   api:
     allow:
       origins: "*"
     auth:
       enabled: true
       mode: basic
-    username: default
-    password: default
+    # Leave username and password empty when auth.enabled is false.
+    username: ChangeMe
+    password: ChangeMe
     rateLimit: 20
   db:
     path: ./db/cm-centipede.db
@@ -36,10 +41,11 @@ centipede:
     # stretched into an AES-256 key with scrypt and a salt generated per
     # database, so it never has to be a particular length or encoding.
     #
-    # Change this before running anything you care about, and then keep it:
-    # losing or changing the value makes every stored credential unrecoverable.
+    # The shipped ChangeMe is refused at startup, like every ChangeMe in this
+    # file. Pick a value once and keep it: losing or changing the value makes
+    # every stored credential unrecoverable.
     # Override with CENTIPEDE_ENCRYPTION_SECRET_KEY.
-    secretKey: secret-key-change-me
+    secretKey: ChangeMe
   logfile:
     path: ./log/cm-centipede.log
     maxsize: 1000

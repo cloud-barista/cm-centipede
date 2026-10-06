@@ -41,11 +41,9 @@ SRC_BUILD_DIR="$SOURCE_ROOT/src"
 SRC_INTERNAL_API_PORT=9000
 SRC_INTERNAL_CONSOLE_PORT=9001
 
-# What minio.service bakes into the unit. systemd reads a unit's Environment= at
-# load time, so the running server uses these whatever .env says — see
-# assert_minio_account.
-MINIO_UNIT_USER="minioadmin"
-MINIO_UNIT_PASS="minioadmin123"
+# Bumped whenever the image changes in a way a cached image would silently miss.
+# src_image rebuilds an image whose label does not carry this value.
+SRC_IMAGE_REVISION="env-credentials"
 
 # Names stay clear of every other environment in this repo, because several being
 # up at once is the normal case: dockerenv (centipede-testenv-*) serves the
@@ -59,26 +57,27 @@ src_image_repo() { printf 'beetle-os-test-src-minio'; }
 #   and lets it win over os_use_ssl (resolveS3Endpoint, objectStorageEndpoint.go).
 src_endpoint() { printf 'http://%s:%s' "${HOST_IP:-127.0.0.1}" "${MINIO_SRC_API_PORT:-33900}"; }
 
-# assert_minio_account — refuse a root account the image cannot actually use.
+# assert_minio_account — refuse a root account MinIO would not start with, or one
+#   that cannot travel through the settings file intact.
 #
-#   minio.service carries MINIO_ROOT_USER/PASSWORD as Environment=, so changing
-#   them in .env alone leaves the server running on the old pair while honeybee
-#   is handed the new one. That fails as a 403 during collection, several steps
-#   later, with nothing pointing at the cause. Refuse it here instead.
+#   minio.service and init-minio.sh both read the account from matrix.env, which
+#   _src_env_file writes as KEY="value". MinIO refuses a user under 3 characters
+#   or a password under 8 and never comes up, so the run would only time out
+#   waiting for it; and " \ $ ` change meaning inside those quotes, for systemd
+#   and for the shell alike. Refused here, before anything is created.
 assert_minio_account() {
-	local u="${MINIO_ROOT_USER:-$MINIO_UNIT_USER}" p="${MINIO_ROOT_PASSWORD:-$MINIO_UNIT_PASS}"
-	if [ "$u" = "$MINIO_UNIT_USER" ] && [ "$p" = "$MINIO_UNIT_PASS" ]; then
-		return 0
-	fi
-	fail "MINIO_ROOT_USER / MINIO_ROOT_PASSWORD do not match what the image starts MinIO with."
-	fail "  .env asks for      : $u / $(printf '%*s' "${#p}" '' | tr ' ' '*')"
-	fail "  the image runs with: $MINIO_UNIT_USER / ********"
-	fail "  systemd reads a unit's Environment= when the unit is loaded, so the server would"
-	fail "  keep the baked-in pair and honeybee would be handed the other one — a 403 several"
-	fail "  steps later with nothing pointing here."
-	fail "  To change them, edit src/services/minio.service and src/Dockerfile.minio's"
-	fail "  defaults.env together, then delete the cached image:"
-	fail "    docker image rm $(src_image_repo):latest"
+	local bad=""
+	[ "${#MINIO_ROOT_USER}" -ge 3 ] \
+		|| bad="$bad\n    MINIO_ROOT_USER must be at least 3 characters (it is ${#MINIO_ROOT_USER})"
+	[ "${#MINIO_ROOT_PASSWORD}" -ge 8 ] \
+		|| bad="$bad\n    MINIO_ROOT_PASSWORD must be at least 8 characters (it is ${#MINIO_ROOT_PASSWORD})"
+	case "$MINIO_ROOT_USER$MINIO_ROOT_PASSWORD" in
+	*[\"\\\$\`]*|*$'\n'*)
+		bad="$bad\n    MINIO_ROOT_USER / MINIO_ROOT_PASSWORD must not contain \" \\ \$ \` or a newline" ;;
+	esac
+	[ -z "$bad" ] && return 0
+	fail "The MinIO root account in ${ENV_FILE:-.env} cannot be used:"
+	printf '%b\n' "$bad" >&2
 	return 1
 }
 
@@ -97,8 +96,15 @@ src_image() {
 		return 1
 	fi
 	if docker image inspect "$img" >/dev/null 2>&1; then
-		printf '%s' "$img"
-		return 0
+		# An image built before the last structural change still runs, but runs the
+		# old way - one with the root account baked into minio.service would start
+		# MinIO on that pair and hand honeybee the .env one, a 403 several steps
+		# later. Its label says which it is.
+		if [ "$(docker image inspect -f '{{ index .Config.Labels "beetle-os-test.revision" }}' "$img" 2>/dev/null)" = "$SRC_IMAGE_REVISION" ]; then
+			printf '%s' "$img"
+			return 0
+		fi
+		info "the cached source image $img predates $SRC_IMAGE_REVISION — rebuilding" >&2
 	fi
 
 	info "building the source image: $img  (once, takes minutes)" >&2
@@ -131,8 +137,8 @@ _src_env_file() {
 	# would have the shell try to run "processed-data" as a command, and
 	# matrix-init.service would report failed with that as its only clue.
 	{
-		printf 'MINIO_ROOT_USER="%s"\n'     "${MINIO_ROOT_USER:-$MINIO_UNIT_USER}"
-		printf 'MINIO_ROOT_PASSWORD="%s"\n' "${MINIO_ROOT_PASSWORD:-$MINIO_UNIT_PASS}"
+		printf 'MINIO_ROOT_USER="%s"\n'     "$MINIO_ROOT_USER"
+		printf 'MINIO_ROOT_PASSWORD="%s"\n' "$MINIO_ROOT_PASSWORD"
 		printf 'OS_SRC_BUCKETS="%s"\n'      "${OS_SRC_BUCKETS:-}"
 	} > "$f"
 	chmod 600 "$f" 2>/dev/null || true

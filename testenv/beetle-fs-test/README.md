@@ -55,7 +55,7 @@ survive a `make down` and every later `make up`.
 cd testenv/beetle-fs-test
 
 cp .env.example .env && chmod 600 .env
-# the defaults work against a deployments stack; set the regions and zones, then:
+# change every ChangeMe (empty is allowed), set the regions and zones, then:
 
 ./scripts/fs-support.sh --recommend      # (optional) can beetle build a node here
 ./scripts/fs-matrix.sh --csp aws         # one cell
@@ -325,6 +325,7 @@ CLI option  >  real shell variable  >  .env  >  script default
 | `FS_CSPS` | `aws ncp` | the rows — one cell each |
 | `BEETLE_URL` / `TUMBLEBUG_URL` | `:8056/beetle` / `:1323/tumblebug` | where the provisioner answers |
 | `HB_BASE` / `CP_BASE` | `:8081` / `:8085` | where cm-honeybee and cm-centipede answer |
+| `BEETLE_USERNAME` / `_PASSWORD`, `TUMBLEBUG_USERNAME` / `_PASSWORD`, `CP_USER` / `CP_PASS` | `ChangeMe` | API credentials; no script default. Must be changed, empty allowed |
 | `MATRIX_NS` | `cpbfs01` | the cb-tumblebug namespace — this folder's own |
 | `MATRIX_NAME_PREFIX` | `cpbfs` | 2-6 chars; everything is `<prefix>-<csp>-<what>`, and `--cleanup` matches on it |
 | `<CSP>_REGION` | | must match the region the connection was registered under |

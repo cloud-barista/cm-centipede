@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Target MinIO setup - create only 6 empty buckets (no objects, migration destination)
 set -euo pipefail
+. /opt/testenv/scripts/common.sh
 
 echo "[MinIO-Target] Starting setup..."
 
@@ -20,7 +21,7 @@ until curl -sf "${MINIO_ENDPOINT}/minio/health/live" >/dev/null 2>&1; do
 done
 echo "[MinIO-Target] MinIO is ready."
 
-mc alias set "$ALIAS" "$MINIO_ENDPOINT" minioadmin minioadmin123 >/dev/null
+mc alias set "$ALIAS" "$MINIO_ENDPOINT" minioadmin "$DOCKERENV_PASSWORD" >/dev/null
 
 for bucket in raw-data processed-data images documents backups logs; do
     mc mb "${ALIAS}/${bucket}" 2>/dev/null \

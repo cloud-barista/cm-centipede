@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,4 +165,41 @@ func Init() {
 	if err := v.UnmarshalKey("centipede", &Conf); err != nil {
 		panic("failed to unmarshal config: " + err.Error())
 	}
+}
+
+// placeholder is the value shipped in conf/cm-centipede.yaml for every
+// credential the operator must choose. Compared case-insensitively, and
+// rejected whether or not the setting is in use: an unused API credential
+// is left empty, never left as the placeholder.
+const placeholder = "changeme"
+
+// Validate refuses a configuration that still carries the shipped placeholder
+// credentials, naming every offending key and the variable that overrides it.
+func Validate() error {
+	checks := []struct {
+		key, env, value string
+	}{
+		{"centipede.beetle.username", "CENTIPEDE_BEETLE_USERNAME", Conf.Beetle.Username},
+		{"centipede.beetle.password", "CENTIPEDE_BEETLE_PASSWORD", Conf.Beetle.Password},
+		{"centipede.tumblebug.username", "CENTIPEDE_TUMBLEBUG_USERNAME", Conf.Tumblebug.Username},
+		{"centipede.tumblebug.password", "CENTIPEDE_TUMBLEBUG_PASSWORD", Conf.Tumblebug.Password},
+		{"centipede.api.username", "CENTIPEDE_API_USERNAME", Conf.API.Username},
+		{"centipede.api.password", "CENTIPEDE_API_PASSWORD", Conf.API.Password},
+		{"centipede.encryption.secretKey", "CENTIPEDE_ENCRYPTION_SECRET_KEY", Conf.Encryption.SecretKey},
+	}
+
+	var bad []string
+	for _, c := range checks {
+		if strings.ToLower(strings.TrimSpace(c.value)) == placeholder {
+			bad = append(bad, fmt.Sprintf("  %s (or %s)", c.key, c.env))
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"the following settings still hold the placeholder %q — "+
+			"cm-centipede will not start until they are changed in "+
+			"conf/cm-centipede.yaml or overridden by environment variable:\n%s",
+		"ChangeMe", strings.Join(bad, "\n"))
 }
