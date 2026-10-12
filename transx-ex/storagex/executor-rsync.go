@@ -233,6 +233,22 @@ func (e *RsyncExecutor) executeAgentForward(ctx context.Context, source, destina
 		return fmt.Errorf("failed to add key to agent: %w", err)
 	}
 
+	// The forwarded agent is what rsync on the source server logs in to the
+	// destination with, so it has to hold the DESTINATION's key: the source's
+	// alone works only where the destination happens to accept it, and a target
+	// VM provisioned with its own key pair answers "Permission denied
+	// (publickey)". The source key stays for those that do. With no destination
+	// key there is nothing to add, and the source key is all there is to try.
+	if dstKeyData, err := e.loadPrivateKeyData(dstSSH); err == nil {
+		dstRawKey, err := ssh.ParseRawPrivateKey(dstKeyData)
+		if err != nil {
+			return fmt.Errorf("failed to parse destination private key: %w", err)
+		}
+		if err := keyring.Add(agent.AddedKey{PrivateKey: dstRawKey}); err != nil {
+			return fmt.Errorf("failed to add destination key to agent: %w", err)
+		}
+	}
+
 	// SSH client config for source server
 	config := &ssh.ClientConfig{
 		User: srcSSH.Username,
