@@ -83,10 +83,14 @@ func (d *MySQLDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation, sco
 	}
 	defer f.Close()
 
-	dst := io.Writer(f)
+	out := io.Writer(f)
 	if w != nil {
-		dst = io.MultiWriter(f, w)
+		out = io.MultiWriter(f, w)
 	}
+	// Buffered: the dump is written a value at a time, and unbuffered every row
+	// was a write to the file and a call into the counting writer.
+	bw := bufio.NewWriterSize(out, 1<<20)
+	dst := io.Writer(bw)
 
 	// Every dump states the encoding its literals are written in, as mysqldump
 	// does. The restore path opens its own utf8mb4 connection and does not need
@@ -96,6 +100,17 @@ func (d *MySQLDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation, sco
 		return fmt.Errorf("write dump header: %w", err)
 	}
 
+	if err := d.dumpScopeViaSQL(ctx, db, loc, scope, dst); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("write dump file: %w", err)
+	}
+	return nil
+}
+
+// dumpScopeViaSQL writes what scope asks for to dst.
+func (d *MySQLDriver) dumpScopeViaSQL(ctx context.Context, db *sql.DB, loc base.DBMSLocation, scope string, dst io.Writer) error {
 	if scope == base.ScopeSchemaOnly {
 		if err := d.dumpSchemaViaSQL(ctx, db, loc.Database, loc.Filter, dst); err != nil {
 			return fmt.Errorf("dump schema: %w", err)
@@ -307,6 +322,54 @@ func (d *MySQLDriver) dumpTriggersAndEventsViaSQL(ctx context.Context, db *sql.D
 }
 
 // dumpDataViaSQL writes INSERT statements for all rows in each table.
+// mysqlInsertBatchBytes is how long one multi-row INSERT the SQL dump writes may
+// grow before it is closed and the next begins.
+//
+// A row per INSERT made the restore one round trip and one commit per row — a
+// 500 MB table took hours over a WAN. Batched, it takes as many statements as
+// megabytes. Past 1 MB the round trips saved are seconds, while the risk grows:
+// a statement must fit the target's max_allowed_packet (4 MB on MySQL 5.7,
+// smaller on some managed services), and the dump is written before the target
+// is known. mysqldump batches to about the same size.
+const mysqlInsertBatchBytes = 1 << 20
+
+// mysqlInsertBatch accumulates one table's rows into multi-row INSERT
+// statements of at most mysqlInsertBatchBytes, one statement per line. A single
+// row longer than that still goes out, alone.
+type mysqlInsertBatch struct {
+	dst    io.Writer
+	prefix string
+	values strings.Builder
+}
+
+func newMySQLInsertBatch(dst io.Writer, prefix string) *mysqlInsertBatch {
+	return &mysqlInsertBatch{dst: dst, prefix: prefix}
+}
+
+// add appends one row's "(…)" tuple, closing the current statement first when
+// the tuple would take it past the limit.
+func (b *mysqlInsertBatch) add(tuple string) {
+	if b.values.Len() > 0 && len(b.prefix)+b.values.Len()+1+len(tuple)+2 > mysqlInsertBatchBytes {
+		b.flush()
+	}
+	if b.values.Len() > 0 {
+		b.values.WriteByte(',')
+	}
+	b.values.WriteString(tuple)
+}
+
+// flush writes the statement built so far, if any. Write errors surface when
+// the dump's buffered writer is flushed.
+func (b *mysqlInsertBatch) flush() {
+	if b.values.Len() == 0 {
+		return
+	}
+	io.WriteString(b.dst, b.prefix)          //nolint:errcheck
+	io.WriteString(b.dst, b.values.String()) //nolint:errcheck
+	io.WriteString(b.dst, ";\n")             //nolint:errcheck
+	b.values.Reset()
+}
+
 func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database string, filter *filterpkg.DBMSFilterOption, dst io.Writer) error {
 	tables, err := d.listTables(ctx, db, database, filter)
 	if err != nil {
@@ -349,6 +412,7 @@ func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database s
 		// alike, which one stopped the scan is the part that is hard to find.
 		rowNum := 0
 		rowObj := base.Obj{Kind: base.ObjectKindTable, Owner: database, Name: table, Unit: "row"}
+		batch := newMySQLInsertBatch(dst, fmt.Sprintf("INSERT INTO `%s`%s VALUES ", table, colClause))
 		for rows.Next() {
 			rowNum++
 			vals := make([]interface{}, len(cols))
@@ -365,8 +429,9 @@ func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database s
 			for i, v := range vals {
 				parts[i] = mysqlFormatValue(v)
 			}
-			fmt.Fprintf(dst, "INSERT INTO `%s`%s VALUES (%s);\n", table, colClause, strings.Join(parts, ", "))
+			batch.add("(" + strings.Join(parts, ", ") + ")")
 		}
+		batch.flush()
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			rowObj.Index = rowNum
@@ -448,6 +513,18 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
 		return fmt.Errorf("disable FK checks: %w", err)
 	}
+	// Commit in batches rather than per statement: with autocommit on, every
+	// INSERT was a commit — a log flush on the target — and over a WAN that,
+	// with the round trip, was the whole cost of a restore. A failure leaves
+	// the uncommitted batch out, which the caller's rollback treats like any
+	// other partial restore. DDL commits implicitly, as it always did.
+	if _, err := conn.ExecContext(ctx, "SET autocommit=0, unique_checks=0"); err != nil {
+		return fmt.Errorf("disable autocommit: %w", err)
+	}
+	commits := base.NewCommitBatcher(func() error {
+		_, err := conn.ExecContext(ctx, "COMMIT")
+		return err
+	})
 
 	stmts := splitMySQLStatements(string(content))
 	var lastNotifyTable string
@@ -464,6 +541,9 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 			return base.RestoreStatementError(
 				base.DBMSTypeMySQL, loc.Database, stmt, i+1, len(stmts), err)
 		}
+		if err := commits.Done(len(stmt)); err != nil {
+			return fmt.Errorf("commit restored rows: %w", err)
+		}
 		if notify != nil {
 			if tbl := extractMySQLInsertTable(stmt); tbl != "" && tbl != lastNotifyTable {
 				lastNotifyTable = tbl
@@ -474,6 +554,12 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 		}
 	}
 
+	if err := commits.Flush(); err != nil {
+		return fmt.Errorf("commit restored rows: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SET unique_checks=1, autocommit=1"); err != nil {
+		return fmt.Errorf("re-enable autocommit: %w", err)
+	}
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
 		return fmt.Errorf("re-enable FK checks: %w", err)
 	}
@@ -2166,7 +2252,11 @@ func splitMySQLStatements(script string) []string {
 	var buf strings.Builder
 
 	sc := bufio.NewScanner(strings.NewReader(script))
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	// The limit is one LINE, and a statement is one line: a multi-row INSERT
+	// of the SQL dump (mysqlInsertBatchBytes), or a single row holding a large
+	// BLOB. At the old 1 MB a longer line ended the scan silently, and every
+	// statement after it was dropped from the restore.
+	sc.Buffer(make([]byte, 1<<20), base.MaxStatementLine)
 
 	for sc.Scan() {
 		line := sc.Text()

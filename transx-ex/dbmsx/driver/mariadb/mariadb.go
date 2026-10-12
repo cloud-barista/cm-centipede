@@ -84,10 +84,14 @@ func (d *MariaDBDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation, s
 	}
 	defer f.Close()
 
-	dst := io.Writer(f)
+	out := io.Writer(f)
 	if w != nil {
-		dst = io.MultiWriter(f, w)
+		out = io.MultiWriter(f, w)
 	}
+	// Buffered: the dump is written a value at a time, and unbuffered every row
+	// was a write to the file and a call into the counting writer.
+	bw := bufio.NewWriterSize(out, 1<<20)
+	dst := io.Writer(bw)
 
 	// Every dump states the encoding its literals are written in, as
 	// mariadb-dump does. The restore path opens its own utf8mb4 connection and
@@ -98,6 +102,17 @@ func (d *MariaDBDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation, s
 		return fmt.Errorf("write dump header: %w", err)
 	}
 
+	if err := d.dumpScopeViaSQL(ctx, db, loc, scope, dst); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("write dump file: %w", err)
+	}
+	return nil
+}
+
+// dumpScopeViaSQL writes what scope asks for to dst.
+func (d *MariaDBDriver) dumpScopeViaSQL(ctx context.Context, db *sql.DB, loc base.DBMSLocation, scope string, dst io.Writer) error {
 	if scope == base.ScopeSchemaOnly {
 		if err := d.dumpSchemaViaSQL(ctx, db, loc.Database, loc.Filter, dst); err != nil {
 			return fmt.Errorf("dump schema: %w", err)
@@ -306,6 +321,48 @@ func (d *MariaDBDriver) dumpTriggersAndEventsViaSQL(ctx context.Context, db *sql
 }
 
 // dumpDataViaSQL writes INSERT statements for all rows in each table.
+// mariadbInsertBatchBytes is how long one multi-row INSERT the SQL dump writes
+// may grow before it is closed and the next begins — see mysqlInsertBatchBytes,
+// whose reasons are the same here.
+const mariadbInsertBatchBytes = 1 << 20
+
+// mariadbInsertBatch accumulates one table's rows into multi-row INSERT
+// statements of at most mariadbInsertBatchBytes, one statement per line. A
+// single row longer than that still goes out, alone.
+type mariadbInsertBatch struct {
+	dst    io.Writer
+	prefix string
+	values strings.Builder
+}
+
+func newMariaDBInsertBatch(dst io.Writer, prefix string) *mariadbInsertBatch {
+	return &mariadbInsertBatch{dst: dst, prefix: prefix}
+}
+
+// add appends one row's "(…)" tuple, closing the current statement first when
+// the tuple would take it past the limit.
+func (b *mariadbInsertBatch) add(tuple string) {
+	if b.values.Len() > 0 && len(b.prefix)+b.values.Len()+1+len(tuple)+2 > mariadbInsertBatchBytes {
+		b.flush()
+	}
+	if b.values.Len() > 0 {
+		b.values.WriteByte(',')
+	}
+	b.values.WriteString(tuple)
+}
+
+// flush writes the statement built so far, if any. Write errors surface when
+// the dump's buffered writer is flushed.
+func (b *mariadbInsertBatch) flush() {
+	if b.values.Len() == 0 {
+		return
+	}
+	io.WriteString(b.dst, b.prefix)          //nolint:errcheck
+	io.WriteString(b.dst, b.values.String()) //nolint:errcheck
+	io.WriteString(b.dst, ";\n")             //nolint:errcheck
+	b.values.Reset()
+}
+
 func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database string, filter *filterpkg.DBMSFilterOption, dst io.Writer) error {
 	tables, err := d.listTables(ctx, db, database, filter)
 	if err != nil {
@@ -348,6 +405,7 @@ func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database
 		// alike, which one stopped the scan is the part that is hard to find.
 		rowNum := 0
 		rowObj := base.Obj{Kind: base.ObjectKindTable, Owner: database, Name: table, Unit: "row"}
+		batch := newMariaDBInsertBatch(dst, fmt.Sprintf("INSERT INTO `%s`%s VALUES ", table, colClause))
 		for rows.Next() {
 			rowNum++
 			vals := make([]interface{}, len(cols))
@@ -364,8 +422,9 @@ func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database
 			for i, v := range vals {
 				parts[i] = mariadbFormatValue(v)
 			}
-			fmt.Fprintf(dst, "INSERT INTO `%s`%s VALUES (%s);\n", table, colClause, strings.Join(parts, ", "))
+			batch.add("(" + strings.Join(parts, ", ") + ")")
 		}
+		batch.flush()
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			rowObj.Index = rowNum
@@ -447,6 +506,14 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
 		return fmt.Errorf("disable FK checks: %w", err)
 	}
+	// Commit in batches rather than per statement — see MySQLDriver.restoreViaSQL.
+	if _, err := conn.ExecContext(ctx, "SET autocommit=0, unique_checks=0"); err != nil {
+		return fmt.Errorf("disable autocommit: %w", err)
+	}
+	commits := base.NewCommitBatcher(func() error {
+		_, err := conn.ExecContext(ctx, "COMMIT")
+		return err
+	})
 
 	stmts := splitMariaDBStatements(string(content))
 	var lastNotifyTable string
@@ -463,6 +530,9 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 			return base.RestoreStatementError(
 				base.DBMSTypeMariaDB, loc.Database, stmt, i+1, len(stmts), err)
 		}
+		if err := commits.Done(len(stmt)); err != nil {
+			return fmt.Errorf("commit restored rows: %w", err)
+		}
 		if notify != nil {
 			if tbl := extractMariaDBInsertTable(stmt); tbl != "" && tbl != lastNotifyTable {
 				lastNotifyTable = tbl
@@ -473,6 +543,12 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 		}
 	}
 
+	if err := commits.Flush(); err != nil {
+		return fmt.Errorf("commit restored rows: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SET unique_checks=1, autocommit=1"); err != nil {
+		return fmt.Errorf("re-enable autocommit: %w", err)
+	}
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
 		return fmt.Errorf("re-enable FK checks: %w", err)
 	}
@@ -2258,7 +2334,9 @@ func splitMariaDBStatements(script string) []string {
 	var buf strings.Builder
 
 	sc := bufio.NewScanner(strings.NewReader(script))
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	// One line is one statement — see splitMySQLStatements on why the limit is
+	// base.MaxStatementLine and not the old 1 MB.
+	sc.Buffer(make([]byte, 1<<20), base.MaxStatementLine)
 
 	for sc.Scan() {
 		line := sc.Text()

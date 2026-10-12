@@ -188,6 +188,68 @@ func containsToken(toks []string, want string) bool {
 // those fit well within it.
 const statementSnippet = 120
 
+// statementLogLimit is how much of a failed statement the error log keeps. A
+// multi-row INSERT of the SQL dump runs to a megabyte; the start of it names
+// the table, and the rest is row data that only buries the error.
+const statementLogLimit = 2048
+
+// MaxStatementLine is the longest line a statement splitter reads. A dump
+// statement is one line — a multi-row INSERT of about a megabyte, or a single
+// row with a large BLOB — and a longer line would end a bufio.Scanner silently,
+// dropping every statement after it. The buffer grows only as far as a line
+// needs.
+const MaxStatementLine = 256 << 20
+
+// Commit thresholds for a restore that batches its commits.
+const (
+	commitEveryStatements = 1000
+	commitEveryBytes      = 16 << 20
+)
+
+// CommitBatcher commits a restore every commitEveryStatements statements or
+// commitEveryBytes of SQL, whichever comes first, instead of after each one.
+//
+// A commit is a log flush on the target, and with autocommit on a restore paid
+// one per statement — together with the round trip, the whole cost of
+// restoring over a WAN.
+type CommitBatcher struct {
+	commit       func() error
+	stmts, bytes int
+}
+
+// NewCommitBatcher returns a batcher that calls commit to commit.
+func NewCommitBatcher(commit func() error) *CommitBatcher {
+	return &CommitBatcher{commit: commit}
+}
+
+// Done counts one executed statement of n bytes, committing when a threshold
+// is reached.
+func (b *CommitBatcher) Done(n int) error {
+	b.stmts++
+	b.bytes += n
+	if b.stmts >= commitEveryStatements || b.bytes >= commitEveryBytes {
+		return b.Flush()
+	}
+	return nil
+}
+
+// Flush commits whatever has run since the last commit.
+func (b *CommitBatcher) Flush() error {
+	if b.stmts == 0 {
+		return nil
+	}
+	b.stmts, b.bytes = 0, 0
+	return b.commit()
+}
+
+// truncateStatement shortens stmt to limit bytes, marking the cut.
+func truncateStatement(stmt string, limit int) string {
+	if len(stmt) <= limit {
+		return stmt
+	}
+	return stmt[:limit] + "..."
+}
+
 // RestoreStatementError reports the failure of one statement during a restore,
 // named by the object it acts on rather than by its text.
 //
@@ -197,8 +259,9 @@ const statementSnippet = 120
 //
 // A statement that names no object has nothing to be named by, so it keeps the
 // older reporting: its position in the dump and a prefix of its text. Either
-// way the full statement is logged, so the message stays readable without the
-// text being lost.
+// way the statement is logged — its first statementLogLimit bytes, which name
+// the object; a multi-row INSERT runs to a megabyte of row data past them — so
+// the message stays readable without the text being lost.
 func RestoreStatementError(dbmsType, owner, stmt string, index, total int, err error) error {
 	subject := ClassifyStatement(stmt)
 	if subject.Owner != "" {
@@ -212,15 +275,13 @@ func RestoreStatementError(dbmsType, owner, stmt string, index, total int, err e
 		"statements", total,
 		"objectKind", subject.Kind,
 		"objectName", subject.Name,
-		"sql", stmt,
+		"sql", truncateStatement(stmt, statementLogLimit),
 		"err", err.Error(),
 	)
 
 	if !subject.Recognised() {
-		if len(stmt) > statementSnippet {
-			stmt = stmt[:statementSnippet] + "..."
-		}
-		return fmt.Errorf("statement %d/%d (%s) failed: %w", index, total, stmt, err)
+		return fmt.Errorf("statement %d/%d (%s) failed: %w", index, total,
+			truncateStatement(stmt, statementSnippet), err)
 	}
 
 	return Obj{
