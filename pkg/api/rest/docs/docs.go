@@ -472,7 +472,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.\nThe optional body's mode decides how filesystem items are compared: \"quick\" (default) compares size and modification time only, \"checksum\" hashes every migrated file on both hosts. Object storage and databases are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.",
+                "description": "Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.\nThe optional body's mode decides how filesystem items are compared: \"quick\" (default) compares size and modification time only, \"checksum\" hashes every migrated file on both hosts. Object storage, databases and cross-storage items (path and size) are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2065,7 +2065,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "validationMode": {
-                    "description": "ValidationMode is how filesystem items were compared — \"quick\" (size and\nmodification time) or \"checksum\" (size and SHA256). Object storage and\ndatabases are compared one way whatever it says.",
+                    "description": "ValidationMode is how filesystem items were compared — \"quick\" (size and\nmodification time) or \"checksum\" (size and SHA256). Object storage,\ndatabases and cross-storage items are compared one way whatever it says.",
                     "type": "string"
                 },
                 "validationStartedAt": {
@@ -2242,6 +2242,10 @@ const docTemplate = `{
         "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary": {
             "type": "object",
             "properties": {
+                "crossStorage": {
+                    "description": "CrossStorage counts the entries above that land on the other storage\ntype: a file system into object storage, or object storage onto a file\nsystem. Validation compares those by path and size only, so a screen\noffering a validation mode needs to know without reading the plan.",
+                    "type": "integer"
+                },
                 "databases": {
                     "type": "integer"
                 },
@@ -2284,7 +2288,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "mode": {
-                    "description": "Mode is how filesystem items are compared: \"quick\" (size and\nmodification time, seconds; the default) or \"checksum\" (size and SHA256\nof every migrated file). Object storage and databases are compared one\nway whatever it says.",
+                    "description": "Mode is how filesystem items are compared: \"quick\" (size and\nmodification time, seconds; the default) or \"checksum\" (size and SHA256\nof every migrated file). Object storage, databases and cross-storage\nitems (compared by path and size) are compared one way whatever it says.",
                     "type": "string",
                     "enum": [
                         "quick",

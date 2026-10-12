@@ -7,9 +7,10 @@ import (
 	"sync"
 )
 
-// Validation modes. They apply to filesystem items only: object storage is
-// always compared by size and ETag, and a database by row counts and schema
-// objects, whichever mode was asked for.
+// Validation modes. They apply to file system → file system items only: object
+// storage is always compared by size and ETag, a cross-storage item by path and
+// size, and a database by row counts and schema objects, whichever mode was
+// asked for.
 const (
 	// ModeQuick compares each file's size and modification time. Seconds for
 	// any number of files, since nothing is read — but a file whose content

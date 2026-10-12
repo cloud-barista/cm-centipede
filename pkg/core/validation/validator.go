@@ -31,31 +31,35 @@ import (
 // Returns one ValidationDetailItem per mismatch (missing file, extra file, or a
 // size, time or hash diff). Connection errors are reported as a failed item for
 // the folder root.
+//
+// A folder that landed in object storage (cross-storage) is compared by path
+// and size only, whatever opt.Mode says — see validateCrossStorage.
 func ValidateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemModel, opt Options) ([]model.ValidationDetailItem, error) {
-	// Cross-storage (filesystem→objectstorage) compares heterogeneous endpoints
-	// (SSH checksums vs S3 ETags) and is not yet supported; report it as skipped
-	// rather than failing to resolve the object-storage destination as SSH.
-	if m.DstType == commonmodel.StorageTypeObjectStorage {
-		return []model.ValidationDetailItem{{
-			ItemPath: "",
-			Status:   "skipped",
-			Message:  "cross-storage validation (filesystem→objectstorage) is not supported",
-		}}, nil
-	}
+	cross := m.DstType == commonmodel.StorageTypeObjectStorage
 
 	srcSSH, err := resolveSSHConfig(m.SrcConnection)
 	if err != nil {
 		return nil, fmt.Errorf("resolve src connection: %w", err)
 	}
-	dstSSH, err := resolveSSHConfig(m.DstConnection)
-	if err != nil {
-		return nil, fmt.Errorf("resolve dst connection: %w", err)
+	var dstSSH *transxex.SSHConfig
+	if !cross {
+		if dstSSH, err = resolveSSHConfig(m.DstConnection); err != nil {
+			return nil, fmt.Errorf("resolve dst connection: %w", err)
+		}
 	}
 
 	var details []model.ValidationDetailItem
 	for i, folder := range m.Folders {
 		fopt := opt.within(itemLabel(i, len(m.Folders), folder.SrcPath))
-		folderDetails, err := validateSSHFolder(ctx, srcSSH, dstSSH, folder.SrcPath, folder.DstPath, folder.Rules, fopt)
+		var folderDetails []model.ValidationDetailItem
+		if cross {
+			folderDetails, err = validateCrossStorage(
+				func() (map[string]int64, error) { return folderSizes(ctx, srcSSH, folder.SrcPath) },
+				func() (map[string]int64, error) { return bucketSizes(m.DstConnection, folder.DstPath) },
+				folder.SrcPath, folder.DstPath, folder.Rules, "file", "object", fopt)
+		} else {
+			folderDetails, err = validateSSHFolder(ctx, srcSSH, dstSSH, folder.SrcPath, folder.DstPath, folder.Rules, fopt)
+		}
 		if err != nil {
 			details = append(details, model.ValidationDetailItem{
 				ItemPath: folder.SrcPath,
@@ -631,15 +635,15 @@ func shellQuote(s string) string {
 // Objects are compared from their listings alone — nothing is downloaded — so
 // opt.Mode does not apply here.
 func ValidateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStorageModel, opt Options) ([]model.ValidationDetailItem, error) {
-	// Cross-storage (objectstorage→filesystem) compares heterogeneous endpoints
-	// (S3 ETags vs SSH checksums) and is not yet supported; report it as skipped
-	// rather than failing to resolve the SSH destination as object storage.
-	if m.DstType == commonmodel.StorageTypeFilesystem {
-		return []model.ValidationDetailItem{{
-			ItemPath: "",
-			Status:   "skipped",
-			Message:  "cross-storage validation (objectstorage→filesystem) is not supported",
-		}}, nil
+	// A bucket that landed on a file system (cross-storage) is compared by path
+	// and size only — see validateCrossStorage.
+	cross := m.DstType == commonmodel.StorageTypeFilesystem
+	var dstSSH *transxex.SSHConfig
+	if cross {
+		var err error
+		if dstSSH, err = resolveSSHConfig(m.DstConnection); err != nil {
+			return nil, fmt.Errorf("resolve dst connection: %w", err)
+		}
 	}
 
 	var details []model.ValidationDetailItem
@@ -648,7 +652,16 @@ func ValidateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectSto
 			return nil, err
 		}
 		bopt := opt.within(itemLabel(i, len(m.Buckets), bucket.SrcPath))
-		bucketDetails, err := validateObjectBucket(m.SrcConnection, m.DstConnection, bucket.SrcPath, bucket.DstPath, bucket.Rules, bopt)
+		var bucketDetails []model.ValidationDetailItem
+		var err error
+		if cross {
+			bucketDetails, err = validateCrossStorage(
+				func() (map[string]int64, error) { return bucketSizes(m.SrcConnection, bucket.SrcPath) },
+				func() (map[string]int64, error) { return folderSizes(ctx, dstSSH, bucket.DstPath) },
+				bucket.SrcPath, bucket.DstPath, bucket.Rules, "object", "file", bopt)
+		} else {
+			bucketDetails, err = validateObjectBucket(m.SrcConnection, m.DstConnection, bucket.SrcPath, bucket.DstPath, bucket.Rules, bopt)
+		}
 		if err != nil {
 			details = append(details, model.ValidationDetailItem{
 				ItemPath: bucket.SrcPath,
@@ -821,6 +834,165 @@ func resolveOSLoc(ref commonmodel.ConnectionRef, path string) (transxex.StorageL
 // MinIO and S3-compatible stores often return ETags quoted as `"abc123"`.
 func normalizeETag(etag string) string {
 	return strings.Trim(etag, `"`)
+}
+
+// ── Cross-Storage Validation ──────────────────────────────────────────────────
+
+// validateCrossStorage compares a folder against a bucket prefix, or a bucket
+// prefix against a folder: one end a file system, the other object storage.
+//
+// By path and size only, whatever Options.Mode asks for. The two ends share no
+// cheap content fingerprint to set side by side — a file has no ETag, and an
+// ETag is an MD5 only for an object uploaded in one part — and a modification
+// time does not survive the move into object storage. A listing of each end
+// still says what matters most: every file arrived, at its size, and nothing
+// else is there.
+//
+// srcList and dstList each read one end, keyed by path relative to the migrated
+// folder or prefix — the key the transfer wrote by and the filter judges.
+// srcNoun and dstNoun name what each end holds, for the messages.
+func validateCrossStorage(
+	srcList, dstList func() (map[string]int64, error),
+	srcPath, dstPath string,
+	rules []commonmodel.PathFilterRule,
+	srcNoun, dstNoun string,
+	opt Options,
+) ([]model.ValidationDetailItem, error) {
+	flt, err := newMigrationFilter(rules)
+	if err != nil {
+		return nil, fmt.Errorf("build migration filter: %w", err)
+	}
+
+	opt.report("cross-storage · listing")
+	var src, dst map[string]int64
+	err = bothSides(
+		func() (err error) {
+			if src, err = srcList(); err != nil {
+				return fmt.Errorf("list src %ss %s: %w", srcNoun, srcPath, err)
+			}
+			return nil
+		},
+		func() (err error) {
+			if dst, err = dstList(); err != nil {
+				return fmt.Errorf("list dst %ss %s: %w", dstNoun, dstPath, err)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	opt.report(fmt.Sprintf("cross-storage · comparing %s %ss · %s %ss",
+		commas(len(src)), srcNoun, commas(len(dst)), dstNoun))
+
+	return compareCrossTrees(src, dst, flt, srcPath, dstPath, srcNoun, dstNoun), nil
+}
+
+// compareCrossTrees is validateCrossStorage's verdict, with both listings read.
+// The outcomes are compareFileTrees' without the time and hash checks: missing,
+// a different size, or present in the destination only — a warning rather than
+// a failure when the source has it but the filter kept it out.
+func compareCrossTrees(
+	src, dst map[string]int64,
+	flt *migrationFilter,
+	srcPath, dstPath string,
+	srcNoun, dstNoun string,
+) []model.ValidationDetailItem {
+	found := newFindings(srcPath)
+
+	srcKeys := make([]string, 0, len(src))
+	for k := range src {
+		srcKeys = append(srcKeys, k)
+	}
+	sort.Strings(srcKeys)
+
+	excluded := make(map[string]bool)
+	for _, rel := range srcKeys {
+		size := src[rel]
+		if flt.excludesFile(rel, size) {
+			excluded[rel] = true
+			continue
+		}
+		dstSize, ok := dst[rel]
+		switch {
+		case !ok:
+			found.fail(joinItem(srcPath, rel), srcNoun+" missing in destination")
+		case dstSize != size:
+			found.fail(joinItem(srcPath, rel),
+				fmt.Sprintf("size differs: src=%d dst=%d bytes", size, dstSize))
+		}
+	}
+
+	dstKeys := make([]string, 0, len(dst))
+	for k := range dst {
+		dstKeys = append(dstKeys, k)
+	}
+	sort.Strings(dstKeys)
+
+	for _, rel := range dstKeys {
+		if _, ok := src[rel]; !ok {
+			found.fail(joinItem(dstPath, rel), dstNoun+" exists in destination but not in source")
+			continue
+		}
+		if excluded[rel] {
+			found.notice(srcNoun+"(s) excluded by the migration filter"+
+				" but present in the destination", rel)
+		}
+	}
+
+	return found.summarise(len(excluded), srcNoun+"(s) excluded by the migration filter")
+}
+
+// folderSizes lists every regular file under root on the host cfg describes,
+// by size, keyed by its path relative to root.
+func folderSizes(ctx context.Context, cfg *transxex.SSHConfig, root string) (map[string]int64, error) {
+	files, err := listFiles(ctx, cfg, root)
+	if err != nil {
+		return nil, err
+	}
+	sizes := make(map[string]int64, len(files))
+	for rel, f := range files {
+		sizes[rel] = f.size
+	}
+	return sizes, nil
+}
+
+// bucketSizes lists every object under the bucket path at ref, by size, keyed by
+// its key relative to the path's prefix — the same key transx-ex wrote a file
+// to, or read an object from, so it lines up with a folder's relative paths.
+//
+// A key ending in "/" is a folder marker some tools write: it names a
+// directory, which a file system lists as no file, so it is left out.
+func bucketSizes(ref commonmodel.ConnectionRef, bucketPath string) (map[string]int64, error) {
+	loc, err := resolveOSLoc(ref, bucketPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve location: %w", err)
+	}
+	provider, err := transxex.NewS3Provider(loc)
+	if err != nil {
+		return nil, fmt.Errorf("create S3 provider: %w", err)
+	}
+	defer transxex.CloseS3Provider(provider) //nolint:errcheck
+
+	_, prefix := transxex.ParseBucketAndKey(bucketPath)
+	objects, err := provider.ListObjects(prefix)
+	if err != nil {
+		return nil, err
+	}
+	sizes := make(map[string]int64, len(objects))
+	for rel, o := range buildObjectMap(objects, prefix) {
+		if strings.HasSuffix(rel, "/") {
+			continue
+		}
+		sizes[rel] = o.size
+	}
+	return sizes, nil
+}
+
+// joinItem joins a folder or bucket path and a relative path for an ItemPath,
+// without doubling the slash a bucket path keeps at its end.
+func joinItem(root, rel string) string {
+	return strings.TrimSuffix(root, "/") + "/" + rel
 }
 
 // ── DBMS Validation ───────────────────────────────────────────────────────────

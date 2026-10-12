@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 	targetmodel "github.com/cloud-barista/cm-centipede/dmdl/target-model"
 )
 
@@ -54,8 +55,8 @@ type Migration struct {
 	ValidationMessage string                 `gorm:"column:validation_message"             json:"validationMessage,omitempty"`
 	ValidationDetails []ValidationDetailItem `gorm:"column:validation_details;serializer:json" json:"validationDetails,omitempty"`
 	// ValidationMode is how filesystem items were compared — "quick" (size and
-	// modification time) or "checksum" (size and SHA256). Object storage and
-	// databases are compared one way whatever it says.
+	// modification time) or "checksum" (size and SHA256). Object storage,
+	// databases and cross-storage items are compared one way whatever it says.
 	ValidationMode string `gorm:"column:validation_mode" json:"validationMode,omitempty"`
 	// ValidationStartedAt is when the latest validation started, so a running
 	// one can show how long it has been going.
@@ -192,6 +193,11 @@ type PlanSummary struct {
 	FileSystems    int `json:"fileSystems"`
 	ObjectStorages int `json:"objectStorages"`
 	Databases      int `json:"databases"`
+	// CrossStorage counts the entries above that land on the other storage
+	// type: a file system into object storage, or object storage onto a file
+	// system. Validation compares those by path and size only, so a screen
+	// offering a validation mode needs to know without reading the plan.
+	CrossStorage int `json:"crossStorage"`
 }
 
 // MigrationSummary is the list projection of Migration: every field of the
@@ -250,6 +256,7 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 			FileSystems:    len(p.FileSystems),
 			ObjectStorages: len(p.ObjectStorages),
 			Databases:      len(p.Databases),
+			CrossStorage:   countCrossStorage(p),
 		},
 		DBMSOnFailure:     m.DBMSOnFailure,
 		Status:            m.Status,
@@ -272,6 +279,23 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 
 		ValidationStartedAt: m.ValidationStartedAt,
 	}
+}
+
+// countCrossStorage counts the plan entries that land on the other storage
+// type. DstType is stored in the clear, as the unit counts are.
+func countCrossStorage(p *targetmodel.TargetDataMigrationProperty) int {
+	n := 0
+	for _, fs := range p.FileSystems {
+		if fs.DstType == commonmodel.StorageTypeObjectStorage {
+			n++
+		}
+	}
+	for _, os := range p.ObjectStorages {
+		if os.DstType == commonmodel.StorageTypeFilesystem {
+			n++
+		}
+	}
+	return n
 }
 
 // ── Migration list filter ────────────────────────────────────────────────────
@@ -434,7 +458,7 @@ type ValidationResultResponse struct {
 type StartValidationRequest struct {
 	// Mode is how filesystem items are compared: "quick" (size and
 	// modification time, seconds; the default) or "checksum" (size and SHA256
-	// of every migrated file). Object storage and databases are compared one
-	// way whatever it says.
+	// of every migrated file). Object storage, databases and cross-storage
+	// items (compared by path and size) are compared one way whatever it says.
 	Mode string `json:"mode,omitempty" enums:"quick,checksum" example:"quick"`
 }

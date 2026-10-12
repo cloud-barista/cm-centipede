@@ -1135,8 +1135,8 @@ definitions:
       validationMode:
         description: |-
           ValidationMode is how filesystem items were compared — "quick" (size and
-          modification time) or "checksum" (size and SHA256). Object storage and
-          databases are compared one way whatever it says.
+          modification time) or "checksum" (size and SHA256). Object storage,
+          databases and cross-storage items are compared one way whatever it says.
         type: string
       validationStartedAt:
         description: |-
@@ -1301,6 +1301,13 @@ definitions:
     type: object
   github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary:
     properties:
+      crossStorage:
+        description: |-
+          CrossStorage counts the entries above that land on the other storage
+          type: a file system into object storage, or object storage onto a file
+          system. Validation compares those by path and size only, so a screen
+          offering a validation mode needs to know without reading the plan.
+        type: integer
       databases:
         type: integer
       fileSystems:
@@ -1331,8 +1338,8 @@ definitions:
         description: |-
           Mode is how filesystem items are compared: "quick" (size and
           modification time, seconds; the default) or "checksum" (size and SHA256
-          of every migrated file). Object storage and databases are compared one
-          way whatever it says.
+          of every migrated file). Object storage, databases and cross-storage
+          items (compared by path and size) are compared one way whatever it says.
         enum:
         - quick
         - checksum
@@ -1689,7 +1696,7 @@ paths:
       - application/json
       description: |-
         Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.
-        The optional body's mode decides how filesystem items are compared: "quick" (default) compares size and modification time only, "checksum" hashes every migrated file on both hosts. Object storage and databases are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.
+        The optional body's mode decides how filesystem items are compared: "quick" (default) compares size and modification time only, "checksum" hashes every migrated file on both hosts. Object storage, databases and cross-storage items (path and size) are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.
       parameters:
       - description: Migration ID
         in: path

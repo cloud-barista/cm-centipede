@@ -13,8 +13,9 @@
 // where a run has got to — files hashed, tables counted — so a validation that
 // takes minutes can be told from one that has stopped.
 //
-// Cross-storage transfers (filesystem↔objectstorage) compare heterogeneous
-// endpoints and are reported as skipped rather than validated.
+// Cross-storage transfers (filesystem↔objectstorage) are compared by path and
+// size only: the two ends share no content fingerprint to compare, and a
+// modification time does not survive the move into object storage.
 //
 // Connections are resolved through pkg/core/migration, using the same
 // resolvers the migration itself used. Resolving them a second way here is how

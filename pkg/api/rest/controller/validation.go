@@ -21,7 +21,7 @@ import (
 //
 //	@Summary		Start validation for a completed migration
 //	@Description	Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.
-//	@Description	The optional body's mode decides how filesystem items are compared: "quick" (default) compares size and modification time only, "checksum" hashes every migrated file on both hosts. Object storage and databases are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.
+//	@Description	The optional body's mode decides how filesystem items are compared: "quick" (default) compares size and modification time only, "checksum" hashes every migrated file on both hosts. Object storage, databases and cross-storage items (path and size) are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.
 //	@Tags			validation
 //	@Accept			json
 //	@Produce		json
