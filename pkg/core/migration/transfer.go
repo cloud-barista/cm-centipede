@@ -40,6 +40,8 @@ func runStorageTransfer(
 				Kind:      EventTick,
 				ItemPath:  itemPath,
 				Current:   p.CurrentFile,
+				Step:      p.Step,
+				Steps:     p.Steps,
 				SizeBytes: p.BytesTransferred,
 			}
 

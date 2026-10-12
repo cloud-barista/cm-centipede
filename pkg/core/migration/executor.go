@@ -167,6 +167,9 @@ func (e *Executor) drainProgress(
 			if ev.Current != "" {
 				m.CurrentObject = ev.Current
 			}
+			// From the same tick as CurrentObject, so the step shown is the one
+			// the object named beside it is in.
+			m.CurrentStep, m.CurrentSteps = ev.Step, ev.Steps
 			if time.Since(lastTick) < tickInterval {
 				continue
 			}
@@ -182,6 +185,7 @@ func (e *Executor) drainProgress(
 		// Nothing is in flight for this item any more, and a finished migration
 		// must not still name a file it is working on.
 		m.CurrentObject = ""
+		m.CurrentStep, m.CurrentSteps = 0, 0
 
 		if ev.SizeBytes > 0 {
 			doneBytes += ev.SizeBytes

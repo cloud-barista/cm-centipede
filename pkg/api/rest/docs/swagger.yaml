@@ -1086,6 +1086,16 @@ definitions:
           below ItemPath, which names the folder, bucket or database. Empty when
           nothing is in flight.
         type: string
+      currentStep:
+        description: |-
+          CurrentStep is the step of the item's transfer that CurrentObject and the
+          in-flight part of TransferredBytes belong to, and CurrentSteps how many it
+          has: a relay's 1/2 stages through local storage, its 2/2 sends to the
+          destination, and each counts its bytes from zero. Zero when nothing is in
+          flight or the transfer has no steps to report (DBMS).
+        type: integer
+      currentSteps:
+        type: integer
       dbmsOnFailure:
         description: |-
           DBMSOnFailure is carried on the record rather than only on the request
@@ -1208,6 +1218,10 @@ definitions:
         type: string
       currentObject:
         type: string
+      currentStep:
+        type: integer
+      currentSteps:
+        type: integer
       dbmsOnFailure:
         type: string
       description:

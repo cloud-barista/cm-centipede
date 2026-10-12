@@ -124,6 +124,8 @@ func UpdateMigrationStatus(m *model.Migration) error {
 		"failed_items":      m.FailedItems,
 		"transferred_bytes": m.TransferredBytes,
 		"current_object":    m.CurrentObject,
+		"current_step":      m.CurrentStep,
+		"current_steps":     m.CurrentSteps,
 		"started_at":        m.StartedAt,
 		"completed_at":      m.CompletedAt,
 	}).Error

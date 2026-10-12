@@ -1997,6 +1997,13 @@ const docTemplate = `{
                     "description": "CurrentObject is the file, object or table being moved right now — one level\nbelow ItemPath, which names the folder, bucket or database. Empty when\nnothing is in flight.",
                     "type": "string"
                 },
+                "currentStep": {
+                    "description": "CurrentStep is the step of the item's transfer that CurrentObject and the\nin-flight part of TransferredBytes belong to, and CurrentSteps how many it\nhas: a relay's 1/2 stages through local storage, its 2/2 sends to the\ndestination, and each counts its bytes from zero. Zero when nothing is in\nflight or the transfer has no steps to report (DBMS).",
+                    "type": "integer"
+                },
+                "currentSteps": {
+                    "type": "integer"
+                },
                 "dbmsOnFailure": {
                     "description": "DBMSOnFailure is carried on the record rather than only on the request\nbecause execution is asynchronous and a retry re-reads the row: the policy\nhas to outlive the call that set it. Empty means DBMSOnFailureCleanup.",
                     "type": "string"
@@ -2114,6 +2121,12 @@ const docTemplate = `{
                 },
                 "currentObject": {
                     "type": "string"
+                },
+                "currentStep": {
+                    "type": "integer"
+                },
+                "currentSteps": {
+                    "type": "integer"
                 },
                 "dbmsOnFailure": {
                     "type": "string"

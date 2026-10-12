@@ -42,6 +42,14 @@ type Migration struct {
 	// nothing is in flight.
 	CurrentObject string `gorm:"column:current_object" json:"currentObject,omitempty"`
 
+	// CurrentStep is the step of the item's transfer that CurrentObject and the
+	// in-flight part of TransferredBytes belong to, and CurrentSteps how many it
+	// has: a relay's 1/2 stages through local storage, its 2/2 sends to the
+	// destination, and each counts its bytes from zero. Zero when nothing is in
+	// flight or the transfer has no steps to report (DBMS).
+	CurrentStep  int `gorm:"column:current_step"  json:"currentStep,omitempty"`
+	CurrentSteps int `gorm:"column:current_steps" json:"currentSteps,omitempty"`
+
 	ValidationStatus  string                 `gorm:"column:validation_status"              json:"validationStatus,omitempty"`
 	ValidationMessage string                 `gorm:"column:validation_message"             json:"validationMessage,omitempty"`
 	ValidationDetails []ValidationDetailItem `gorm:"column:validation_details;serializer:json" json:"validationDetails,omitempty"`
@@ -204,6 +212,8 @@ type MigrationSummary struct {
 	FailedItems      int64  `json:"failedItems"`
 	TransferredBytes int64  `json:"transferredBytes"`
 	CurrentObject    string `json:"currentObject,omitempty"`
+	CurrentStep      int    `json:"currentStep,omitempty"`
+	CurrentSteps     int    `json:"currentSteps,omitempty"`
 
 	ValidationStatus  string                 `json:"validationStatus,omitempty"`
 	ValidationMessage string                 `json:"validationMessage,omitempty"`
@@ -239,6 +249,8 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 		FailedItems:       m.FailedItems,
 		TransferredBytes:  m.TransferredBytes,
 		CurrentObject:     m.CurrentObject,
+		CurrentStep:       m.CurrentStep,
+		CurrentSteps:      m.CurrentSteps,
 		ValidationStatus:  m.ValidationStatus,
 		ValidationMessage: m.ValidationMessage,
 		ValidationDetails: m.ValidationDetails,

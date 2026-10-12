@@ -14,8 +14,8 @@ import "context"
 // Bytes and Files are cumulative WITHIN the reporting step, never across the
 // pipeline: a relay moves the same data twice — source to staging, staging to
 // destination — and each step counts from zero, so a consumer that adds the steps
-// together reports double what was migrated. A high-water mark over the steps is
-// what storagex keeps.
+// together reports double what was migrated. storagex restarts its counts at
+// each step and reports which step they belong to.
 //
 // Step says which step the observation came from and Steps how many there are,
 // for a consumer that wants to tell the legs apart — staging from sending — rather

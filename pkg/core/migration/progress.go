@@ -25,7 +25,12 @@ type ProgressEvent struct {
 	ItemPath string
 	// Current is the file, object or table the item is on right now — one level
 	// below ItemPath. Ticks only.
-	Current    string
+	Current string
+	// Step is the pipeline step SizeBytes counts within, and Steps how many the
+	// item's transfer has: a relay's 1/2 stages, its 2/2 sends. Ticks only; zero
+	// where the transfer does not report one.
+	Step       int
+	Steps      int
 	Status     string
 	SizeBytes  int64
 	DurationMs int64
