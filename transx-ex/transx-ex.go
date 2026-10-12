@@ -130,7 +130,9 @@ func ListDatabases(loc DBMSLocation) ([]string, error) { return dbmsx.ListDataba
 // other engines return an empty list.
 func ListSchemas(loc DBMSLocation) ([]string, error) { return dbmsx.ListSchemas(loc) }
 
-// DescribeTable returns column and index metadata for one table at loc.
+// DescribeTable returns column and index metadata for one table at loc. With
+// the engine's RowCountExact set in loc.Metric it also fills in an exact row
+// count; MongoDB always counts exactly.
 func DescribeTable(loc DBMSLocation, table string) (*TableInfo, error) {
 	return dbmsx.DescribeTable(loc, table)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/cloud-barista/cm-centipede/pkg/api/rest/controller"
 	"github.com/cloud-barista/cm-centipede/pkg/config"
 	"github.com/cloud-barista/cm-centipede/pkg/cryptoutil"
+	"github.com/cloud-barista/cm-centipede/pkg/dao"
 	"github.com/cloud-barista/cm-centipede/pkg/db"
 	"github.com/cloud-barista/cm-centipede/pkg/logger"
 	"github.com/cloud-barista/cm-centipede/pkg/rsautil"
@@ -62,10 +63,17 @@ func main() {
 		log.Fatal().Err(err).Msg("encryption key mismatch")
 	}
 
-	// 9. Mark ready and start HTTP server (blocks until SIGINT/SIGTERM)
+	// 9. Validations a restart cut short — none can still be running
+	if n, err := dao.FailInterruptedValidations(); err != nil {
+		log.Error().Err(err).Msg("failed to close out interrupted validations")
+	} else if n > 0 {
+		log.Warn().Int64("count", n).Msg("marked validations interrupted by restart as failed")
+	}
+
+	// 10. Mark ready and start HTTP server (blocks until SIGINT/SIGTERM)
 	controller.IsReady = true
 	rest.Start()
 
-	// 10. Cleanup after graceful shutdown
+	// 11. Cleanup after graceful shutdown
 	db.Close()
 }

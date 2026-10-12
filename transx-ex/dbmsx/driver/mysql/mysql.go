@@ -1475,21 +1475,51 @@ func (d *MySQLDriver) queryNames(ctx context.Context, db *sql.DB, query string) 
 // =============================================================================
 
 // DescribeTable returns column and index metadata for a single table.
+//
+// The row count is filled in only when loc.Metric.MySQL.RowCountExact asks for
+// it: an exact COUNT(*) scans the table, which a caller after the structure alone
+// should not pay for. It is counted here rather than in describeTableVia*, which
+// Inspect's per-table loop also calls after counting the table itself.
 func (d *MySQLDriver) DescribeTable(ctx context.Context, loc base.DBMSLocation, table string) (*base.TableInfo, error) {
+	countQ := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s",
+		mysqlQuoteIdent(loc.Database), mysqlQuoteIdent(table))
 	if loc.IsDirect() {
 		db, err := d.openDB(loc)
 		if err != nil {
 			return nil, err
 		}
 		defer db.Close()
-		return d.describeTableViaSQL(ctx, db, loc.Database, table)
+		info, err := d.describeTableViaSQL(ctx, db, loc.Database, table)
+		if err != nil || !mysqlMetric(loc).rowCountExact {
+			return info, err
+		}
+		if err := db.QueryRowContext(ctx, countQ).Scan(&info.RowCount); err != nil {
+			return nil, fmt.Errorf("count rows in %s: %w", table, err)
+		}
+		return info, nil
 	}
 	exec, err := base.DialSSHExec(loc.SSHTunnel.SSH)
 	if err != nil {
 		return nil, err
 	}
 	defer exec.Close()
-	return d.describeTableViaSSH(ctx, exec, loc, table)
+	info, err := d.describeTableViaSSH(ctx, exec, loc, table)
+	if err != nil || !mysqlMetric(loc).rowCountExact {
+		return info, err
+	}
+	res, err := d.mysqlQueryViaSSH(exec, loc.SSHTunnel, "", countQ)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	if len(res) == 0 || len(res[0]) == 0 {
+		return nil, fmt.Errorf("count rows in %s: empty result", table)
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(res[0][0]), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	info.RowCount = n
+	return info, nil
 }
 
 func (d *MySQLDriver) describeTableViaSQL(ctx context.Context, db *sql.DB, database, table string) (*base.TableInfo, error) {

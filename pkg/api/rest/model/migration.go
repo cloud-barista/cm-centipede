@@ -53,6 +53,13 @@ type Migration struct {
 	ValidationStatus  string                 `gorm:"column:validation_status"              json:"validationStatus,omitempty"`
 	ValidationMessage string                 `gorm:"column:validation_message"             json:"validationMessage,omitempty"`
 	ValidationDetails []ValidationDetailItem `gorm:"column:validation_details;serializer:json" json:"validationDetails,omitempty"`
+	// ValidationMode is how filesystem items were compared — "quick" (size and
+	// modification time) or "checksum" (size and SHA256). Object storage and
+	// databases are compared one way whatever it says.
+	ValidationMode string `gorm:"column:validation_mode" json:"validationMode,omitempty"`
+	// ValidationStartedAt is when the latest validation started, so a running
+	// one can show how long it has been going.
+	ValidationStartedAt *time.Time `gorm:"column:validation_started_at" json:"validationStartedAt,omitempty"`
 
 	StartedAt   *time.Time `gorm:"column:started_at"         json:"startedAt,omitempty"`
 	CompletedAt *time.Time `gorm:"column:completed_at"       json:"completedAt,omitempty"`
@@ -218,6 +225,9 @@ type MigrationSummary struct {
 	ValidationStatus  string                 `json:"validationStatus,omitempty"`
 	ValidationMessage string                 `json:"validationMessage,omitempty"`
 	ValidationDetails []ValidationDetailItem `json:"validationDetails,omitempty"`
+	ValidationMode    string                 `json:"validationMode,omitempty"`
+
+	ValidationStartedAt *time.Time `json:"validationStartedAt,omitempty"`
 
 	StartedAt   *time.Time `json:"startedAt,omitempty"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
@@ -254,10 +264,13 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 		ValidationStatus:  m.ValidationStatus,
 		ValidationMessage: m.ValidationMessage,
 		ValidationDetails: m.ValidationDetails,
+		ValidationMode:    m.ValidationMode,
 		StartedAt:         m.StartedAt,
 		CompletedAt:       m.CompletedAt,
 		CreatedAt:         m.CreatedAt,
 		UpdatedAt:         m.UpdatedAt,
+
+		ValidationStartedAt: m.ValidationStartedAt,
 	}
 }
 
@@ -406,7 +419,22 @@ type ValidationDetailItem struct {
 
 // ValidationResultResponse is returned by GET /centipede/migration/{id}/validation.
 type ValidationResultResponse struct {
-	ValidationStatus  string                 `json:"validationStatus"` // "passed" | "failed" | "not_run" | "running"
+	ValidationStatus string `json:"validationStatus"` // "passed" | "failed" | "not_run" | "running"
+	// ValidationMessage is the result's summary once the validation has
+	// finished, and while it runs, where it has got to — refreshed every few
+	// seconds.
 	ValidationMessage string                 `json:"validationMessage,omitempty"`
 	Details           []ValidationDetailItem `json:"details,omitempty"` // list of failed items
+	Mode              string                 `json:"mode,omitempty"`    // "quick" | "checksum": how filesystem items were compared
+	StartedAt         *time.Time             `json:"startedAt,omitempty"`
+}
+
+// StartValidationRequest is the optional body of POST
+// /centipede/migration/{id}/validation.
+type StartValidationRequest struct {
+	// Mode is how filesystem items are compared: "quick" (size and
+	// modification time, seconds; the default) or "checksum" (size and SHA256
+	// of every migrated file). Object storage and databases are compared one
+	// way whatever it says.
+	Mode string `json:"mode,omitempty" enums:"quick,checksum" example:"quick"`
 }

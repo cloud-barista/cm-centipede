@@ -149,8 +149,9 @@ type DBMSLocation struct {
 	Direct       *DirectConfig            `json:"direct,omitempty"`
 	SSHTunnel    *SSHTunnelConfig         `json:"sshTunnel,omitempty"`
 	Filter       *filter.DBMSFilterOption `json:"filter,omitempty"`
-	// Metric selects which information Inspect extracts. Inspect only; ignored
-	// by dumps and migrations.
+	// Metric selects which information Inspect extracts. DescribeTable reads
+	// RowCountExact from it as well, to fill in an exact row count; dumps and
+	// migrations ignore it.
 	Metric *MetricOption `json:"metric,omitempty"`
 }
 

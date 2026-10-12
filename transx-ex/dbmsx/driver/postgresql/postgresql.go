@@ -2067,7 +2067,13 @@ const pgIndexQueryBody = `SELECT
 // loc.Database that actually holds a table by this name. A name present in
 // several of them is an error rather than an arbitrary pick; narrowing
 // loc.PgSchema resolves it.
+//
+// The row count is filled in only when loc.Metric.PostgreSQL.RowCountExact asks
+// for it: an exact COUNT(*) scans the table, which a caller after the structure
+// alone should not pay for. It is counted here rather than in describeTableVia*,
+// which Inspect's per-table loop also calls after counting the table itself.
 func (d *PostgreSQLDriver) DescribeTable(ctx context.Context, loc base.DBMSLocation, table string) (*base.TableInfo, error) {
+	exact := pgMetric(loc).rowCountExact
 	if loc.IsDirect() {
 		conn, err := d.openConn(ctx, loc)
 		if err != nil {
@@ -2079,7 +2085,15 @@ func (d *PostgreSQLDriver) DescribeTable(ctx context.Context, loc base.DBMSLocat
 		if err != nil {
 			return nil, err
 		}
-		return d.describeTableViaSQL(ctx, conn, schema, table)
+		info, err := d.describeTableViaSQL(ctx, conn, schema, table)
+		if err != nil || !exact {
+			return info, err
+		}
+		if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s",
+			pgQualifyIdent(schema, table))).Scan(&info.RowCount); err != nil {
+			return nil, fmt.Errorf("count rows in %s: %w", table, err)
+		}
+		return info, nil
 	}
 	exec, err := base.DialSSHExec(loc.SSHTunnel.SSH)
 	if err != nil {
@@ -2091,7 +2105,24 @@ func (d *PostgreSQLDriver) DescribeTable(ctx context.Context, loc base.DBMSLocat
 	if err != nil {
 		return nil, err
 	}
-	return d.describeTableViaSSH(ctx, exec, loc, schema, table)
+	info, err := d.describeTableViaSSH(ctx, exec, loc, schema, table)
+	if err != nil || !exact {
+		return info, err
+	}
+	countQ := fmt.Sprintf("SELECT COUNT(*) AS row_count FROM %s", pgQualifyIdent(schema, table))
+	res, err := d.pgQueryJSONViaSSH(exec, loc.SSHTunnel, loc.Database, countQ)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	if len(res) == 0 {
+		return nil, fmt.Errorf("count rows in %s: empty result", table)
+	}
+	n, err := strconv.ParseInt(res[0]["row_count"], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	info.RowCount = n
+	return info, nil
 }
 
 // pgTableSchemaQuery finds which of the covered schemas hold a table by this

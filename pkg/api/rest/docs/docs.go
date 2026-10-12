@@ -472,7 +472,10 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed, 409 if validation is already running.",
+                "description": "Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.\nThe optional body's mode decides how filesystem items are compared: \"quick\" (default) compares size and modification time only, \"checksum\" hashes every migrated file on both hosts. Object storage and databases are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -487,6 +490,14 @@ const docTemplate = `{
                         "name": "migrationId",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "Validation options",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.StartValidationRequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -2053,6 +2064,14 @@ const docTemplate = `{
                 "validationMessage": {
                     "type": "string"
                 },
+                "validationMode": {
+                    "description": "ValidationMode is how filesystem items were compared — \"quick\" (size and\nmodification time) or \"checksum\" (size and SHA256). Object storage and\ndatabases are compared one way whatever it says.",
+                    "type": "string"
+                },
+                "validationStartedAt": {
+                    "description": "ValidationStartedAt is when the latest validation started, so a running\none can show how long it has been going.",
+                    "type": "string"
+                },
                 "validationStatus": {
                     "type": "string"
                 }
@@ -2176,6 +2195,12 @@ const docTemplate = `{
                 "validationMessage": {
                     "type": "string"
                 },
+                "validationMode": {
+                    "type": "string"
+                },
+                "validationStartedAt": {
+                    "type": "string"
+                },
                 "validationStatus": {
                     "type": "string"
                 }
@@ -2255,6 +2280,20 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.StartValidationRequest": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "description": "Mode is how filesystem items are compared: \"quick\" (size and\nmodification time, seconds; the default) or \"checksum\" (size and SHA256\nof every migrated file). Object storage and databases are compared one\nway whatever it says.",
+                    "type": "string",
+                    "enum": [
+                        "quick",
+                        "checksum"
+                    ],
+                    "example": "quick"
+                }
+            }
+        },
         "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.TargetPlanReq": {
             "type": "object",
             "required": [
@@ -2304,7 +2343,15 @@ const docTemplate = `{
                         "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem"
                     }
                 },
+                "mode": {
+                    "description": "\"quick\" | \"checksum\": how filesystem items were compared",
+                    "type": "string"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
                 "validationMessage": {
+                    "description": "ValidationMessage is the result's summary once the validation has\nfinished, and while it runs, where it has got to — refreshed every few\nseconds.",
                     "type": "string"
                 },
                 "validationStatus": {

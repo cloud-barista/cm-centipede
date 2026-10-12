@@ -1132,6 +1132,17 @@ definitions:
         type: array
       validationMessage:
         type: string
+      validationMode:
+        description: |-
+          ValidationMode is how filesystem items were compared — "quick" (size and
+          modification time) or "checksum" (size and SHA256). Object storage and
+          databases are compared one way whatever it says.
+        type: string
+      validationStartedAt:
+        description: |-
+          ValidationStartedAt is when the latest validation started, so a running
+          one can show how long it has been going.
+        type: string
       validationStatus:
         type: string
     required:
@@ -1254,6 +1265,10 @@ definitions:
         type: array
       validationMessage:
         type: string
+      validationMode:
+        type: string
+      validationStartedAt:
+        type: string
       validationStatus:
         type: string
     type: object
@@ -1310,6 +1325,20 @@ definitions:
       message:
         type: string
     type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.StartValidationRequest:
+    properties:
+      mode:
+        description: |-
+          Mode is how filesystem items are compared: "quick" (size and
+          modification time, seconds; the default) or "checksum" (size and SHA256
+          of every migrated file). Object storage and databases are compared one
+          way whatever it says.
+        enum:
+        - quick
+        - checksum
+        example: quick
+        type: string
+    type: object
   github_com_cloud-barista_cm-centipede_pkg_api_rest_model.TargetPlanReq:
     properties:
       plans:
@@ -1353,7 +1382,16 @@ definitions:
         items:
           $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem'
         type: array
+      mode:
+        description: '"quick" | "checksum": how filesystem items were compared'
+        type: string
+      startedAt:
+        type: string
       validationMessage:
+        description: |-
+          ValidationMessage is the result's summary once the validation has
+          finished, and while it runs, where it has got to — refreshed every few
+          seconds.
         type: string
       validationStatus:
         description: '"passed" | "failed" | "not_run" | "running"'
@@ -1647,15 +1685,22 @@ paths:
       tags:
       - validation
     post:
-      description: Validates that the destination data matches the source after a
-        completed migration. Returns 400 if migration is not completed, 409 if validation
-        is already running.
+      consumes:
+      - application/json
+      description: |-
+        Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.
+        The optional body's mode decides how filesystem items are compared: "quick" (default) compares size and modification time only, "checksum" hashes every migrated file on both hosts. Object storage and databases are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.
       parameters:
       - description: Migration ID
         in: path
         name: migrationId
         required: true
         type: string
+      - description: Validation options
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.StartValidationRequest'
       produces:
       - application/json
       responses:

@@ -24,7 +24,7 @@ type MetricOption struct {
 // and the table list (with statistics-based row estimates) are always
 // collected; every field below is opt-in and defaults to false.
 type MySQLMetric struct {
-	RowCountExact *bool `json:"rowCountExact,omitempty"` // exact SELECT COUNT(*) per table (else statistics estimate)
+	RowCountExact *bool `json:"rowCountExact,omitempty"` // exact SELECT COUNT(*) per table (else statistics estimate); DescribeTable honours it too
 	Columns       *bool `json:"columns,omitempty"`       // per-table column metadata
 	Indexes       *bool `json:"indexes,omitempty"`       // per-table index metadata
 	ForeignKeys   *bool `json:"foreignKeys,omitempty"`   // foreign-key constraint names

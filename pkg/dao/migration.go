@@ -136,8 +136,25 @@ func UpdateMigrationStatus(m *model.Migration) error {
 // Use this after a validation run completes to persist results without re-encrypting the plan.
 func UpdateMigrationValidation(m *model.Migration) error {
 	return db.DB.Model(&model.Migration{}).Where("id = ?", m.ID).
-		Select("validation_status", "validation_message", "validation_details").
+		Select("validation_status", "validation_message", "validation_details",
+			"validation_mode", "validation_started_at").
 		Updates(m).Error
+}
+
+// FailInterruptedValidations marks every validation still recorded as running
+// failed, and returns how many there were.
+//
+// A validation runs in a goroutine of this process, so at startup none can be
+// running: a "running" row is one a restart cut short. Left alone it would read
+// as running for good, and StartValidation would refuse it with 409 forever.
+func FailInterruptedValidations() (int64, error) {
+	res := db.DB.Model(&model.Migration{}).
+		Where("validation_status = ?", "running").
+		Updates(map[string]interface{}{
+			"validation_status":  "failed",
+			"validation_message": "interrupted: the server restarted while validation was running",
+		})
+	return res.RowsAffected, res.Error
 }
 
 // DeleteMigration deletes the Migration with the given ID.
