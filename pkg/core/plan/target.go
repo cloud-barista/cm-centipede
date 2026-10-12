@@ -259,6 +259,51 @@ func resolveObjectStorageDstPath(dst commonmodel.ConnectionRef, tm *commonmodel.
 	return dst.BeetleOS.OsID
 }
 
+// validateCrossStorageDst rejects a cross-storage entry whose target path is
+// missing, or not in the destination's own form.
+//
+// Within one storage type an empty dstName is the source path used as-is, and
+// means the same thing on both sides. Across them selectMigrationPath would
+// still hand the source path over, and it means something else there:
+//
+//	object storage → file system   "my-bucket" is a relative path, which rsync
+//	                               and mkdir resolve against the SSH user's
+//	                               home directory.
+//	file system → object storage   "/root/testdata" is split into bucket and
+//	                               prefix, so a minio or honeybee target writes
+//	                               to a bucket named "root". (A cm-beetle target
+//	                               has its bucket replaced by the osId and fills
+//	                               the bucket's root.)
+//
+// Neither is a place anyone chose, so the caller has to name one: an absolute
+// path on a file system, bucket/prefix/ in object storage. The UI asks for the
+// same, so this is what an API caller meets.
+func validateCrossStorageDst(domain, dstStorageType string, tm *commonmodel.TargetMapping) error {
+	dst := ""
+	if tm != nil {
+		dst = strings.TrimSpace(tm.DstName)
+	}
+	switch dstStorageType {
+	case commonmodel.StorageTypeFilesystem:
+		if dst == "" {
+			return validationErr("%s targetMapping.dstName is required when an object storage source lands on a file system:"+
+				" an absolute path on the target host", domain)
+		}
+		if !strings.HasPrefix(dst, "/") {
+			return validationErr("%s targetMapping.dstName %q must be an absolute path on the target host", domain, dst)
+		}
+	case commonmodel.StorageTypeObjectStorage:
+		if dst == "" {
+			return validationErr("%s targetMapping.dstName is required when a file system source lands on object storage:"+
+				" bucket/prefix/ in the target", domain)
+		}
+		if strings.HasPrefix(dst, "/") {
+			return validationErr("%s targetMapping.dstName %q must start with the bucket name, without a leading /", domain, dst)
+		}
+	}
+	return nil
+}
+
 // validateStorageMapping rejects a mapping that names nothing, or that carries
 // PostgreSQL schema pairs where they have no meaning.
 func validateStorageMapping(domain string, tm *commonmodel.TargetMapping) error {
@@ -611,6 +656,9 @@ func buildFileSystemEntry(
 		if err := validateRsyncCompatibleRules(rules); err != nil {
 			return targetmodel.MigrationFileSystemModel{}, err
 		}
+		if err := validateCrossStorageDst("fileSystemFilter", fsDstType, mapping); err != nil {
+			return targetmodel.MigrationFileSystemModel{}, err
+		}
 	default:
 		return targetmodel.MigrationFileSystemModel{}, validationErr(
 			"a filesystem source requires an SSH or object storage destination, but dstConnection is %q", dstType)
@@ -679,6 +727,9 @@ func buildObjectStorageEntry(
 		// objectstorage→filesystem applies the source filter on the S3 download
 		// step (generic matcher), so all glob/size rules are supported.
 		osDstType = commonmodel.StorageTypeFilesystem
+		if err := validateCrossStorageDst("objectStorageFilter", osDstType, mapping); err != nil {
+			return targetmodel.MigrationObjectStorageModel{}, err
+		}
 	default:
 		return targetmodel.MigrationObjectStorageModel{}, validationErr(
 			"an object storage source requires an object storage or SSH destination, but dstConnection is %q", dstType)
