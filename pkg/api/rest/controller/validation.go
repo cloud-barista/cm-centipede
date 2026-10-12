@@ -176,13 +176,20 @@ func runValidation(migrationID, mode string) {
 	progress := &validationProgress{m: m}
 	total := len(prop.FileSystems) + len(prop.ObjectStorages) + len(prop.Databases)
 	entry := 0
-	// optsFor leads each progress line with the plan entry it belongs to.
-	optsFor := func(kind string) validationpkg.Options {
+	// optsFor leads each progress line with the plan entry it belongs to — when
+	// there are several. A plan holds one entry per source connection, so a
+	// group migration's hosts can share a path, and "2/3" is what tells them
+	// apart; with one entry the counter says nothing. The kind is left out: the
+	// path or database name and the unit counted already say it.
+	optsFor := func() validationpkg.Options {
 		entry++
-		prefix := fmt.Sprintf("%s %d/%d", kind, entry, total)
+		prefix := ""
+		if total > 1 {
+			prefix = fmt.Sprintf("%d/%d · ", entry, total)
+		}
 		return validationpkg.Options{
 			Mode:     mode,
-			Progress: func(message string) { progress.report(prefix + " · " + message) },
+			Progress: func(message string) { progress.report(prefix + message) },
 		}
 	}
 
@@ -199,7 +206,7 @@ func runValidation(migrationID, mode string) {
 
 	// ── Filesystem ───────────────────────────────────────────────────────────
 	for _, fs := range prop.FileSystems {
-		details, err := validationpkg.ValidateFileSystem(ctx, fs, optsFor("filesystem"))
+		details, err := validationpkg.ValidateFileSystem(ctx, fs, optsFor())
 		if err != nil {
 			allDetails = append(allDetails, model.ValidationDetailItem{
 				PlanEntryID: fs.PlanEntryID,
@@ -214,7 +221,7 @@ func runValidation(migrationID, mode string) {
 
 	// ── Object Storage ───────────────────────────────────────────────────────
 	for _, oss := range prop.ObjectStorages {
-		details, err := validationpkg.ValidateObjectStorage(ctx, oss, optsFor("objectstorage"))
+		details, err := validationpkg.ValidateObjectStorage(ctx, oss, optsFor())
 		if err != nil {
 			allDetails = append(allDetails, model.ValidationDetailItem{
 				PlanEntryID: oss.PlanEntryID,
@@ -229,7 +236,7 @@ func runValidation(migrationID, mode string) {
 
 	// ── DBMS ─────────────────────────────────────────────────────────────────
 	for _, db := range prop.Databases {
-		details, err := validationpkg.ValidateDBMS(ctx, db, optsFor("database"))
+		details, err := validationpkg.ValidateDBMS(ctx, db, optsFor())
 		if err != nil {
 			allDetails = append(allDetails, model.ValidationDetailItem{
 				PlanEntryID: db.PlanEntryID,

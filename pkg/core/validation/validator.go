@@ -54,7 +54,7 @@ func ValidateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMo
 
 	var details []model.ValidationDetailItem
 	for i, folder := range m.Folders {
-		fopt := opt.within(fmt.Sprintf("folder %d/%d %s", i+1, len(m.Folders), folder.SrcPath))
+		fopt := opt.within(itemLabel(i, len(m.Folders), folder.SrcPath))
 		folderDetails, err := validateSSHFolder(ctx, srcSSH, dstSSH, folder.SrcPath, folder.DstPath, folder.Rules, fopt)
 		if err != nil {
 			details = append(details, model.ValidationDetailItem{
@@ -647,7 +647,7 @@ func ValidateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectSto
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		bopt := opt.within(fmt.Sprintf("bucket %d/%d %s", i+1, len(m.Buckets), bucket.SrcPath))
+		bopt := opt.within(itemLabel(i, len(m.Buckets), bucket.SrcPath))
 		bucketDetails, err := validateObjectBucket(m.SrcConnection, m.DstConnection, bucket.SrcPath, bucket.DstPath, bucket.Rules, bopt)
 		if err != nil {
 			details = append(details, model.ValidationDetailItem{
@@ -841,7 +841,7 @@ func ValidateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, opt Optio
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		dopt := opt.within(fmt.Sprintf("database %d/%d %s", i+1, len(m.Databases), d.SrcName))
+		dopt := opt.within(itemLabel(i, len(m.Databases), d.SrcName))
 		dbDetails, err := validateDatabase(ctx, m, d, dopt)
 		if err != nil {
 			details = append(details, model.ValidationDetailItem{

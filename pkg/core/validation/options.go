@@ -60,6 +60,17 @@ func (o Options) within(prefix string) Options {
 	return o
 }
 
+// itemLabel names the i-th (0-based) of n items in a progress line: the name
+// alone, or "2/3 name" when there are several. The plan builder gives every
+// entry one folder or one bucket, so a counter would read "1/1" on nearly every
+// line; it is shown only where it tells one item from another.
+func itemLabel(i, n int, name string) string {
+	if n <= 1 {
+		return name
+	}
+	return fmt.Sprintf("%d/%d %s", i+1, n, name)
+}
+
 // bothSides runs the source's and the destination's half of a step at once —
 // they are different hosts, so neither waits on the other — and returns both
 // errors joined, nil when both succeeded.
