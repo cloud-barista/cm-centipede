@@ -51,6 +51,20 @@ type Migration struct {
 	CurrentStep  int `gorm:"column:current_step"  json:"currentStep,omitempty"`
 	CurrentSteps int `gorm:"column:current_steps" json:"currentSteps,omitempty"`
 
+	// CurrentStepName names CurrentStep when the transfer has a word for it: a
+	// database's "dumping" and "restoring". Empty for a file transfer.
+	CurrentStepName string `gorm:"column:current_step_name" json:"currentStepName,omitempty"`
+	// CurrentUnits counts the tables (or collections) of the item in flight
+	// that its current step has finished, out of CurrentUnitsTotal;
+	// CurrentRows the rows it has written; CurrentBytesTotal what the in-flight
+	// part of TransferredBytes is counting towards — the dump a restore reads.
+	// Databases only, and zero wherever the step cannot tell: a restore through
+	// a CLI over SSH counts bytes alone.
+	CurrentUnits      int   `gorm:"column:current_units"       json:"currentUnits,omitempty"`
+	CurrentUnitsTotal int   `gorm:"column:current_units_total" json:"currentUnitsTotal,omitempty"`
+	CurrentRows       int64 `gorm:"column:current_rows"        json:"currentRows,omitempty"`
+	CurrentBytesTotal int64 `gorm:"column:current_bytes_total" json:"currentBytesTotal,omitempty"`
+
 	ValidationStatus  string                 `gorm:"column:validation_status"              json:"validationStatus,omitempty"`
 	ValidationMessage string                 `gorm:"column:validation_message"             json:"validationMessage,omitempty"`
 	ValidationDetails []ValidationDetailItem `gorm:"column:validation_details;serializer:json" json:"validationDetails,omitempty"`
@@ -228,6 +242,12 @@ type MigrationSummary struct {
 	CurrentStep      int    `json:"currentStep,omitempty"`
 	CurrentSteps     int    `json:"currentSteps,omitempty"`
 
+	CurrentStepName   string `json:"currentStepName,omitempty"`
+	CurrentUnits      int    `json:"currentUnits,omitempty"`
+	CurrentUnitsTotal int    `json:"currentUnitsTotal,omitempty"`
+	CurrentRows       int64  `json:"currentRows,omitempty"`
+	CurrentBytesTotal int64  `json:"currentBytesTotal,omitempty"`
+
 	ValidationStatus  string                 `json:"validationStatus,omitempty"`
 	ValidationMessage string                 `json:"validationMessage,omitempty"`
 	ValidationDetails []ValidationDetailItem `json:"validationDetails,omitempty"`
@@ -278,6 +298,12 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 		UpdatedAt:         m.UpdatedAt,
 
 		ValidationStartedAt: m.ValidationStartedAt,
+
+		CurrentStepName:   m.CurrentStepName,
+		CurrentUnits:      m.CurrentUnits,
+		CurrentUnitsTotal: m.CurrentUnitsTotal,
+		CurrentRows:       m.CurrentRows,
+		CurrentBytesTotal: m.CurrentBytesTotal,
 	}
 }
 

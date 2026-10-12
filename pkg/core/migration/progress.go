@@ -29,8 +29,20 @@ type ProgressEvent struct {
 	// Step is the pipeline step SizeBytes counts within, and Steps how many the
 	// item's transfer has: a relay's 1/2 stages, its 2/2 sends. Ticks only; zero
 	// where the transfer does not report one.
-	Step       int
-	Steps      int
+	Step  int
+	Steps int
+	// StepName names Step when the transfer has its own word for it — a
+	// database's "dumping" and "restoring". Empty for a file transfer, whose
+	// steps the reader names by position.
+	StepName string
+	// Rows, Units and UnitsTotal are a database item's: rows written so far,
+	// and tables (or collections) finished out of how many. BytesTotal is what
+	// SizeBytes counts towards when that is known — the dump a restore reads.
+	// Zero where the step cannot tell. Ticks only.
+	Rows       int64
+	Units      int
+	UnitsTotal int
+	BytesTotal int64
 	Status     string
 	SizeBytes  int64
 	DurationMs int64

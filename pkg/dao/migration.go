@@ -128,6 +128,12 @@ func UpdateMigrationStatus(m *model.Migration) error {
 		"current_steps":     m.CurrentSteps,
 		"started_at":        m.StartedAt,
 		"completed_at":      m.CompletedAt,
+
+		"current_step_name":   m.CurrentStepName,
+		"current_units":       m.CurrentUnits,
+		"current_units_total": m.CurrentUnitsTotal,
+		"current_rows":        m.CurrentRows,
+		"current_bytes_total": m.CurrentBytesTotal,
 	}).Error
 }
 

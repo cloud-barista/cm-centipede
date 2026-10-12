@@ -1080,12 +1080,16 @@ definitions:
           column the date filters compare against: without the index every list call
           is a full scan plus a sort.
         type: string
+      currentBytesTotal:
+        type: integer
       currentObject:
         description: |-
           CurrentObject is the file, object or table being moved right now — one level
           below ItemPath, which names the folder, bucket or database. Empty when
           nothing is in flight.
         type: string
+      currentRows:
+        type: integer
       currentStep:
         description: |-
           CurrentStep is the step of the item's transfer that CurrentObject and the
@@ -1094,7 +1098,23 @@ definitions:
           destination, and each counts its bytes from zero. Zero when nothing is in
           flight or the transfer has no steps to report (DBMS).
         type: integer
+      currentStepName:
+        description: |-
+          CurrentStepName names CurrentStep when the transfer has a word for it: a
+          database's "dumping" and "restoring". Empty for a file transfer.
+        type: string
       currentSteps:
+        type: integer
+      currentUnits:
+        description: |-
+          CurrentUnits counts the tables (or collections) of the item in flight
+          that its current step has finished, out of CurrentUnitsTotal;
+          CurrentRows the rows it has written; CurrentBytesTotal what the in-flight
+          part of TransferredBytes is counting towards — the dump a restore reads.
+          Databases only, and zero wherever the step cannot tell: a restore through
+          a CLI over SSH counts bytes alone.
+        type: integer
+      currentUnitsTotal:
         type: integer
       dbmsOnFailure:
         description: |-
@@ -1227,11 +1247,21 @@ definitions:
         type: string
       createdAt:
         type: string
+      currentBytesTotal:
+        type: integer
       currentObject:
         type: string
+      currentRows:
+        type: integer
       currentStep:
         type: integer
+      currentStepName:
+        type: string
       currentSteps:
+        type: integer
+      currentUnits:
+        type: integer
+      currentUnitsTotal:
         type: integer
       dbmsOnFailure:
         type: string

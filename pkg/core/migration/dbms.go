@@ -595,12 +595,24 @@ func migrateOneDatabase(
 		select {
 		case <-ticker.C:
 			p := handle.Progress()
-			progressCh <- ProgressEvent{
-				Kind:      EventTick,
-				ItemPath:  itemPath,
-				Current:   p.CurrentTable,
-				SizeBytes: p.BytesTransferred,
+			ev := ProgressEvent{
+				Kind:       EventTick,
+				ItemPath:   itemPath,
+				Current:    p.CurrentTable,
+				SizeBytes:  p.BytesTransferred,
+				Step:       p.Step,
+				Steps:      p.Steps,
+				Rows:       p.RowsDone,
+				Units:      p.TablesFinished,
+				UnitsTotal: p.TablesTotal,
+				BytesTotal: p.BytesTotal,
 			}
+			// A staged migration's two steps are its status: the dump, then the
+			// restore. A piped one has a single step and nothing to name.
+			if p.Steps > 0 {
+				ev.StepName = string(p.Status)
+			}
+			progressCh <- ev
 
 		case <-ctx.Done():
 			handle.Cancel()

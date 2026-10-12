@@ -2004,15 +2004,32 @@ const docTemplate = `{
                     "description": "CreatedAt is indexed because it is both the list ordering key and the only\ncolumn the date filters compare against: without the index every list call\nis a full scan plus a sort.",
                     "type": "string"
                 },
+                "currentBytesTotal": {
+                    "type": "integer"
+                },
                 "currentObject": {
                     "description": "CurrentObject is the file, object or table being moved right now — one level\nbelow ItemPath, which names the folder, bucket or database. Empty when\nnothing is in flight.",
                     "type": "string"
+                },
+                "currentRows": {
+                    "type": "integer"
                 },
                 "currentStep": {
                     "description": "CurrentStep is the step of the item's transfer that CurrentObject and the\nin-flight part of TransferredBytes belong to, and CurrentSteps how many it\nhas: a relay's 1/2 stages through local storage, its 2/2 sends to the\ndestination, and each counts its bytes from zero. Zero when nothing is in\nflight or the transfer has no steps to report (DBMS).",
                     "type": "integer"
                 },
+                "currentStepName": {
+                    "description": "CurrentStepName names CurrentStep when the transfer has a word for it: a\ndatabase's \"dumping\" and \"restoring\". Empty for a file transfer.",
+                    "type": "string"
+                },
                 "currentSteps": {
+                    "type": "integer"
+                },
+                "currentUnits": {
+                    "description": "CurrentUnits counts the tables (or collections) of the item in flight\nthat its current step has finished, out of CurrentUnitsTotal;\nCurrentRows the rows it has written; CurrentBytesTotal what the in-flight\npart of TransferredBytes is counting towards — the dump a restore reads.\nDatabases only, and zero wherever the step cannot tell: a restore through\na CLI over SSH counts bytes alone.",
+                    "type": "integer"
+                },
+                "currentUnitsTotal": {
                     "type": "integer"
                 },
                 "dbmsOnFailure": {
@@ -2138,13 +2155,28 @@ const docTemplate = `{
                 "createdAt": {
                     "type": "string"
                 },
+                "currentBytesTotal": {
+                    "type": "integer"
+                },
                 "currentObject": {
                     "type": "string"
+                },
+                "currentRows": {
+                    "type": "integer"
                 },
                 "currentStep": {
                     "type": "integer"
                 },
+                "currentStepName": {
+                    "type": "string"
+                },
                 "currentSteps": {
+                    "type": "integer"
+                },
+                "currentUnits": {
+                    "type": "integer"
+                },
+                "currentUnitsTotal": {
                     "type": "integer"
                 },
                 "dbmsOnFailure": {
