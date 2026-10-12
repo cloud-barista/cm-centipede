@@ -380,6 +380,9 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 	now := time.Now()
 	m.Status = "running"
 	m.StartedAt = &now
+	// The previous run's finish would otherwise outlive it and sit before the new
+	// start, so a running retry would read as already finished.
+	m.CompletedAt = nil
 	if retryMode == "full" {
 		m.TotalItems = countPlanItems(m.Plan)
 	}
