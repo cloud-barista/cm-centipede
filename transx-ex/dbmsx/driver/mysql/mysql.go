@@ -377,6 +377,7 @@ func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database s
 	}
 
 	for i, table := range tables {
+		base.ReportDumpTable(ctx, i, len(tables), table)
 		obj := base.Obj{
 			Kind: base.ObjectKindTable, Owner: database, Name: table,
 			Index: i + 1, Total: len(tables),
@@ -439,6 +440,7 @@ func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database s
 		}
 		fmt.Fprintln(dst)
 	}
+	base.ReportDumpTable(ctx, len(tables), len(tables), "")
 	return nil
 }
 
@@ -527,6 +529,16 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 	})
 
 	stmts := splitMySQLStatements(string(content))
+	// The tables the dump carries rows for, counted before the first runs so
+	// the progress can say how many are left.
+	dataTables := map[string]bool{}
+	for _, stmt := range stmts {
+		if tbl := extractMySQLInsertTable(base.StripLeadingComments(stmt)); tbl != "" {
+			dataTables[tbl] = true
+		}
+	}
+	progress := base.NewRestoreProgress(ctx, len(dataTables))
+
 	var lastNotifyTable string
 	for i, stmt := range stmts {
 		// The splitter cuts on the delimiter, so a dump's comment block arrives
@@ -537,13 +549,16 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 		if stmt == "" {
 			continue
 		}
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+		res, err := conn.ExecContext(ctx, stmt)
+		if err != nil {
 			return base.RestoreStatementError(
 				base.DBMSTypeMySQL, loc.Database, stmt, i+1, len(stmts), err)
 		}
 		if err := commits.Done(len(stmt)); err != nil {
 			return fmt.Errorf("commit restored rows: %w", err)
 		}
+		rows, _ := res.RowsAffected()
+		progress.Statement(len(stmt), rows, extractMySQLInsertTable(stmt))
 		if notify != nil {
 			if tbl := extractMySQLInsertTable(stmt); tbl != "" && tbl != lastNotifyTable {
 				lastNotifyTable = tbl
@@ -557,6 +572,7 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 	if err := commits.Flush(); err != nil {
 		return fmt.Errorf("commit restored rows: %w", err)
 	}
+	progress.Finish()
 	if _, err := conn.ExecContext(ctx, "SET unique_checks=1, autocommit=1"); err != nil {
 		return fmt.Errorf("re-enable autocommit: %w", err)
 	}
@@ -573,8 +589,10 @@ func (d *MySQLDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation, 
 	}
 	defer f.Close()
 
+	// The CLI on the far side runs the statements, so how much of the file has
+	// been sent is all there is to report.
 	cmd := d.BuildRestoreCmd(loc)
-	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, f, nil); err != nil {
+	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypeMySQL,

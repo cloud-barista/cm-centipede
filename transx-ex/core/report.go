@@ -23,12 +23,21 @@ import "context"
 //
 // A negative Bytes or Files means "unknown" and an empty Item "no news": a
 // reporter fills in what it knows and leaves the rest alone.
+//
+// Rows, Units and UnitsTotal are what a database transfer adds: rows written so
+// far, and tables (or collections) finished out of how many. Zero means "not
+// reported" for all three — no file transfer sets them, and a consumer reading
+// a database step treats an absent count as unknown rather than none.
 type Update struct {
 	Step  int
 	Steps int
 	Bytes int64
 	Files int64
 	Item  string
+
+	Rows       int64
+	Units      int
+	UnitsTotal int
 }
 
 // Reporter receives observations from inside a transfer.

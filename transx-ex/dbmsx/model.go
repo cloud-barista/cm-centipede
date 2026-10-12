@@ -149,6 +149,21 @@ type MigrationProgress struct {
 	TablesDone       int             `json:"tablesDone"`
 	CurrentTable     string          `json:"currentTable,omitempty"`
 	ErrMessage       string          `json:"error,omitempty"`
+
+	// Step is the step of a staged migration the counts belong to — 1 the dump,
+	// 2 the restore — out of Steps. A piped migration has one step and leaves
+	// both zero. BytesTransferred restarts at zero with the restore, and
+	// BytesTotal is then the size of the dump it is reading.
+	Step  int `json:"step,omitempty"`
+	Steps int `json:"steps,omitempty"`
+	// TablesFinished counts the tables (or collections) of the current step
+	// that are done, out of TablesTotal, as the driver reports them. TablesDone
+	// counts the restore's table notifications instead, which can fire more
+	// than once for a table.
+	TablesFinished int `json:"tablesFinished,omitempty"`
+	// RowsDone counts the rows (or documents) the restore has written. A
+	// restore through a CLI over SSH cannot count them, and leaves it zero.
+	RowsDone int64 `json:"rowsDone,omitempty"`
 }
 
 // The accessors below satisfy core.Progress, which is how core.Handle keeps

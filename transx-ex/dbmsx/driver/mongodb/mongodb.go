@@ -230,6 +230,7 @@ func (d *MongoDBDriver) dumpDataViaDriver(ctx context.Context, db *mongo.Databas
 		if !mongoIncludeCollection(name, filter) {
 			continue
 		}
+		base.ReportDumpTable(ctx, i, len(names), name)
 		obj := base.Obj{
 			Kind: base.ObjectKindCollection, Owner: db.Name(), Name: name,
 			Index: i + 1, Total: len(names),
@@ -284,6 +285,7 @@ func (d *MongoDBDriver) dumpDataViaDriver(ctx context.Context, db *mongo.Databas
 			dump.Data[name] = docs
 		}
 	}
+	base.ReportDumpTable(ctx, len(names), len(names), "")
 	return nil
 }
 
@@ -405,16 +407,22 @@ func (d *MongoDBDriver) restoreViaDriver(ctx context.Context, loc base.DBMSLocat
 	}
 
 	// --- Data: insert documents ---
+	// Followed by collection and document; there are no bytes to report, since
+	// the dump file was read whole before the first insert.
+	progress := base.NewRestoreProgress(ctx, len(dump.Data))
 	for collName, docs := range dump.Data {
+		progress.Statement(0, 0, collName)
 		if err := d.insertDocuments(ctx, db, collName, docs); err != nil {
 			return base.Obj{
 				Kind: base.ObjectKindCollection, Owner: loc.Database, Name: collName,
 			}.Fail(base.ActionWriteRows, err)
 		}
+		progress.Statement(0, int64(len(docs)), collName)
 		if notify != nil {
 			notify(collName)
 		}
 	}
+	progress.Finish()
 	return nil
 }
 
@@ -508,15 +516,17 @@ func (d *MongoDBDriver) insertDocuments(ctx context.Context, db *mongo.Database,
 	return err
 }
 
-func (d *MongoDBDriver) restoreViaSSH(_ context.Context, loc base.DBMSLocation, inputPath string, _ func(string)) error {
+func (d *MongoDBDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation, inputPath string, _ func(string)) error {
 	f, err := os.Open(inputPath)
 	if err != nil {
 		return fmt.Errorf("open input file: %w", err)
 	}
 	defer f.Close()
 
+	// The CLI on the far side runs the restore, so how much of the file has been
+	// sent is all there is to report.
 	cmd := d.BuildRestoreCmd(loc)
-	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, f, nil); err != nil {
+	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypeMongoDB,

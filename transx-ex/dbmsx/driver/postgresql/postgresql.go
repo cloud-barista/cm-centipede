@@ -417,6 +417,7 @@ func (d *PostgreSQLDriver) dumpDataViaSQL(ctx context.Context, conn *pgx.Conn, s
 	}
 
 	for i, table := range tables {
+		base.ReportDumpTable(ctx, i, len(tables), table.Name)
 		obj := base.Obj{
 			Kind: base.ObjectKindTable, Owner: table.Schema, Name: table.Name,
 			Index: i + 1, Total: len(tables),
@@ -460,6 +461,7 @@ func (d *PostgreSQLDriver) dumpDataViaSQL(ctx context.Context, conn *pgx.Conn, s
 		}
 		fmt.Fprintf(dst, "\\.\n\n")
 	}
+	base.ReportDumpTable(ctx, len(tables), len(tables), "")
 	return nil
 }
 
@@ -591,6 +593,16 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 	var postData []string
 	var lastNotifyTable string
 
+	// The tables the dump carries rows for — one COPY block each — counted
+	// before the first runs so the progress can say how many are left.
+	dataTables := map[string]bool{}
+	for _, stmt := range stmts {
+		if tbl := pgCopyBlockTable(base.StripLeadingComments(stmt)); tbl != "" {
+			dataTables[tbl] = true
+		}
+	}
+	progress := base.NewRestoreProgress(ctx, len(dataTables))
+
 	for i, stmt := range stmts {
 		// The splitter cuts on the delimiter, so a dump's comment block arrives
 		// attached to the statement below it. Drop the comments, keep the
@@ -610,20 +622,24 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 			// query text: running the header through Exec would leave the server
 			// waiting for data it was never sent.
 			header, data := pgSplitCopyBlock(stmt)
-			if _, err := conn.PgConn().CopyFrom(ctx, strings.NewReader(data), header); err != nil {
+			tag, err := conn.PgConn().CopyFrom(ctx, strings.NewReader(data), header)
+			if err != nil {
 				// The header names the table; the rows below it would only
 				// bury it.
 				return base.RestoreStatementError(
 					base.DBMSTypePostgreSQL, loc.Database, header, i+1, len(stmts), err)
 			}
+			progress.Statement(len(stmt), tag.RowsAffected(), pgExtractCopyTable(header))
 		} else if pgIsPostDataStmt(stmt) {
 			postData = append(postData, stmt)
 			continue
 		} else {
-			if _, err := conn.Exec(ctx, stmt); err != nil {
+			tag, err := conn.Exec(ctx, stmt)
+			if err != nil {
 				return base.RestoreStatementError(
 					base.DBMSTypePostgreSQL, loc.Database, stmt, i+1, len(stmts), err)
 			}
+			progress.Statement(len(stmt), tag.RowsAffected(), "")
 		}
 
 		if notify != nil {
@@ -643,6 +659,8 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 		}
 	}
 
+	progress.Finish()
+
 	// The rows are in; the constraints and triggers they were held back for can go
 	// on now. A failure here is a real one - a FK that the migrated data does not
 	// satisfy - so it is reported as the statement error it is.
@@ -651,6 +669,7 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 			return base.RestoreStatementError(
 				base.DBMSTypePostgreSQL, loc.Database, stmt, i+1, len(postData), err)
 		}
+		progress.Statement(len(stmt), 0, "")
 	}
 
 	if replicaRole {
@@ -705,8 +724,10 @@ func (d *PostgreSQLDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocat
 	}
 	defer f.Close()
 
+	// The CLI on the far side runs the statements, so how much of the file has
+	// been sent is all there is to report.
 	cmd := d.BuildRestoreCmd(loc)
-	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, f, nil); err != nil {
+	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypePostgreSQL,
@@ -3618,6 +3639,17 @@ func pgExtractQualified(re *regexp.Regexp, stmt string) string {
 }
 
 func pgExtractCreateTable(stmt string) string { return pgExtractQualified(pgCreateTableRe, stmt) }
+
+// pgCopyBlockTable names the table a COPY … FROM stdin block loads, or "" for
+// any other statement. Only the header line is read: the rows below it can run
+// to megabytes, and pgCopyTableRe is not anchored.
+func pgCopyBlockTable(stmt string) string {
+	firstLine, _, ok := strings.Cut(stmt, "\n")
+	if !ok || !pgIsCopyFromStdin(firstLine) {
+		return ""
+	}
+	return pgExtractCopyTable(firstLine)
+}
 
 func pgExtractCopyTable(stmt string) string { return pgExtractQualified(pgCopyTableRe, stmt) }
 

@@ -321,6 +321,7 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 	// Dump step.
 	h.SetStatus(StatusDumping)
 	logger.Info("migration status changed", slog.String("status", string(StatusDumping)), slog.String("mode", "staging"))
+	h.updateProgress(func(p *MigrationProgress) { p.Step, p.Steps = 1, 2 })
 
 	srcDriver, err := drvpkg.NewDBDriver(dmm.Source.DBMSType)
 	if err != nil {
@@ -346,7 +347,8 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 	if err != nil {
 		return err
 	}
-	if err := srcDriver.Dump(h.Context(), dmm.Source, scope, outputPath, cw, dumpOption(dmm)); err != nil {
+	// The dump's bytes are counted by cw; the driver reports which table it is on.
+	if err := srcDriver.Dump(h.dumpContext(), dmm.Source, scope, outputPath, cw, dumpOption(dmm)); err != nil {
 		cw.Close() //nolint:errcheck
 		return &MigrationError{Stage: StageDump, Err: err}
 	}
@@ -358,10 +360,65 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 	h.SetStatus(StatusRestoring)
 	logger.Info("migration status changed", slog.String("status", string(StatusRestoring)))
 
-	if err := dstDriver.Restore(h.Context(), dmm.Destination, outputPath, h.newTableNotify()); err != nil {
+	// The restore counts from zero against the dump it reads: what was dumped is
+	// already known, and a figure carried over from the dump would sit still
+	// for the whole restore.
+	var size int64
+	if fi, err := os.Stat(outputPath); err == nil {
+		size = fi.Size()
+	}
+	h.updateProgress(func(p *MigrationProgress) {
+		p.Step = 2
+		p.BytesTransferred, p.BytesTotal = 0, size
+		p.TablesFinished, p.TablesTotal, p.RowsDone = 0, 0, 0
+		p.CurrentTable = ""
+	})
+
+	if err := dstDriver.Restore(h.restoreContext(), dmm.Destination, outputPath, h.newTableNotify()); err != nil {
 		return &MigrationError{Stage: StageRestore, Err: err}
 	}
+	// What a driver reports is the statements it ran, which leave out the
+	// dump's comments; the restore has read the file whole.
+	h.updateProgress(func(p *MigrationProgress) { p.BytesTransferred = p.BytesTotal })
 	return nil
+}
+
+// dumpContext is the handle's context carrying a reporter for the dump step:
+// the driver says which table it is on, out of how many. Bytes are not taken
+// from it — the counting writer the dump writes through has them.
+func (h *MigrationHandle) dumpContext() context.Context {
+	return core.WithReporter(h.Context(), core.ReporterFunc(func(u core.Update) {
+		h.updateProgress(func(p *MigrationProgress) {
+			if u.UnitsTotal > 0 {
+				p.TablesFinished, p.TablesTotal = u.Units, u.UnitsTotal
+			}
+			if u.Item != "" {
+				p.CurrentTable = u.Item
+			}
+		})
+	}))
+}
+
+// restoreContext is the handle's context carrying a reporter for the restore
+// step: the bytes of the dump executed (or sent to a CLI), the rows written and
+// the tables finished, each as the driver can tell them.
+func (h *MigrationHandle) restoreContext() context.Context {
+	return core.WithReporter(h.Context(), core.ReporterFunc(func(u core.Update) {
+		h.updateProgress(func(p *MigrationProgress) {
+			if u.Bytes > 0 {
+				p.BytesTransferred = u.Bytes
+			}
+			if u.Rows > 0 {
+				p.RowsDone = u.Rows
+			}
+			if u.UnitsTotal > 0 {
+				p.TablesFinished, p.TablesTotal = u.Units, u.UnitsTotal
+			}
+			if u.Item != "" {
+				p.CurrentTable = u.Item
+			}
+		})
+	}))
 }
 
 // =============================================================================
