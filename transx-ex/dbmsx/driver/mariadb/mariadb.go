@@ -526,7 +526,22 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 	})
 	defer stopCount()
 
-	var lastNotifyTable string
+	// The INSERTs go out over writers of their own, several at once — see
+	// MySQLDriver.restoreViaSQL.
+	writers, err := base.NewRowWriters(ctx, db, base.RestoreWriters,
+		func(n int, rows int64) { progress.Statement(n, rows, "") },
+		func(stmt string, index int, err error) error {
+			return base.RestoreStatementError(
+				base.DBMSTypeMariaDB, loc.Database, stmt, index, progress.Statements(), err)
+		})
+	if err != nil {
+		logger.Info("mariadb restore writes rows on one connection", "database", loc.Database, "err", err.Error())
+		writers = nil
+	} else {
+		defer writers.Close(false) //nolint:errcheck
+	}
+
+	var lastNotifyTable, lastTable string
 	i := 0
 	err = eachMariaDBStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string) error {
 		i++
@@ -538,6 +553,35 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 		if stmt == "" {
 			return nil
 		}
+		table := extractMariaDBInsertTable(stmt)
+		if notify != nil {
+			if table != "" && table != lastNotifyTable {
+				lastNotifyTable = table
+				notify(table)
+			} else if tbl := extractMariaDBCreateTable(stmt); tbl != "" {
+				notify(tbl)
+			}
+		}
+
+		if writers != nil {
+			if table != "" {
+				if err := commits.Flush(); err != nil {
+					return fmt.Errorf("commit restored rows: %w", err)
+				}
+				if table != lastTable {
+					lastTable = table
+					progress.Statement(0, 0, table)
+				}
+				return writers.Insert(stmt, i)
+			}
+			if base.IsMySQLTableLockStmt(stmt) {
+				return nil
+			}
+			if err := writers.Barrier(); err != nil {
+				return err
+			}
+		}
+
 		res, err := conn.ExecContext(ctx, stmt)
 		if err != nil {
 			return base.RestoreStatementError(
@@ -546,20 +590,22 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 		if err := commits.Done(len(stmt)); err != nil {
 			return fmt.Errorf("commit restored rows: %w", err)
 		}
-		rows, _ := res.RowsAffected()
-		progress.Statement(len(stmt), rows, extractMariaDBInsertTable(stmt))
-		if notify != nil {
-			if tbl := extractMariaDBInsertTable(stmt); tbl != "" && tbl != lastNotifyTable {
-				lastNotifyTable = tbl
-				notify(tbl)
-			} else if tbl := extractMariaDBCreateTable(stmt); tbl != "" {
-				notify(tbl)
+		if writers != nil && base.IsMySQLSessionStmt(stmt) {
+			if err := writers.Session(stmt); err != nil {
+				return err
 			}
 		}
+		rows, _ := res.RowsAffected()
+		progress.Statement(len(stmt), rows, table)
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	if writers != nil {
+		if err := writers.Close(true); err != nil {
+			return err
+		}
 	}
 
 	if err := commits.Flush(); err != nil {

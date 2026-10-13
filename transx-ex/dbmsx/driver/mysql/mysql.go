@@ -537,7 +537,24 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 	})
 	defer stopCount()
 
-	var lastNotifyTable string
+	// The INSERTs go out over writers of their own, several at once; everything
+	// else stays on conn, in order (see base.RowWriters). Without the extra
+	// connections - a max_user_connections too low for them - the restore runs
+	// on conn alone, as it always did.
+	writers, err := base.NewRowWriters(ctx, db, base.RestoreWriters,
+		func(n int, rows int64) { progress.Statement(n, rows, "") },
+		func(stmt string, index int, err error) error {
+			return base.RestoreStatementError(
+				base.DBMSTypeMySQL, loc.Database, stmt, index, progress.Statements(), err)
+		})
+	if err != nil {
+		logger.Info("mysql restore writes rows on one connection", "database", loc.Database, "err", err.Error())
+		writers = nil
+	} else {
+		defer writers.Close(false) //nolint:errcheck
+	}
+
+	var lastNotifyTable, lastTable string
 	i := 0
 	err = eachMySQLStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string) error {
 		i++
@@ -549,6 +566,40 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 		if stmt == "" {
 			return nil
 		}
+		table := extractMySQLInsertTable(stmt)
+		if notify != nil {
+			if table != "" && table != lastNotifyTable {
+				lastNotifyTable = table
+				notify(table)
+			} else if tbl := extractMySQLCreateTable(stmt); tbl != "" {
+				notify(tbl)
+			}
+		}
+
+		if writers != nil {
+			if table != "" {
+				// What conn has open is committed first: a writer's rows may go
+				// into a table conn's transaction holds a lock on.
+				if err := commits.Flush(); err != nil {
+					return fmt.Errorf("commit restored rows: %w", err)
+				}
+				// The table is named once, as its first rows are queued: the
+				// writers finish the statements of two tables side by side,
+				// and naming each would move the progress back and forth.
+				if table != lastTable {
+					lastTable = table
+					progress.Statement(0, 0, table)
+				}
+				return writers.Insert(stmt, i)
+			}
+			if base.IsMySQLTableLockStmt(stmt) {
+				return nil
+			}
+			if err := writers.Barrier(); err != nil {
+				return err
+			}
+		}
+
 		res, err := conn.ExecContext(ctx, stmt)
 		if err != nil {
 			return base.RestoreStatementError(
@@ -557,20 +608,22 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 		if err := commits.Done(len(stmt)); err != nil {
 			return fmt.Errorf("commit restored rows: %w", err)
 		}
-		rows, _ := res.RowsAffected()
-		progress.Statement(len(stmt), rows, extractMySQLInsertTable(stmt))
-		if notify != nil {
-			if tbl := extractMySQLInsertTable(stmt); tbl != "" && tbl != lastNotifyTable {
-				lastNotifyTable = tbl
-				notify(tbl)
-			} else if tbl := extractMySQLCreateTable(stmt); tbl != "" {
-				notify(tbl)
+		if writers != nil && base.IsMySQLSessionStmt(stmt) {
+			if err := writers.Session(stmt); err != nil {
+				return err
 			}
 		}
+		rows, _ := res.RowsAffected()
+		progress.Statement(len(stmt), rows, table)
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	if writers != nil {
+		if err := writers.Close(true); err != nil {
+			return err
+		}
 	}
 
 	if err := commits.Flush(); err != nil {
