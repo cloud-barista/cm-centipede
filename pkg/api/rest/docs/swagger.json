@@ -2012,6 +2012,10 @@
                     "description": "CurrentStep is the step of the item's transfer that CurrentObject and the\nin-flight part of TransferredBytes belong to, and CurrentSteps how many it\nhas: a relay's 1/2 stages through local storage, its 2/2 sends to the\ndestination, and each counts its bytes from zero. Zero when nothing is in\nflight or the transfer has no steps to report (DBMS).",
                     "type": "integer"
                 },
+                "currentStepDetail": {
+                    "description": "CurrentStepDetail is what CurrentStep is doing beyond its name, where\nthe transfer says: a restore's \"indexes deferred: 2 tables\" while it\nwrites rows with those tables' indexes held back, then \"rebuilding\nindexes\". Empty otherwise.",
+                    "type": "string"
+                },
                 "currentStepName": {
                     "description": "CurrentStepName names CurrentStep when the transfer has a word for it: a\ndatabase's \"dumping\" and \"restoring\". Empty for a file transfer.",
                     "type": "string"
@@ -2160,6 +2164,9 @@
                 },
                 "currentStep": {
                     "type": "integer"
+                },
+                "currentStepDetail": {
+                    "type": "string"
                 },
                 "currentStepName": {
                     "type": "string"

@@ -608,9 +608,13 @@ func migrateOneDatabase(
 				BytesTotal: p.BytesTotal,
 			}
 			// A staged migration's two steps are its status: the dump, then the
-			// restore. A piped one has a single step and nothing to name.
+			// restore. A piped one has a single step and nothing to name. The
+			// phase is said beside it: a restore leaving some tables' indexes
+			// until their rows are in, and then building them - minutes in which
+			// the status alone would show the restore stopped on its last table.
 			if p.Steps > 0 {
 				ev.StepName = string(p.Status)
+				ev.StepDetail = p.Phase
 			}
 			progressCh <- ev
 

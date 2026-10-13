@@ -35,6 +35,10 @@ type ProgressEvent struct {
 	// database's "dumping" and "restoring". Empty for a file transfer, whose
 	// steps the reader names by position.
 	StepName string
+	// StepDetail is what the step is doing beyond its name, where the
+	// transfer says: a database restore's "indexes deferred: 2 tables", then
+	// "rebuilding indexes". Ticks only.
+	StepDetail string
 	// Rows, Units and UnitsTotal are a database item's: rows written so far,
 	// and tables (or collections) finished out of how many. BytesTotal is what
 	// SizeBytes counts towards when that is known — the dump a restore reads.

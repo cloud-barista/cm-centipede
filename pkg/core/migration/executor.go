@@ -226,6 +226,7 @@ func (t *progressTracker) tick(ev ProgressEvent) {
 	// object named beside it is in.
 	m.CurrentStep, m.CurrentSteps = ev.Step, ev.Steps
 	m.CurrentStepName = ev.StepName
+	m.CurrentStepDetail = ev.StepDetail
 	m.CurrentUnits, m.CurrentUnitsTotal = ev.Units, ev.UnitsTotal
 	m.CurrentRows = ev.Rows
 	m.CurrentBytesTotal = ev.BytesTotal
@@ -248,7 +249,7 @@ func (t *progressTracker) done(ev ProgressEvent) (failed bool) {
 	// must not still name a file it is working on.
 	m.CurrentObject = ""
 	m.CurrentStep, m.CurrentSteps = 0, 0
-	m.CurrentStepName = ""
+	m.CurrentStepName, m.CurrentStepDetail = "", ""
 	m.CurrentUnits, m.CurrentUnitsTotal = 0, 0
 	m.CurrentRows, m.CurrentBytesTotal = 0, 0
 

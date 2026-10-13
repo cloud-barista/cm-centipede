@@ -130,6 +130,7 @@ func UpdateMigrationStatus(m *model.Migration) error {
 		"completed_at":      m.CompletedAt,
 
 		"current_step_name":   m.CurrentStepName,
+		"current_step_detail": m.CurrentStepDetail,
 		"current_units":       m.CurrentUnits,
 		"current_units_total": m.CurrentUnitsTotal,
 		"current_rows":        m.CurrentRows,

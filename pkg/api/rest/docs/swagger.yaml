@@ -1098,6 +1098,13 @@ definitions:
           destination, and each counts its bytes from zero. Zero when nothing is in
           flight or the transfer has no steps to report (DBMS).
         type: integer
+      currentStepDetail:
+        description: |-
+          CurrentStepDetail is what CurrentStep is doing beyond its name, where
+          the transfer says: a restore's "indexes deferred: 2 tables" while it
+          writes rows with those tables' indexes held back, then "rebuilding
+          indexes". Empty otherwise.
+        type: string
       currentStepName:
         description: |-
           CurrentStepName names CurrentStep when the transfer has a word for it: a
@@ -1255,6 +1262,8 @@ definitions:
         type: integer
       currentStep:
         type: integer
+      currentStepDetail:
+        type: string
       currentStepName:
         type: string
       currentSteps:

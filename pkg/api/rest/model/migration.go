@@ -54,6 +54,11 @@ type Migration struct {
 	// CurrentStepName names CurrentStep when the transfer has a word for it: a
 	// database's "dumping" and "restoring". Empty for a file transfer.
 	CurrentStepName string `gorm:"column:current_step_name" json:"currentStepName,omitempty"`
+	// CurrentStepDetail is what CurrentStep is doing beyond its name, where
+	// the transfer says: a restore's "indexes deferred: 2 tables" while it
+	// writes rows with those tables' indexes held back, then "rebuilding
+	// indexes". Empty otherwise.
+	CurrentStepDetail string `gorm:"column:current_step_detail" json:"currentStepDetail,omitempty"`
 	// CurrentUnits counts the tables (or collections) of the item in flight
 	// that its current step has finished, out of CurrentUnitsTotal;
 	// CurrentRows the rows it has written; CurrentBytesTotal what the in-flight
@@ -243,6 +248,7 @@ type MigrationSummary struct {
 	CurrentSteps     int    `json:"currentSteps,omitempty"`
 
 	CurrentStepName   string `json:"currentStepName,omitempty"`
+	CurrentStepDetail string `json:"currentStepDetail,omitempty"`
 	CurrentUnits      int    `json:"currentUnits,omitempty"`
 	CurrentUnitsTotal int    `json:"currentUnitsTotal,omitempty"`
 	CurrentRows       int64  `json:"currentRows,omitempty"`
@@ -300,6 +306,7 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 		ValidationStartedAt: m.ValidationStartedAt,
 
 		CurrentStepName:   m.CurrentStepName,
+		CurrentStepDetail: m.CurrentStepDetail,
 		CurrentUnits:      m.CurrentUnits,
 		CurrentUnitsTotal: m.CurrentUnitsTotal,
 		CurrentRows:       m.CurrentRows,
