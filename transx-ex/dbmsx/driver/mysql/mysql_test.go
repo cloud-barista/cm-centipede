@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/cloud-barista/cm-centipede/transx-ex/core"
 	base "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/driver/base"
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1334,6 +1337,11 @@ func rtSnapshot(t *testing.T, db *sql.DB, schema string) map[string]string {
 		db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, tbl)).Scan(&count)
 		db.QueryRow(fmt.Sprintf("CHECKSUM TABLE `%s`.`%s`", schema, tbl)).Scan(&name, &sum)
 		out["table "+tbl] = fmt.Sprintf("rows=%d checksum=%d", count, sum.Int64)
+		// The definition whole: an index put back without its COMMENT, its
+		// prefix length or its visibility shows here and nowhere else.
+		var create string
+		db.QueryRow(fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schema, tbl)).Scan(&name, &create)
+		out["create "+tbl] = rtNormalizeCreate(create)
 	}
 	for label, q := range map[string]string{
 		"indexes":  "SELECT CONCAT(TABLE_NAME, '.', INDEX_NAME, ':', NON_UNIQUE, ':', COLUMN_NAME) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ?",
@@ -1358,6 +1366,164 @@ func rtSnapshot(t *testing.T, db *sql.DB, schema string) map[string]string {
 		out[label] = strings.Join(vals, "; ")
 	}
 	return out
+}
+
+// rtAutoIncrement is the counter SHOW CREATE TABLE prints, which a restore need
+// not reproduce: it follows the rows, not the definition.
+var rtAutoIncrement = regexp.MustCompile(` AUTO_INCREMENT=\d+`)
+
+// rtNormalizeCreate makes a SHOW CREATE TABLE comparable across a restore: the
+// AUTO_INCREMENT counter goes, and the key and constraint lines are sorted.
+// InnoDB lists indexes in the order they were created, so the ones a restore
+// deferred come back last; the columns keep their order, which is part of the
+// definition.
+func rtNormalizeCreate(create string) string {
+	lines := strings.Split(rtAutoIncrement.ReplaceAllString(create, ""), "\n")
+	var cols, keys []string
+	var head, tail string
+	for i, l := range lines {
+		switch {
+		case i == 0:
+			head = l
+		case strings.HasPrefix(l, ")"):
+			tail = strings.Join(lines[i:], "\n")
+		case strings.HasPrefix(l, "  `"):
+			cols = append(cols, strings.TrimSuffix(l, ","))
+		default:
+			keys = append(keys, strings.TrimSuffix(l, ","))
+		}
+		if tail != "" {
+			break
+		}
+	}
+	sort.Strings(keys)
+	return head + "\n" + strings.Join(cols, ",\n") + "\n--\n" + strings.Join(keys, ",\n") + "\n" + tail
+}
+
+// rtFillIndexes adds rt_idx, a table with every kind of index a restore may
+// defer or must leave alone, and - where the server allows a foreign key on a
+// non-unique key - rt_ref, whose key refers to one of rt_idx's plain indexes.
+func rtFillIndexes(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS `rt_ref`, `rt_idx`") })
+	for _, s := range []string{
+		"SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO')",
+		"DROP TABLE IF EXISTS `rt_ref`, `rt_idx`",
+		"CREATE TABLE `rt_idx` (`id` INT AUTO_INCREMENT PRIMARY KEY, `a` INT, `b` VARCHAR(100), `c` TEXT, " +
+			"`d` INT, `bulk_id` INT, " +
+			"KEY `k_a` (`a`) COMMENT 'a plain key, (with) punctuation', KEY `k_b_prefix` (`b`(10)), " +
+			"KEY `k_d_desc` (`d` DESC), KEY `k_ad_invisible` (`a`, `d`) INVISIBLE, KEY `k_func` ((`d` + 1)), " +
+			"UNIQUE KEY `uq_b` (`b`), FULLTEXT KEY `ft_c` (`c`), KEY `k_bulk` (`bulk_id`), " +
+			"CONSTRAINT `fk_idx_bulk` FOREIGN KEY (`bulk_id`) REFERENCES `rt_bulk` (`id`)) ENGINE=InnoDB",
+		"INSERT INTO `rt_idx` VALUES (0, 0, 'zero', 'the zero row', 0, 1)",
+	} {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	var sb strings.Builder
+	for i := 1; i <= 2000; i++ {
+		if i > 1 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, "(%d,%d,'row %d','words for row %d and some text',%d,%d)", i, i%50, i, i, i, i)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO `rt_idx` VALUES "+sb.String()); err != nil {
+		t.Fatalf("fill rt_idx: %v", err)
+	}
+	// A foreign key on a non-unique key, as a source from before MySQL 8.4 may
+	// hold one: 8.4 refuses it unless the session allows it, the way a restore's
+	// does. The restore has to carry it over, and leave k_a in place for it.
+	if _, err := conn.ExecContext(ctx, mysqlAllowNonStandardFK); err != nil {
+		t.Fatalf("allow non-standard foreign keys: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE `rt_ref` (`id` INT PRIMARY KEY, `a` INT, KEY `k_ref_a` (`a`), "+
+		"CONSTRAINT `fk_ref_a` FOREIGN KEY (`a`) REFERENCES `rt_idx` (`a`)) ENGINE=InnoDB"); err != nil {
+		t.Fatalf("create rt_ref: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO `rt_ref` VALUES (1, 1), (2, 2)"); err != nil {
+		t.Fatalf("fill rt_ref: %v", err)
+	}
+}
+
+// rtPhases records the phases a restore reports, and the tables it reports
+// rebuilding, for a check that an operator watching the progress is told.
+type rtPhases struct {
+	mu      sync.Mutex
+	seen    []string
+	rebuilt map[string]bool
+}
+
+func (r *rtPhases) ctx(ctx context.Context) context.Context {
+	return core.WithReporter(ctx, core.ReporterFunc(func(u core.Update) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if u.Phase != "" && (len(r.seen) == 0 || r.seen[len(r.seen)-1] != u.Phase) {
+			r.seen = append(r.seen, u.Phase)
+		}
+		if strings.HasPrefix(u.Phase, base.PhaseRebuildingIndexes) && u.Item != "" {
+			if r.rebuilt == nil {
+				r.rebuilt = map[string]bool{}
+			}
+			r.rebuilt[u.Item] = true
+		}
+	}))
+}
+
+// rtRebuildPhase is how a restore reports its rebuild: the tables finished out
+// of how many, then the ones in progress, each with a percentage where the
+// server keeps one.
+var rtRebuildPhase = regexp.MustCompile(`^rebuilding indexes: (\d+)/(\d+) tables((, \w+( \d+%)?)*)$`)
+
+// check wants the restore to have reported holding indexes back, then
+// rebuilding them - table among them - until every one is done, in that order.
+func (r *rtPhases) check(t *testing.T, table string) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t.Logf("phases reported: %q", r.seen)
+	deferred, rebuilding, finished := -1, -1, false
+	for i, p := range r.seen {
+		if strings.HasPrefix(p, "indexes deferred: ") && deferred < 0 {
+			deferred = i
+		}
+		if !strings.HasPrefix(p, base.PhaseRebuildingIndexes) {
+			continue
+		}
+		rebuilding = i
+		m := rtRebuildPhase.FindStringSubmatch(p)
+		if m == nil {
+			t.Errorf("rebuild phase %q is not \"rebuilding indexes: n/N tables[, table[ p%%]]...\"", p)
+			continue
+		}
+		finished = finished || (m[1] == m[2] && m[3] == "")
+	}
+	if deferred < 0 || rebuilding < deferred {
+		t.Errorf("phases reported = %q, want the indexes held back and then rebuilt", r.seen)
+	}
+	if !finished {
+		t.Errorf("phases reported = %q, want the rebuild reported finished, n/n tables", r.seen)
+	}
+	if !r.rebuilt[table] {
+		t.Errorf("tables reported rebuilding = %v, want %s among them", r.rebuilt, table)
+	}
+}
+
+// rtWithDeferBytes runs fn with base.RestoreIndexDeferBytes at v, and the
+// rebuild's progress asked for often enough to catch a build that takes a
+// fraction of a second.
+func rtWithDeferBytes(t *testing.T, v int64, fn func()) {
+	t.Helper()
+	oldBytes, oldEvery := base.RestoreIndexDeferBytes, base.RebuildProgressEvery
+	base.RestoreIndexDeferBytes, base.RebuildProgressEvery = v, 20*time.Millisecond
+	defer func() { base.RestoreIndexDeferBytes, base.RebuildProgressEvery = oldBytes, oldEvery }()
+	fn()
 }
 
 func rtCompare(t *testing.T, db *sql.DB, src, dst string) {
@@ -1394,8 +1560,11 @@ func rtRestoreFails(t *testing.T, loc base.DBMSLocation, path string) {
 }
 
 // TestMySQLDumpRestore_Full round-trips the driver's own full dump - schema,
-// rows, triggers and events - into an empty database, then restores its rows
-// once more onto the rows already there.
+// rows, triggers and events - into an empty database, once for each way the
+// restore may treat the secondary indexes: deferred from the first row, deferred
+// partway through rt_bulk's rows, and left to the automatic threshold, which a
+// table this size stays under. Then it restores the rows once more onto the
+// rows already there.
 func TestMySQLDumpRestore_Full(t *testing.T) {
 	env := mysqlTestSetup(t)
 	drv := NewMySQLDriver()
@@ -1405,20 +1574,41 @@ func TestMySQLDumpRestore_Full(t *testing.T) {
 	src.Database = env.srcDB
 	db := rtOpen(t, src)
 	rtFillBulk(t, db)
-
-	dst := src
-	dst.Database = "testdb_rt"
-	rtFreshDB(t, db, dst.Database)
+	rtFillIndexes(t, db)
 
 	dir := t.TempDir()
 	if err := drv.Dump(ctx, src, base.ScopeFull, dir+"/full.sql", nil, nil); err != nil {
 		t.Fatalf("Dump full: %v", err)
 	}
+	dst := src
+	dst.Database = "testdb_rt"
+	for _, c := range []struct {
+		name  string
+		bytes int64
+	}{
+		{"defer from the first row", 0},
+		{"defer partway", 2 << 20},
+		{"automatic", base.DeferIndexAuto},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rtFreshDB(t, db, dst.Database)
+			phases := rtPhases{}
+			rtWithDeferBytes(t, c.bytes, func() {
+				if err := drv.Restore(phases.ctx(ctx), dst, dir+"/full.sql", nil); err != nil {
+					t.Fatalf("Restore full: %v", err)
+				}
+			})
+			rtCompare(t, db, src.Database, dst.Database)
+			// rt_idx's FULLTEXT index is held back under every setting, so the
+			// progress has to say so, and then show it rebuilt.
+			phases.check(t, "rt_idx")
+		})
+	}
+
+	rtFreshDB(t, db, dst.Database)
 	if err := drv.Restore(ctx, dst, dir+"/full.sql", nil); err != nil {
 		t.Fatalf("Restore full: %v", err)
 	}
-	rtCompare(t, db, src.Database, dst.Database)
-
 	if err := drv.Dump(ctx, src, base.ScopeDataOnly, dir+"/data.sql", nil, nil); err != nil {
 		t.Fatalf("Dump data-only: %v", err)
 	}
@@ -1518,5 +1708,120 @@ func TestMySQLRestore_MysqldumpFormat(t *testing.T) {
 	}
 	if nSum != wantN {
 		t.Errorf("sum of n = %d, want %d", nSum, wantN)
+	}
+}
+
+// rtParentChildDump is a mysqldump-shaped dump in mysqldump's order, a table at
+// a time: rt_parent and its rows, then rt_child, whose foreign key refers to
+// rt_parent's plain index k_k. With the indexes deferred from the first row,
+// k_k is gone by the time rt_child is created.
+func rtParentChildDump() string {
+	var sb strings.Builder
+	sb.WriteString("/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n" +
+		"/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n" +
+		"DROP TABLE IF EXISTS `rt_parent`;\n" +
+		"CREATE TABLE `rt_parent` (`id` INT PRIMARY KEY, `k` INT, KEY `k_k` (`k`)) ENGINE=InnoDB;\n" +
+		"LOCK TABLES `rt_parent` WRITE;\n")
+	for from := 0; from < 20000; from += 5000 {
+		sb.WriteString("INSERT INTO `rt_parent` VALUES ")
+		for i := from; i < from+5000; i++ {
+			if i > from {
+				sb.WriteByte(',')
+			}
+			fmt.Fprintf(&sb, "(%d,%d)", i, i%100)
+		}
+		sb.WriteString(";\n")
+	}
+	sb.WriteString("UNLOCK TABLES;\n" +
+		"DROP TABLE IF EXISTS `rt_child`;\n" +
+		"CREATE TABLE `rt_child` (`id` INT PRIMARY KEY, `k` INT, KEY `k_child` (`k`), " +
+		"CONSTRAINT `fk_child_k` FOREIGN KEY (`k`) REFERENCES `rt_parent` (`k`)) ENGINE=InnoDB;\n" +
+		"LOCK TABLES `rt_child` WRITE;\n" +
+		"INSERT INTO `rt_child` VALUES (1,1),(2,2),(3,3);\n" +
+		"UNLOCK TABLES;\n" +
+		"/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n" +
+		"/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n")
+	return sb.String()
+}
+
+// TestMySQLRestore_DeferredIndexFKOrder restores rtParentChildDump with the
+// indexes deferred from the first row: rt_child's foreign key needs the index
+// rt_parent's rows had deferred, which has to be back for it, and both tables
+// must end as the dump defines them.
+func TestMySQLRestore_DeferredIndexFKOrder(t *testing.T) {
+	env := mysqlTestSetup(t)
+	src := env.loc
+	src.Database = env.srcDB
+	db := rtOpen(t, src)
+
+	dst := src
+	dst.Database = "testdb_rt_fk"
+	rtFreshDB(t, db, dst.Database)
+	path := t.TempDir() + "/parent-child.sql"
+	if err := os.WriteFile(path, []byte(rtParentChildDump()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rtWithDeferBytes(t, 0, func() {
+		if err := NewMySQLDriver().Restore(context.Background(), dst, path, nil); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+	})
+
+	var name, parent, child string
+	db.QueryRow("SHOW CREATE TABLE `testdb_rt_fk`.`rt_parent`").Scan(&name, &parent)
+	db.QueryRow("SHOW CREATE TABLE `testdb_rt_fk`.`rt_child`").Scan(&name, &child)
+	if !strings.Contains(parent, "KEY `k_k` (`k`)") {
+		t.Errorf("rt_parent lost k_k:\n%s", parent)
+	}
+	if !strings.Contains(child, "CONSTRAINT `fk_child_k` FOREIGN KEY (`k`) REFERENCES `rt_parent` (`k`)") {
+		t.Errorf("rt_child lost its foreign key:\n%s", child)
+	}
+	var parents, children int
+	db.QueryRow("SELECT (SELECT COUNT(*) FROM `testdb_rt_fk`.`rt_parent`), (SELECT COUNT(*) FROM `testdb_rt_fk`.`rt_child`)").
+		Scan(&parents, &children)
+	if parents != 20000 || children != 3 {
+		t.Errorf("rows = %d parents, %d children, want 20000 and 3", parents, children)
+	}
+}
+
+// TestMySQLNonStandardForeignKeys finds the foreign keys MySQL 8.4 deprecates
+// - on a non-unique key, or on part of a unique one - and only those: a key on
+// a primary key, or on a whole unique key, is standard.
+func TestMySQLNonStandardForeignKeys(t *testing.T) {
+	env := mysqlTestSetup(t)
+	src := env.loc
+	src.Database = env.srcDB
+	db := rtOpen(t, src)
+	rtFillBulk(t, db)
+	rtFillIndexes(t, db)
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS `rt_part_child`, `rt_order_child`, `rt_pair`") })
+	for _, s := range []string{
+		mysqlAllowNonStandardFK,
+		"DROP TABLE IF EXISTS `rt_part_child`, `rt_order_child`, `rt_pair`",
+		"CREATE TABLE `rt_pair` (`id` INT PRIMARY KEY, `x` INT, `y` INT, UNIQUE KEY `uq_xy` (`x`, `y`)) ENGINE=InnoDB",
+		"CREATE TABLE `rt_part_child` (`id` INT PRIMARY KEY, `x` INT, " +
+			"CONSTRAINT `fk_part` FOREIGN KEY (`x`) REFERENCES `rt_pair` (`x`)) ENGINE=InnoDB",
+		"CREATE TABLE `rt_order_child` (`id` INT PRIMARY KEY, `x` INT, `y` INT, " +
+			"CONSTRAINT `fk_whole` FOREIGN KEY (`x`, `y`) REFERENCES `rt_pair` (`x`, `y`)) ENGINE=InnoDB",
+	} {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+
+	got, err := NewMySQLDriver().NonStandardForeignKeys(ctx, src)
+	if err != nil {
+		t.Fatalf("NonStandardForeignKeys: %v", err)
+	}
+	want := []string{"rt_part_child.fk_part", "rt_ref.fk_ref_a"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("NonStandardForeignKeys = %v, want %v", got, want)
 	}
 }

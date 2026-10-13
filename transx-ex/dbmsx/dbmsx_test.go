@@ -461,3 +461,23 @@ func TestCreateDatabase_RejectsUnsupportedEngine(t *testing.T) {
 		t.Fatal("unsupported engine = nil, want an error")
 	}
 }
+
+func TestRestrictsNonStandardForeignKeys(t *testing.T) {
+	for _, c := range []struct {
+		dbms, version string
+		want          bool
+	}{
+		{DBMSTypeMySQL, "8.4.10", true},
+		{DBMSTypeMySQL, "8.4.0", true},
+		{DBMSTypeMySQL, "9.1.0", true},
+		{DBMSTypeMySQL, "8.0.39", false},
+		{DBMSTypeMySQL, "5.7.44-log", false},
+		{DBMSTypeMySQL, "", false},
+		{DBMSTypeMariaDB, "11.8.8-MariaDB", false},
+		{DBMSTypePostgreSQL, "16.4", false},
+	} {
+		if got := RestrictsNonStandardForeignKeys(c.dbms, c.version); got != c.want {
+			t.Errorf("RestrictsNonStandardForeignKeys(%q, %q) = %v, want %v", c.dbms, c.version, got, c.want)
+		}
+	}
+}
