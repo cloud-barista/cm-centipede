@@ -1099,7 +1099,34 @@ func validateDatabase(
 	details = append(details, compareDBTables(srcInfo, dstInfo, renamed, d.Rules)...)
 	details = append(details, compareSchemaObjects(srcInfo, dstInfo, d.Rules)...)
 	details = append(details, compareCharsets(srcInfo, dstInfo)...)
+	details = append(details, deprecatedForeignKeys(dstLoc, dstInfo)...)
 	return details, nil
+}
+
+// deprecatedForeignKeys warns of the foreign keys a MySQL 8.4 target holds on a
+// non-unique or partial key. The migration created them as the source had
+// them, so they are not a failure; but 8.4 deprecates them and a later release
+// is to refuse them, which the operator should know before upgrading. A target
+// whose keys cannot be read is not reported on: this is a warning, and the
+// validation stands without it.
+func deprecatedForeignKeys(dstLoc transxex.DBMSLocation, dst *transxex.DBMSInfo) []model.ValidationDetailItem {
+	if !transxex.RestrictsNonStandardForeignKeys(dstLoc.DBMSType, dst.ServerVersion) {
+		return nil
+	}
+	keys, err := transxex.NonStandardForeignKeys(dstLoc)
+	if err != nil {
+		return nil
+	}
+	var details []model.ValidationDetailItem
+	for _, k := range keys {
+		details = append(details, model.ValidationDetailItem{
+			ItemPath: dstLoc.Database + "/foreign_key:" + k,
+			Status:   "warning",
+			Message: fmt.Sprintf("refers to a non-unique or partial key, which MySQL %s deprecates; "+
+				"a later release refuses it, so give the referenced columns a UNIQUE key before upgrading", dst.ServerVersion),
+		})
+	}
+	return details
 }
 
 // rowCountConcurrency is how many tables are counted at once. Each count is a
