@@ -445,6 +445,7 @@ func (d *MongoDBDriver) restoreViaDriver(ctx context.Context, loc base.DBMSLocat
 		batch      []json.RawMessage
 		batchBytes int
 		reported   int64
+		indexes    map[string][]json.RawMessage
 	)
 	flush := func() error {
 		if len(batch) == 0 {
@@ -464,6 +465,7 @@ func (d *MongoDBDriver) restoreViaDriver(ctx context.Context, loc base.DBMSLocat
 	}
 	err = eachMongoDump(dec,
 		func(dump *mongoDumpFile) error {
+			indexes = dump.Indexes
 			return d.restoreSchemaViaDriver(ctx, db, loc, dump, notify)
 		},
 		func(name string, doc json.RawMessage) error {
@@ -493,11 +495,12 @@ func (d *MongoDBDriver) restoreViaDriver(ctx context.Context, loc base.DBMSLocat
 		notify(coll)
 	}
 	progress.Finish()
-	return nil
+	return d.restoreIndexesViaDriver(ctx, db, loc, indexes)
 }
 
 // restoreSchemaViaDriver creates what the schema part of dump describes:
-// collections, validators, views and indexes.
+// collections, validators and views. The indexes are left to
+// restoreIndexesViaDriver, once the documents are in.
 func (d *MongoDBDriver) restoreSchemaViaDriver(ctx context.Context, db *mongo.Database, loc base.DBMSLocation, dump *mongoDumpFile, notify func(string)) error {
 	// --- Schema: create regular collections ---
 	for i, coll := range dump.Collections {
@@ -544,8 +547,15 @@ func (d *MongoDBDriver) restoreSchemaViaDriver(ctx context.Context, db *mongo.Da
 		}
 	}
 
-	// --- Schema: create indexes ---
-	for collName, idxDefs := range dump.Indexes {
+	return nil
+}
+
+// restoreIndexesViaDriver creates the indexes of the dump, which restoreViaDriver
+// leaves until the documents are in, as mongorestore does: maintaining an index
+// on a random field costs a random page per document once it outgrows the
+// cache, where building it afterwards is one sorted pass.
+func (d *MongoDBDriver) restoreIndexesViaDriver(ctx context.Context, db *mongo.Database, loc base.DBMSLocation, indexes map[string][]json.RawMessage) error {
+	for collName, idxDefs := range indexes {
 		if err := d.createIndexes(ctx, db.Collection(collName), idxDefs); err != nil {
 			return base.Obj{
 				Kind: filterpkg.ObjectKindIndex, Owner: loc.Database, Name: collName,
@@ -762,7 +772,10 @@ func (d *MongoDBDriver) createIndexes(ctx context.Context, coll *mongo.Collectio
 	return err
 }
 
-// insertDocuments converts Extended JSON documents to BSON and inserts them.
+// insertDocuments converts Extended JSON documents to BSON and inserts them,
+// unordered: the documents are independent, so the server may apply them in
+// any order instead of one after another, and a rejected one fails the batch
+// all the same.
 func (d *MongoDBDriver) insertDocuments(ctx context.Context, db *mongo.Database, collName string, docs []json.RawMessage) error {
 	if len(docs) == 0 {
 		return nil
@@ -775,7 +788,7 @@ func (d *MongoDBDriver) insertDocuments(ctx context.Context, db *mongo.Database,
 		}
 		batch = append(batch, raw)
 	}
-	_, err := db.Collection(collName).InsertMany(ctx, batch)
+	_, err := db.Collection(collName).InsertMany(ctx, batch, options.InsertMany().SetOrdered(false))
 	return err
 }
 
@@ -1927,12 +1940,18 @@ func (d *MongoDBDriver) buildMongodumpArgs(cfg *base.SSHTunnelConfig, database, 
 	return args
 }
 
+// mongoRestoreWorkers is how many insertion workers mongorestore runs per
+// collection. It inserts each collection on one unless told otherwise, and one
+// batch in flight leaves the server mostly waiting on the next.
+const mongoRestoreWorkers = 4
+
 // buildMongorestoreArgs builds the mongorestore argument list for SSH-tunnel mode.
 func (d *MongoDBDriver) buildMongorestoreArgs(cfg *base.SSHTunnelConfig, database, scope string) []string {
 	uri := d.buildSSHURI(cfg, database)
 	args := []string{
 		"--uri=" + mongoShellQuote(uri),
 		"--archive",
+		"--numInsertionWorkersPerCollection=" + strconv.Itoa(mongoRestoreWorkers),
 	}
 	switch scope {
 	case base.ScopeSchemaOnly:

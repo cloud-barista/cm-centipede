@@ -592,6 +592,17 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 	// triggers, which would fire on every restored row. Their order among
 	// themselves is preserved.
 	var postData []string
+	// postIndexes holds the CREATE INDEX statements met before the first COPY,
+	// built once the rows are in rather than maintained row by row while they
+	// load: an index on a random column costs a random page per row once it
+	// outgrows memory, where building it afterwards is one sort. They go ahead
+	// of postData, whose FK constraints may need one of them on the referenced
+	// columns. An index met after the first COPY is left where it is: that is
+	// pg_dump's post-data, which already follows the rows and is followed by
+	// statements naming the index (ALTER INDEX ... ATTACH PARTITION, COMMENT ON
+	// INDEX).
+	var postIndexes []string
+	copied := false
 	var lastNotifyTable string
 
 	// The tables the dump carries rows for — one COPY block each — counted
@@ -621,6 +632,7 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 		// with pg_dump's "FROM stdin;" and this driver's upper-case dump alike),
 		// and stmt is its header.
 		if rows != nil {
+			copied = true
 			// COPY takes its rows over the protocol's copy-in stream, not in the
 			// query text: running the header through Exec would leave the server
 			// waiting for data it was never sent. They stream from the dump as
@@ -638,6 +650,9 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 			progress.Statement(len(header), tag.RowsAffected(), table)
 		} else if pgIsPostDataStmt(stmt) {
 			postData = append(postData, stmt)
+			return nil
+		} else if !copied && pgIsCreateIndexStmt(stmt) {
+			postIndexes = append(postIndexes, stmt)
 			return nil
 		} else {
 			tag, err := conn.Exec(ctx, stmt)
@@ -671,6 +686,10 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 
 	progress.Finish()
 
+	if err := d.buildPostIndexes(ctx, conn, loc, postIndexes, progress); err != nil {
+		return err
+	}
+
 	// The rows are in; the constraints and triggers they were held back for can go
 	// on now. A failure here is a real one - a FK that the migrated data does not
 	// satisfy - so it is reported as the statement error it is.
@@ -702,6 +721,53 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 		}
 	}
 
+	return nil
+}
+
+// pgIndexBuildMem is what each deferred index build may sort in. Large enough
+// that the biggest index of a large table sorts in a few passes, small enough to
+// leave a 4 GB instance its shared buffers. A session already allowed more keeps
+// what it has.
+const pgIndexBuildMem = "512MB"
+
+// buildPostIndexes creates the indexes restoreViaSQL held back until the rows
+// were in, with maintenance_work_mem raised for the builds and put back after.
+//
+// Raising it is a session setting any role may make, so a refusal is not
+// expected; should one come, the indexes are built with what the session has.
+func (d *PostgreSQLDriver) buildPostIndexes(ctx context.Context, conn *pgx.Conn, loc base.DBMSLocation, stmts []string, progress *base.RestoreProgress) error {
+	if len(stmts) == 0 {
+		return nil
+	}
+	raised := false
+	var lower bool
+	err := conn.QueryRow(ctx,
+		"SELECT pg_size_bytes(current_setting('maintenance_work_mem')) < pg_size_bytes($1)",
+		pgIndexBuildMem).Scan(&lower)
+	if err == nil && lower {
+		if _, err = conn.Exec(ctx, "SET maintenance_work_mem = '"+pgIndexBuildMem+"'"); err == nil {
+			raised = true
+		}
+	}
+	if err != nil {
+		logger.Info("postgresql restore could not raise maintenance_work_mem; "+
+			"indexes will be built with the session's own",
+			"database", loc.Database, "err", err.Error())
+	}
+
+	for i, stmt := range stmts {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return base.RestoreStatementError(
+				base.DBMSTypePostgreSQL, loc.Database, stmt, i+1, len(stmts), err)
+		}
+		progress.Statement(len(stmt), 0, "")
+	}
+
+	if raised {
+		if _, err := conn.Exec(ctx, "RESET maintenance_work_mem"); err != nil {
+			return fmt.Errorf("reset maintenance_work_mem: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -3658,6 +3724,15 @@ func pgIsPostDataStmt(stmt string) bool {
 	return strings.HasPrefix(head, "ALTER TABLE") &&
 		strings.Contains(head, "ADD CONSTRAINT") &&
 		strings.Contains(head, "FOREIGN KEY")
+}
+
+// pgIsCreateIndexStmt reports whether a statement creates an index: CREATE
+// [UNIQUE] INDEX, CONCURRENTLY or not. An index behind a PRIMARY KEY or UNIQUE
+// constraint is created by its ALTER TABLE or CREATE TABLE instead, and is not
+// one of these.
+func pgIsCreateIndexStmt(stmt string) bool {
+	head := strings.ToUpper(strings.TrimSpace(stmt))
+	return strings.HasPrefix(head, "CREATE INDEX") || strings.HasPrefix(head, "CREATE UNIQUE INDEX")
 }
 
 // pgIsCopyFromStdin reports whether line opens a COPY ... FROM STDIN data block.
