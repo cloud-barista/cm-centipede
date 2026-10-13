@@ -2900,7 +2900,42 @@ func (d *PostgreSQLDriver) dumpTypes(ctx context.Context, conn *pgx.Conn, sc pgD
 		}
 		fmt.Fprintf(dst, "%s;\n\n", stmt)
 	}
-	return drows.Err()
+	if err := drows.Err(); err != nil {
+		return err
+	}
+
+	// --- Composite types ---
+	// Only standalone ones (relkind 'c'): every table has a row type as well,
+	// which CREATE TABLE makes by itself. They come after the enums and domains
+	// their attributes may use, and in oid order among themselves so one built
+	// on another follows it. format_type renders each attribute under the
+	// search_path the dump set, bare or qualified to match the file.
+	crows, err := conn.Query(ctx,
+		`SELECT n.nspname, t.typname,
+			COALESCE(string_agg(quote_ident(a.attname) || ' ' ||
+				pg_catalog.format_type(a.atttypid, a.atttypmod), ', ' ORDER BY a.attnum), '')
+		FROM pg_type t
+		JOIN pg_namespace n ON n.oid = t.typnamespace
+		JOIN pg_class c ON c.oid = t.typrelid AND c.relkind = 'c'
+		LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+		WHERE n.nspname IN `+pgSchemaLiteralList(sc.schemas)+` AND t.typtype = 'c'
+		GROUP BY t.oid, n.nspname, t.typname
+		ORDER BY t.oid`)
+	if err != nil {
+		return err
+	}
+	defer crows.Close()
+	for crows.Next() {
+		var schema, name, attrs string
+		if err := crows.Scan(&schema, &name, &attrs); err != nil {
+			return err
+		}
+		if pgObjectExcluded(filter, filterpkg.ObjectKindType, schema, name) {
+			continue
+		}
+		fmt.Fprintf(dst, "CREATE TYPE %s AS (%s);\n\n", sc.ident(schema, name), attrs)
+	}
+	return crows.Err()
 }
 
 func (d *PostgreSQLDriver) listSequences(ctx context.Context, conn *pgx.Conn, sc pgDumpScope, filter *filterpkg.DBMSFilterOption) ([]string, error) {
@@ -2963,6 +2998,7 @@ func (d *PostgreSQLDriver) buildCreateTable(ctx context.Context, conn *pgx.Conn,
 		`SELECT
 			c.column_name,
 			c.data_type,
+			c.udt_schema,
 			c.udt_name,
 			c.character_maximum_length,
 			c.numeric_precision,
@@ -2981,11 +3017,11 @@ func (d *PostgreSQLDriver) buildCreateTable(ctx context.Context, conn *pgx.Conn,
 
 	var colDefs []string
 	for rows.Next() {
-		var colName, dataType, udtName, isNullable, isIdentity string
+		var colName, dataType, udtSchema, udtName, isNullable, isIdentity string
 		var charMax, numPrec, numScale *int
 		var colDefault *string
 		var identGen *string
-		if err := rows.Scan(&colName, &dataType, &udtName, &charMax, &numPrec, &numScale,
+		if err := rows.Scan(&colName, &dataType, &udtSchema, &udtName, &charMax, &numPrec, &numScale,
 			&isNullable, &colDefault, &isIdentity, &identGen); err != nil {
 			return "", err
 		}
@@ -2994,6 +3030,12 @@ func (d *PostgreSQLDriver) buildCreateTable(ctx context.Context, conn *pgx.Conn,
 		}
 
 		typStr := pgBuildTypeName(dataType, udtName, charMax, numPrec, numScale)
+		// A qualified dump creates its enums and domains under their source
+		// schema, which the restore's search_path does not include, so a column
+		// of such a type has to name the schema too. Built-in types stay bare.
+		if sc.qualify && (dataType == "USER-DEFINED" || dataType == "ARRAY") && udtSchema != "pg_catalog" {
+			typStr = pgQualifyIdent(udtSchema, udtName)
+		}
 		def := pgQuoteIdent(colName) + " " + typStr
 		if isIdentity == "YES" && identGen != nil {
 			def += fmt.Sprintf(" GENERATED %s AS IDENTITY", *identGen)
