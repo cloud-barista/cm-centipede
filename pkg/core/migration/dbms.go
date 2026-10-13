@@ -379,7 +379,19 @@ func EnsureTargetDatabase(
 					"providerName %q (got %q) — provision it on the provider first",
 				dstLoc.Database, commonmodel.ProviderOnPrem, dst.DB.ProviderName)
 		}
-		if err := transxex.CreateDatabase(dstLoc, createOptionFrom(dstLoc.DBMSType, srcInfo)); err != nil {
+		opt := createOptionFrom(dstLoc.DBMSType, srcInfo)
+		err := transxex.CreateDatabase(dstLoc, opt)
+		// The source's libc locale need not be installed on the target host (an
+		// alpine image, or one that ships only C.UTF-8). Retry with the target's
+		// default locale rather than fail; the encoding is kept.
+		if err != nil && opt.PostgreSQL != nil && strings.Contains(err.Error(), "invalid locale name") {
+			log.Warn().Err(err).Str("database", dstLoc.Database).
+				Str("lcCollate", opt.PostgreSQL.LcCollate).Str("lcCtype", opt.PostgreSQL.LcCtype).
+				Msg("source locale not available on target; creating with target default locale")
+			opt.PostgreSQL.LcCollate, opt.PostgreSQL.LcCtype = "", ""
+			err = transxex.CreateDatabase(dstLoc, opt)
+		}
+		if err != nil {
 			return false, fmt.Errorf("create target database %q: %w", dstLoc.Database, err)
 		}
 		return true, nil
