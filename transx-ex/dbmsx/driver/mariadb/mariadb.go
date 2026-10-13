@@ -491,10 +491,11 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 	}
 	defer db.Close()
 
-	content, err := os.ReadFile(inputPath)
+	f, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("read dump file: %w", err)
+		return fmt.Errorf("open dump file: %w", err)
 	}
+	defer f.Close()
 
 	// FOREIGN_KEY_CHECKS is a session variable, so every statement of the restore
 	// must run on the same connection. Pin one out of the pool instead of using
@@ -517,31 +518,30 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 		return err
 	})
 
-	stmts := splitMariaDBStatements(string(content))
-	// The tables the dump carries rows for, counted before the first runs so
-	// the progress can say how many are left.
-	dataTables := map[string]bool{}
-	for _, stmt := range stmts {
-		if tbl := extractMariaDBInsertTable(base.StripLeadingComments(stmt)); tbl != "" {
-			dataTables[tbl] = true
-		}
-	}
-	progress := base.NewRestoreProgress(ctx, len(dataTables))
+	// The tables the dump carries rows for, counted beside the restore — see
+	// MySQLDriver.restoreViaSQL.
+	progress := base.NewRestoreProgress(ctx, 0)
+	stopCount := progress.CountTotal(ctx, func(ctx context.Context) (int, int, error) {
+		return base.CountDump(ctx, inputPath, eachMariaDBStatement, extractMariaDBInsertTable)
+	})
+	defer stopCount()
 
 	var lastNotifyTable string
-	for i, stmt := range stmts {
+	i := 0
+	err = eachMariaDBStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string) error {
+		i++
 		// The splitter cuts on the delimiter, so a dump's comment block arrives
 		// attached to the statement below it. Drop the comments, keep the
 		// statement — skipping the whole entry loses real SQL (see
 		// base.StripLeadingComments).
 		stmt = base.StripLeadingComments(stmt)
 		if stmt == "" {
-			continue
+			return nil
 		}
 		res, err := conn.ExecContext(ctx, stmt)
 		if err != nil {
 			return base.RestoreStatementError(
-				base.DBMSTypeMariaDB, loc.Database, stmt, i+1, len(stmts), err)
+				base.DBMSTypeMariaDB, loc.Database, stmt, i, progress.Statements(), err)
 		}
 		if err := commits.Done(len(stmt)); err != nil {
 			return fmt.Errorf("commit restored rows: %w", err)
@@ -556,6 +556,10 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 				notify(tbl)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	if err := commits.Flush(); err != nil {
@@ -2348,47 +2352,65 @@ func (d *MariaDBDriver) listColumns(ctx context.Context, db *sql.DB, database, t
 // correctly handling DELIMITER changes used by stored routines and triggers.
 func splitMariaDBStatements(script string) []string {
 	var stmts []string
+	_ = eachMariaDBStatement(strings.NewReader(script), func(stmt string) error {
+		stmts = append(stmts, stmt)
+		return nil
+	})
+	return stmts
+}
+
+// eachMariaDBStatement reads a MariaDB SQL script from r and calls fn with each
+// of its statements in turn, as splitMariaDBStatements returns them — see
+// eachMySQLStatement on why a restore reads its dump this way.
+func eachMariaDBStatement(r io.Reader, fn func(stmt string) error) error {
 	delim := ";"
 	var buf strings.Builder
 
-	sc := bufio.NewScanner(strings.NewReader(script))
+	sc := bufio.NewScanner(r)
 	// One line is one statement — see splitMySQLStatements on why the limit is
 	// base.MaxStatementLine and not the old 1 MB.
 	sc.Buffer(make([]byte, 1<<20), base.MaxStatementLine)
 
 	for sc.Scan() {
-		line := sc.Text()
-		upper := strings.ToUpper(strings.TrimSpace(line))
+		line := sc.Bytes()
 
-		if strings.HasPrefix(upper, "DELIMITER") {
+		// Only the head of the line is compared — see eachMySQLStatement.
+		if t := bytes.TrimSpace(line); len(t) >= 9 && bytes.EqualFold(t[:9], []byte("DELIMITER")) {
 			if s := strings.TrimSpace(buf.String()); s != "" {
-				stmts = append(stmts, s)
+				if err := fn(s); err != nil {
+					return err
+				}
 			}
 			buf.Reset()
-			parts := strings.Fields(line)
+			parts := strings.Fields(string(line))
 			if len(parts) >= 2 {
 				delim = parts[1]
 			}
 			continue
 		}
 
-		buf.WriteString(line)
-		buf.WriteString("\n")
+		buf.Write(line)
+		buf.WriteByte('\n')
 
 		current := strings.TrimRight(buf.String(), " \t\r\n")
 		if strings.HasSuffix(current, delim) {
 			stmt := strings.TrimSpace(current[:len(current)-len(delim)])
-			if stmt != "" {
-				stmts = append(stmts, stmt)
-			}
 			buf.Reset()
+			if stmt != "" {
+				if err := fn(stmt); err != nil {
+					return err
+				}
+			}
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
 	}
 
 	if s := strings.TrimSpace(buf.String()); s != "" {
-		stmts = append(stmts, s)
+		return fn(s)
 	}
-	return stmts
+	return nil
 }
 
 var (

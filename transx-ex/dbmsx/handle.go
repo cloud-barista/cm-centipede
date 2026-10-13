@@ -71,21 +71,27 @@ func (cw *countingWriter) Close() error {
 	return cw.w.Close()
 }
 
-// newCountingWriter creates (or truncates) the file at path and returns a
-// countingWriter whose notify increments BytesTransferred in the handle's progress.
-func (h *MigrationHandle) newCountingWriter(path string) (*countingWriter, error) {
-	f, err := os.Create(path)
-	if err != nil {
-		return nil, fmt.Errorf("create staging file %q: %w", path, err)
-	}
+// discardWriteCloser accepts every write and keeps none of it.
+type discardWriteCloser struct{}
+
+func (discardWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (discardWriteCloser) Close() error                { return nil }
+
+// newCountingWriter returns a countingWriter whose notify increments
+// BytesTransferred in the handle's progress.
+//
+// It counts and writes nothing: the driver creates the staging file itself and
+// copies to w only so the bytes can be counted. This used to open the same path
+// as a second file, and every byte of the dump went to disk twice.
+func (h *MigrationHandle) newCountingWriter() *countingWriter {
 	return &countingWriter{
-		w: f,
+		w: discardWriteCloser{},
 		notify: func(delta int64) {
 			h.updateProgress(func(p *MigrationProgress) {
 				p.BytesTransferred += delta
 			})
 		},
-	}, nil
+	}
 }
 
 // newTableNotify returns a callback that increments TablesDone and updates
@@ -343,17 +349,10 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 	// included: a partial dump is the same data with less of it.
 	defer cleanup()
 
-	cw, err := h.newCountingWriter(outputPath)
-	if err != nil {
-		return err
-	}
+	cw := h.newCountingWriter()
 	// The dump's bytes are counted by cw; the driver reports which table it is on.
 	if err := srcDriver.Dump(h.dumpContext(), dmm.Source, scope, outputPath, cw, dumpOption(dmm)); err != nil {
-		cw.Close() //nolint:errcheck
 		return &MigrationError{Stage: StageDump, Err: err}
-	}
-	if err := cw.Close(); err != nil {
-		return fmt.Errorf("close staging file: %w", err)
 	}
 
 	// Restore step.

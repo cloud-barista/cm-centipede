@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -542,10 +543,11 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 	}
 	defer conn.Close(ctx)
 
-	content, err := os.ReadFile(inputPath)
+	f, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("read dump file: %w", err)
+		return fmt.Errorf("open dump file: %w", err)
 	}
+	defer f.Close()
 
 	// A dump of a single schema carries bare names, so where its objects land is
 	// decided here rather than in the file. That is what lets one schema be
@@ -584,7 +586,6 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 		return fmt.Errorf("set check_function_bodies: %w", err)
 	}
 
-	stmts := splitPGStatements(string(content))
 	var matViews []string
 	// postData holds the statements that must not be in force while the rows are
 	// loaded: FK constraints, which the COPY order across tables can violate, and
@@ -594,50 +595,55 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 	var lastNotifyTable string
 
 	// The tables the dump carries rows for — one COPY block each — counted
-	// before the first runs so the progress can say how many are left.
-	dataTables := map[string]bool{}
-	for _, stmt := range stmts {
-		if tbl := pgCopyBlockTable(base.StripLeadingComments(stmt)); tbl != "" {
-			dataTables[tbl] = true
+	// beside the restore; see MySQLDriver.restoreViaSQL.
+	progress := base.NewRestoreProgress(ctx, 0)
+	stopCount := progress.CountTotal(ctx, func(ctx context.Context) (int, int, error) {
+		each := func(r io.Reader, fn func(string) error) error {
+			return eachPGStatement(r, func(stmt string, _ io.Reader) error { return fn(stmt) })
 		}
-	}
-	progress := base.NewRestoreProgress(ctx, len(dataTables))
+		return base.CountDump(ctx, inputPath, each, pgCopyBlockTable)
+	})
+	defer stopCount()
 
-	for i, stmt := range stmts {
+	i := 0
+	err = eachPGStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string, rows io.Reader) error {
+		i++
 		// The splitter cuts on the delimiter, so a dump's comment block arrives
 		// attached to the statement below it. Drop the comments, keep the
 		// statement — skipping the whole entry loses real SQL (see
 		// base.StripLeadingComments).
 		stmt = base.StripLeadingComments(stmt)
 		if stmt == "" {
-			continue
+			return nil
 		}
 
-		// The same test the splitter used, so the two agree on what a COPY block
-		// is: pg_dump writes "FROM stdin;" in lower case while this driver's own
-		// dump writes it upper, and a case-sensitive test here recognises only
-		// the latter — the rows of the other then reach the server as SQL.
-		if firstLine, _, ok := strings.Cut(stmt, "\n"); ok && pgIsCopyFromStdin(firstLine) {
+		// The splitter recognised a COPY block (pgIsCopyFromStdin, which agrees
+		// with pg_dump's "FROM stdin;" and this driver's upper-case dump alike),
+		// and stmt is its header.
+		if rows != nil {
 			// COPY takes its rows over the protocol's copy-in stream, not in the
 			// query text: running the header through Exec would leave the server
-			// waiting for data it was never sent.
-			header, data := pgSplitCopyBlock(stmt)
-			tag, err := conn.PgConn().CopyFrom(ctx, strings.NewReader(data), header)
+			// waiting for data it was never sent. They stream from the dump as
+			// the server takes them, so a table of any size is never in memory,
+			// and the progress follows them as they go.
+			header := stmt
+			table := pgExtractCopyTable(header)
+			tag, err := conn.PgConn().CopyFrom(ctx, &pgCopyProgress{r: rows, p: progress, table: table}, header)
 			if err != nil {
 				// The header names the table; the rows below it would only
 				// bury it.
 				return base.RestoreStatementError(
-					base.DBMSTypePostgreSQL, loc.Database, header, i+1, len(stmts), err)
+					base.DBMSTypePostgreSQL, loc.Database, header, i, progress.Statements(), err)
 			}
-			progress.Statement(len(stmt), tag.RowsAffected(), pgExtractCopyTable(header))
+			progress.Statement(len(header), tag.RowsAffected(), table)
 		} else if pgIsPostDataStmt(stmt) {
 			postData = append(postData, stmt)
-			continue
+			return nil
 		} else {
 			tag, err := conn.Exec(ctx, stmt)
 			if err != nil {
 				return base.RestoreStatementError(
-					base.DBMSTypePostgreSQL, loc.Database, stmt, i+1, len(stmts), err)
+					base.DBMSTypePostgreSQL, loc.Database, stmt, i, progress.Statements(), err)
 			}
 			progress.Statement(len(stmt), tag.RowsAffected(), "")
 		}
@@ -657,6 +663,10 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 				matViews = append(matViews, mv)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	progress.Finish()
@@ -3426,13 +3436,43 @@ func pgIsMetaCommand(line string) bool {
 // Handles dollar-quoting ($$...$$) used by function/procedure definitions.
 func splitPGStatements(script string) []string {
 	var stmts []string
+	_ = eachPGStatement(strings.NewReader(script), func(stmt string, rows io.Reader) error {
+		if rows != nil {
+			// A COPY block is given back whole, as the one statement it is: its
+			// header, its rows and the \. that ends them.
+			data, _ := io.ReadAll(rows)
+			stmt += string(data)
+			if rows.(*pgCopyRows).terminated {
+				stmt += `\.`
+			}
+			stmt = strings.TrimSpace(stmt)
+		}
+		stmts = append(stmts, stmt)
+		return nil
+	})
+	return stmts
+}
+
+// eachPGStatement reads a PostgreSQL SQL dump from r and calls fn with each of
+// its statements in turn, as splitPGStatements returns them — see
+// eachMySQLStatement on why a restore reads its dump this way. It stops at the
+// first error fn returns, or at a fault reading r.
+//
+// A COPY ... FROM STDIN block is the exception. It holds a table's rows, which
+// can be most of the dump, so it is not given as one string: stmt is the
+// block's header (with any comments above it) and rows reads the rows below,
+// up to and leaving out the \. that ends them. Rows fn leaves unread are
+// skipped. For every other statement rows is nil.
+func eachPGStatement(r io.Reader, fn func(stmt string, rows io.Reader) error) error {
 	var buf strings.Builder
-	sc := bufio.NewScanner(strings.NewReader(script))
-	sc.Buffer(make([]byte, 4<<20), 4<<20)
+	sc := bufio.NewScanner(r)
+	// One line is one row of a COPY block, and a row holding a large bytea runs
+	// past the old 4 MB — see splitMySQLStatements on why the limit is
+	// base.MaxStatementLine.
+	sc.Buffer(make([]byte, 4<<20), base.MaxStatementLine)
 
 	inDollarQuote := false
 	dollarTag := ""
-	inCopyData := false
 
 	for sc.Scan() {
 		line := sc.Text()
@@ -3446,7 +3486,7 @@ func splitPGStatements(script string) []string {
 		// keeping it would glue the meta-command to the statement below.
 		// COPY data (whose terminator is "\.") and dollar-quoted bodies are
 		// excluded — a backslash there is content.
-		if !inDollarQuote && !inCopyData && pgIsMetaCommand(strings.TrimSpace(line)) {
+		if !inDollarQuote && pgIsMetaCommand(strings.TrimSpace(line)) {
 			continue
 		}
 
@@ -3459,16 +3499,17 @@ func splitPGStatements(script string) []string {
 		// separated rows that follow, and the \. that ends them. Splitting on the
 		// header's semicolon would hand the server a COPY with no data, and it
 		// would wait for rows that never arrive.
-		if inCopyData {
-			if strings.TrimRight(line, "\r") == `\.` {
-				inCopyData = false
-				stmts = append(stmts, strings.TrimSpace(current))
-				buf.Reset()
-			}
-			continue
-		}
 		if !inDollarQuote && pgIsCopyFromStdin(line) {
-			inCopyData = true
+			buf.Reset()
+			rows := &pgCopyRows{sc: sc}
+			err := fn(strings.TrimLeftFunc(current, unicode.IsSpace), rows)
+			// What fn left unread is still the block's, not the next statement's.
+			if err == nil {
+				_, err = io.Copy(io.Discard, rows)
+			}
+			if err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -3498,8 +3539,10 @@ func splitPGStatements(script string) []string {
 					// Check if we have a complete statement ending with ;
 					trimmed := strings.TrimRight(strings.TrimSpace(current), "\n")
 					if strings.HasSuffix(trimmed, ";") {
-						stmts = append(stmts, strings.TrimSpace(current))
 						buf.Reset()
+						if err := fn(strings.TrimSpace(current), nil); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -3510,17 +3553,76 @@ func splitPGStatements(script string) []string {
 		trimmed := strings.TrimRight(strings.TrimSpace(current), "\n")
 		if strings.HasSuffix(trimmed, ";") && !inDollarQuote {
 			stmt := strings.TrimSpace(current)
-			if stmt != "" {
-				stmts = append(stmts, stmt)
-			}
 			buf.Reset()
+			if stmt != "" {
+				if err := fn(stmt, nil); err != nil {
+					return err
+				}
+			}
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
 	}
 
 	if s := strings.TrimSpace(buf.String()); s != "" {
-		stmts = append(stmts, s)
+		return fn(s, nil)
 	}
-	return stmts
+	return nil
+}
+
+// pgCopyRows reads the rows of one COPY block straight off the splitter's
+// scanner: each line with its newline, stopping at the \. that ends the block
+// or at the end of the dump. Read fills as much of p as there are rows for, so
+// a COPY sends large chunks rather than one message per row.
+type pgCopyRows struct {
+	sc         *bufio.Scanner
+	line       []byte // the part of the current row not yet read
+	nl         bool   // the current row's newline is still to be read
+	end        bool
+	terminated bool // the block ended at its \., not at the end of the dump
+}
+
+func (c *pgCopyRows) Read(p []byte) (int, error) {
+	n := 0
+	for n < len(p) {
+		if len(c.line) > 0 {
+			k := copy(p[n:], c.line)
+			c.line = c.line[k:]
+			n += k
+			continue
+		}
+		if c.nl {
+			p[n] = '\n'
+			n++
+			c.nl = false
+			continue
+		}
+		if c.end {
+			break
+		}
+		// The row before has been copied out whole, so the scanner's buffer is
+		// free to be reused for the next.
+		if !c.sc.Scan() {
+			c.end = true
+			if err := c.sc.Err(); err != nil {
+				// Not an end of the rows: a COPY taking it for one would
+				// commit the table cut short.
+				return n, err
+			}
+			break
+		}
+		line := c.sc.Bytes()
+		if string(bytes.TrimRight(line, "\r")) == `\.` {
+			c.end, c.terminated = true, true
+			break
+		}
+		c.line, c.nl = line, true
+	}
+	if n == 0 && c.end {
+		return 0, io.EOF
+	}
+	return n, nil
 }
 
 var pgDollarTagRe = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)?\$`)
@@ -3642,13 +3744,31 @@ func pgExtractCreateTable(stmt string) string { return pgExtractQualified(pgCrea
 
 // pgCopyBlockTable names the table a COPY … FROM stdin block loads, or "" for
 // any other statement. Only the header line is read: the rows below it can run
-// to megabytes, and pgCopyTableRe is not anchored.
+// to megabytes, and pgCopyTableRe is not anchored. The header alone, as
+// eachPGStatement gives a block, names its table as well.
 func pgCopyBlockTable(stmt string) string {
-	firstLine, _, ok := strings.Cut(stmt, "\n")
-	if !ok || !pgIsCopyFromStdin(firstLine) {
+	firstLine, _, _ := strings.Cut(stmt, "\n")
+	if !pgIsCopyFromStdin(firstLine) {
 		return ""
 	}
 	return pgExtractCopyTable(firstLine)
+}
+
+// pgCopyProgress passes a COPY block's rows on to the server, recording each
+// read as restored bytes of table. A table's COPY is one statement, and one
+// holding most of the dump otherwise moved the progress only once it was done.
+type pgCopyProgress struct {
+	r     io.Reader
+	p     *base.RestoreProgress
+	table string
+}
+
+func (c *pgCopyProgress) Read(b []byte) (int, error) {
+	n, err := c.r.Read(b)
+	if n > 0 {
+		c.p.Statement(n, 0, c.table)
+	}
+	return n, err
 }
 
 func pgExtractCopyTable(stmt string) string { return pgExtractQualified(pgCopyTableRe, stmt) }

@@ -498,10 +498,11 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 	}
 	defer db.Close()
 
-	content, err := os.ReadFile(inputPath)
+	f, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("read dump file: %w", err)
+		return fmt.Errorf("open dump file: %w", err)
 	}
+	defer f.Close()
 
 	// FOREIGN_KEY_CHECKS is a session variable, so every statement of the restore
 	// must run on the same connection. Pin one out of the pool instead of using
@@ -528,31 +529,30 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 		return err
 	})
 
-	stmts := splitMySQLStatements(string(content))
-	// The tables the dump carries rows for, counted before the first runs so
-	// the progress can say how many are left.
-	dataTables := map[string]bool{}
-	for _, stmt := range stmts {
-		if tbl := extractMySQLInsertTable(base.StripLeadingComments(stmt)); tbl != "" {
-			dataTables[tbl] = true
-		}
-	}
-	progress := base.NewRestoreProgress(ctx, len(dataTables))
+	// The tables the dump carries rows for, counted beside the restore so the
+	// progress can say how many are left without holding up the first statement.
+	progress := base.NewRestoreProgress(ctx, 0)
+	stopCount := progress.CountTotal(ctx, func(ctx context.Context) (int, int, error) {
+		return base.CountDump(ctx, inputPath, eachMySQLStatement, extractMySQLInsertTable)
+	})
+	defer stopCount()
 
 	var lastNotifyTable string
-	for i, stmt := range stmts {
+	i := 0
+	err = eachMySQLStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string) error {
+		i++
 		// The splitter cuts on the delimiter, so a dump's comment block arrives
 		// attached to the statement below it. Drop the comments, keep the
 		// statement — skipping the whole entry loses real SQL (see
 		// base.StripLeadingComments).
 		stmt = base.StripLeadingComments(stmt)
 		if stmt == "" {
-			continue
+			return nil
 		}
 		res, err := conn.ExecContext(ctx, stmt)
 		if err != nil {
 			return base.RestoreStatementError(
-				base.DBMSTypeMySQL, loc.Database, stmt, i+1, len(stmts), err)
+				base.DBMSTypeMySQL, loc.Database, stmt, i, progress.Statements(), err)
 		}
 		if err := commits.Done(len(stmt)); err != nil {
 			return fmt.Errorf("commit restored rows: %w", err)
@@ -567,6 +567,10 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 				notify(tbl)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	if err := commits.Flush(); err != nil {
@@ -2266,10 +2270,25 @@ func (d *MySQLDriver) listColumns(ctx context.Context, db *sql.DB, database, tab
 // correctly handling DELIMITER changes used by stored routines and triggers.
 func splitMySQLStatements(script string) []string {
 	var stmts []string
+	_ = eachMySQLStatement(strings.NewReader(script), func(stmt string) error {
+		stmts = append(stmts, stmt)
+		return nil
+	})
+	return stmts
+}
+
+// eachMySQLStatement reads a MySQL SQL script from r and calls fn with each of
+// its statements in turn, as splitMySQLStatements returns them. It stops at the
+// first error fn returns, or at a fault reading r.
+//
+// It is how a restore reads a dump: one statement in memory at a time. Reading
+// the file whole and splitting it first held a 10 GB dump in memory two and
+// three times over, and the restore reported nothing until all of it was done.
+func eachMySQLStatement(r io.Reader, fn func(stmt string) error) error {
 	delim := ";"
 	var buf strings.Builder
 
-	sc := bufio.NewScanner(strings.NewReader(script))
+	sc := bufio.NewScanner(r)
 	// The limit is one LINE, and a statement is one line: a multi-row INSERT
 	// of the SQL dump (mysqlInsertBatchBytes), or a single row holding a large
 	// BLOB. At the old 1 MB a longer line ended the scan silently, and every
@@ -2277,38 +2296,46 @@ func splitMySQLStatements(script string) []string {
 	sc.Buffer(make([]byte, 1<<20), base.MaxStatementLine)
 
 	for sc.Scan() {
-		line := sc.Text()
-		upper := strings.ToUpper(strings.TrimSpace(line))
+		line := sc.Bytes()
 
-		if strings.HasPrefix(upper, "DELIMITER") {
+		// Only the head of the line is compared: upper-casing the whole of a
+		// megabyte INSERT to look for "DELIMITER" copied every line once more.
+		if t := bytes.TrimSpace(line); len(t) >= 9 && bytes.EqualFold(t[:9], []byte("DELIMITER")) {
 			if s := strings.TrimSpace(buf.String()); s != "" {
-				stmts = append(stmts, s)
+				if err := fn(s); err != nil {
+					return err
+				}
 			}
 			buf.Reset()
-			parts := strings.Fields(line)
+			parts := strings.Fields(string(line))
 			if len(parts) >= 2 {
 				delim = parts[1]
 			}
 			continue
 		}
 
-		buf.WriteString(line)
-		buf.WriteString("\n")
+		buf.Write(line)
+		buf.WriteByte('\n')
 
 		current := strings.TrimRight(buf.String(), " \t\r\n")
 		if strings.HasSuffix(current, delim) {
 			stmt := strings.TrimSpace(current[:len(current)-len(delim)])
-			if stmt != "" {
-				stmts = append(stmts, stmt)
-			}
 			buf.Reset()
+			if stmt != "" {
+				if err := fn(stmt); err != nil {
+					return err
+				}
+			}
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
 	}
 
 	if s := strings.TrimSpace(buf.String()); s != "" {
-		stmts = append(stmts, s)
+		return fn(s)
 	}
-	return stmts
+	return nil
 }
 
 var (

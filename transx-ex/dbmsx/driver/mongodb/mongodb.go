@@ -1,6 +1,7 @@
 package mongodb
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -105,11 +106,6 @@ func (d *MongoDBDriver) dumpViaDriver(ctx context.Context, loc base.DBMSLocation
 			return fmt.Errorf("dump schema: %w", err)
 		}
 	}
-	if scope == base.ScopeDataOnly || scope == base.ScopeFull {
-		if err := d.dumpDataViaDriver(ctx, db, loc.Filter, &dump); err != nil {
-			return fmt.Errorf("dump data: %w", err)
-		}
-	}
 
 	f, err := os.Create(outputPath)
 	if err != nil {
@@ -121,10 +117,86 @@ func (d *MongoDBDriver) dumpViaDriver(ctx context.Context, loc base.DBMSLocation
 	if w != nil {
 		dst = io.MultiWriter(f, w)
 	}
+	bw := bufio.NewWriterSize(dst, 1<<20)
 
-	enc := json.NewEncoder(dst)
-	enc.SetIndent("", "  ")
-	return enc.Encode(dump)
+	// The schema is small and written as it always was. The documents are not
+	// gathered into dump.Data first: they go to the file as the cursor reads
+	// them, as the "data" member that closes the same JSON object. Gathering
+	// them held the whole database in memory, twice over in the encoder's
+	// buffer, and the file — with every byte the progress counts — was written
+	// only once the last collection had been read.
+	head, err := json.MarshalIndent(dump, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode dump schema: %w", err)
+	}
+	if scope != base.ScopeDataOnly && scope != base.ScopeFull {
+		if _, err := bw.Write(append(head, '\n')); err != nil {
+			return fmt.Errorf("write dump file: %w", err)
+		}
+		return bw.Flush()
+	}
+
+	// head is a complete object; the data member goes in before its "}" — that
+	// one brace alone, since the member before it may end in one of its own.
+	head = bytes.TrimRight(head[:len(head)-1], "\n ")
+	if _, err := bw.Write(head); err != nil {
+		return fmt.Errorf("write dump file: %w", err)
+	}
+	dw := &mongoDataWriter{w: bw}
+	if err := d.dumpDataViaDriver(ctx, db, loc.Filter, dw); err != nil {
+		return fmt.Errorf("dump data: %w", err)
+	}
+	if err := dw.close(); err != nil {
+		return fmt.Errorf("write dump file: %w", err)
+	}
+	return bw.Flush()
+}
+
+// mongoDataWriter writes the "data" member of a mongoDumpFile one document at
+// a time: {"coll": [doc, doc, …], …}, the shape json.Marshal gives the Data
+// map, so the file still reads back with json.Unmarshal. A collection with no
+// documents is left out, as the map left it out.
+type mongoDataWriter struct {
+	w      *bufio.Writer
+	opened bool   // `,"data": {` has been written
+	coll   string // the collection whose array is open, "" for none
+}
+
+// doc appends one document, in Extended JSON, to coll's array.
+func (dw *mongoDataWriter) doc(coll string, j json.RawMessage) error {
+	var sep string
+	switch {
+	case !dw.opened:
+		sep = ",\n  \"data\": {\n    "
+		dw.opened = true
+	case coll != dw.coll && dw.coll != "":
+		sep = "\n    ],\n    "
+	default:
+		sep = ",\n      "
+	}
+	if coll != dw.coll {
+		name, err := json.Marshal(coll)
+		if err != nil {
+			return err
+		}
+		sep += string(name) + ": [\n      "
+		dw.coll = coll
+	}
+	if _, err := dw.w.WriteString(sep); err != nil {
+		return err
+	}
+	_, err := dw.w.Write(j)
+	return err
+}
+
+// close ends the open array, the data member and the dump's object.
+func (dw *mongoDataWriter) close() error {
+	end := "\n}\n"
+	if dw.coll != "" {
+		end = "\n    ]\n  }" + end
+	}
+	_, err := dw.w.WriteString(end)
+	return err
 }
 
 // dumpSchemaViaDriver extracts collection options, validators, views, and indexes.
@@ -217,7 +289,7 @@ func (d *MongoDBDriver) dumpSchemaViaDriver(ctx context.Context, db *mongo.Datab
 }
 
 // dumpDataViaDriver exports all documents per collection as Extended JSON.
-func (d *MongoDBDriver) dumpDataViaDriver(ctx context.Context, db *mongo.Database, filter *filterpkg.DBMSFilterOption, dump *mongoDumpFile) error {
+func (d *MongoDBDriver) dumpDataViaDriver(ctx context.Context, db *mongo.Database, filter *filterpkg.DBMSFilterOption, dw *mongoDataWriter) error {
 	names, err := db.ListCollectionNames(ctx, bson.D{{Key: "type", Value: "collection"}})
 	if err != nil {
 		return base.Obj{Kind: base.ObjectKindCollection, Owner: db.Name()}.Fail(base.ActionList, err)
@@ -261,7 +333,6 @@ func (d *MongoDBDriver) dumpDataViaDriver(ctx context.Context, db *mongo.Databas
 		docObj := base.Obj{
 			Kind: base.ObjectKindCollection, Owner: db.Name(), Name: name, Unit: "document",
 		}
-		var docs []json.RawMessage
 		for cursor.Next(ctx) {
 			docNum++
 			j, err := mongoRawToExtJSON(cursor.Current)
@@ -270,19 +341,15 @@ func (d *MongoDBDriver) dumpDataViaDriver(ctx context.Context, db *mongo.Databas
 				docObj.Index = docNum
 				return docObj.Fail(base.ActionReadRows, err)
 			}
-			docs = append(docs, j)
+			if err := dw.doc(name, j); err != nil {
+				cursor.Close(ctx)
+				return fmt.Errorf("write dump file: %w", err)
+			}
 		}
 		cursor.Close(ctx)
 		if err := cursor.Err(); err != nil {
 			docObj.Index = docNum
 			return docObj.Fail(base.ActionReadRows, err)
-		}
-
-		if len(docs) > 0 {
-			if dump.Data == nil {
-				dump.Data = make(map[string][]json.RawMessage)
-			}
-			dump.Data[name] = docs
 		}
 	}
 	base.ReportDumpTable(ctx, len(names), len(names), "")
@@ -333,16 +400,22 @@ func (d *MongoDBDriver) Restore(ctx context.Context, loc base.DBMSLocation, inpu
 	return d.restoreViaSSH(ctx, loc, inputPath, notify)
 }
 
-func (d *MongoDBDriver) restoreViaDriver(ctx context.Context, loc base.DBMSLocation, inputPath string, notify func(string)) error {
-	data, err := os.ReadFile(inputPath)
-	if err != nil {
-		return fmt.Errorf("read dump file: %w", err)
-	}
+// Insert thresholds for a restore: a batch is sent once it holds this many
+// documents or this much Extended JSON, whichever comes first. The count is
+// the server's maxWriteBatchSize, so it is the size that binds only for very
+// small documents; a smaller count cost a round trip per thousand documents,
+// and the restore of a database of small documents ran a fifth slower.
+const (
+	mongoInsertBatchDocs  = 100000
+	mongoInsertBatchBytes = 16 << 20
+)
 
-	var dump mongoDumpFile
-	if err := json.Unmarshal(data, &dump); err != nil {
-		return fmt.Errorf("parse dump file: %w", err)
+func (d *MongoDBDriver) restoreViaDriver(ctx context.Context, loc base.DBMSLocation, inputPath string, notify func(string)) error {
+	f, err := os.Open(inputPath)
+	if err != nil {
+		return fmt.Errorf("open dump file: %w", err)
 	}
+	defer f.Close()
 
 	client, err := d.openClient(loc)
 	if err != nil {
@@ -352,6 +425,80 @@ func (d *MongoDBDriver) restoreViaDriver(ctx context.Context, loc base.DBMSLocat
 
 	db := client.Database(loc.Database)
 
+	// The collections the dump carries documents for, counted beside the
+	// restore so the progress can say how many are left without holding up the
+	// first insert.
+	progress := base.NewRestoreProgress(ctx, 0)
+	stopCount := progress.CountTotal(ctx, func(ctx context.Context) (int, int, error) {
+		return countMongoDump(ctx, inputPath)
+	})
+	defer stopCount()
+
+	// The dump is read as it is restored: the schema, then the documents a
+	// batch at a time. Reading it whole held the database in memory twice
+	// over — the file and what it decoded to — and a collection a third time
+	// as the BSON for one InsertMany, and nothing was reported until all of
+	// the file had been read.
+	dec := json.NewDecoder(bufio.NewReaderSize(f, 1<<20))
+	var (
+		coll       string
+		batch      []json.RawMessage
+		batchBytes int
+		reported   int64
+	)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := d.insertDocuments(ctx, db, coll, batch); err != nil {
+			return base.Obj{
+				Kind: base.ObjectKindCollection, Owner: loc.Database, Name: coll,
+			}.Fail(base.ActionWriteRows, err)
+		}
+		// The bytes are the dump's, up to where the decoder has read.
+		off := dec.InputOffset()
+		progress.Statement(int(off-reported), int64(len(batch)), coll)
+		reported = off
+		batch, batchBytes = batch[:0], 0
+		return nil
+	}
+	err = eachMongoDump(dec,
+		func(dump *mongoDumpFile) error {
+			return d.restoreSchemaViaDriver(ctx, db, loc, dump, notify)
+		},
+		func(name string, doc json.RawMessage) error {
+			if name != coll {
+				if err := flush(); err != nil {
+					return err
+				}
+				if coll != "" && notify != nil {
+					notify(coll)
+				}
+				coll = name
+			}
+			batch = append(batch, doc)
+			batchBytes += len(doc)
+			if len(batch) >= mongoInsertBatchDocs || batchBytes >= mongoInsertBatchBytes {
+				return flush()
+			}
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	if err := flush(); err != nil {
+		return err
+	}
+	if coll != "" && notify != nil {
+		notify(coll)
+	}
+	progress.Finish()
+	return nil
+}
+
+// restoreSchemaViaDriver creates what the schema part of dump describes:
+// collections, validators, views and indexes.
+func (d *MongoDBDriver) restoreSchemaViaDriver(ctx context.Context, db *mongo.Database, loc base.DBMSLocation, dump *mongoDumpFile, notify func(string)) error {
 	// --- Schema: create regular collections ---
 	for i, coll := range dump.Collections {
 		if err := d.createCollection(ctx, db, coll); err != nil {
@@ -406,24 +553,140 @@ func (d *MongoDBDriver) restoreViaDriver(ctx context.Context, loc base.DBMSLocat
 		}
 	}
 
-	// --- Data: insert documents ---
-	// Followed by collection and document; there are no bytes to report, since
-	// the dump file was read whole before the first insert.
-	progress := base.NewRestoreProgress(ctx, len(dump.Data))
-	for collName, docs := range dump.Data {
-		progress.Statement(0, 0, collName)
-		if err := d.insertDocuments(ctx, db, collName, docs); err != nil {
-			return base.Obj{
-				Kind: base.ObjectKindCollection, Owner: loc.Database, Name: collName,
-			}.Fail(base.ActionWriteRows, err)
+	return nil
+}
+
+// eachMongoDump reads a mongoDumpFile from dec without holding its documents:
+// schema is called once with everything but Data, then doc with each document
+// of Data in turn, together with the collection it belongs to. It stops at the
+// first error either returns.
+//
+// It relies on the order the dump is written in — json.Marshal gives struct
+// fields in declaration order, so "data" is the last member, after the whole
+// schema — and refuses a file where anything follows it, rather than
+// restoring documents into collections not yet created.
+func eachMongoDump(dec *json.Decoder, schema func(*mongoDumpFile) error, doc func(coll string, doc json.RawMessage) error) error {
+	parseErr := func(err error) error { return fmt.Errorf("parse dump file: %w", err) }
+
+	if err := mongoExpectDelim(dec, '{'); err != nil {
+		return parseErr(err)
+	}
+	head := map[string]json.RawMessage{}
+	schemaDone := false
+	applySchema := func() error {
+		schemaDone = true
+		b, err := json.Marshal(head)
+		if err != nil {
+			return parseErr(err)
 		}
-		progress.Statement(0, int64(len(docs)), collName)
-		if notify != nil {
-			notify(collName)
+		var dump mongoDumpFile
+		if err := json.Unmarshal(b, &dump); err != nil {
+			return parseErr(err)
+		}
+		return schema(&dump)
+	}
+
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return parseErr(err)
+		}
+		key, _ := tok.(string)
+		if schemaDone {
+			return parseErr(fmt.Errorf("member %q follows the data", key))
+		}
+		// Matched as json.Unmarshal matches the field: case-insensitively.
+		if !strings.EqualFold(key, "data") {
+			var v json.RawMessage
+			if err := dec.Decode(&v); err != nil {
+				return parseErr(err)
+			}
+			head[key] = v
+			continue
+		}
+
+		if err := applySchema(); err != nil {
+			return err
+		}
+		tok, err = dec.Token()
+		if err != nil {
+			return parseErr(err)
+		}
+		if tok == nil { // "data": null
+			continue
+		}
+		if tok != json.Delim('{') {
+			return parseErr(fmt.Errorf("data: want an object, got %v", tok))
+		}
+		for dec.More() {
+			tok, err := dec.Token()
+			if err != nil {
+				return parseErr(err)
+			}
+			coll, _ := tok.(string)
+			if err := mongoExpectDelim(dec, '['); err != nil {
+				return parseErr(fmt.Errorf("data %q: %w", coll, err))
+			}
+			for dec.More() {
+				var raw json.RawMessage
+				if err := dec.Decode(&raw); err != nil {
+					return parseErr(fmt.Errorf("data %q: %w", coll, err))
+				}
+				if err := doc(coll, raw); err != nil {
+					return err
+				}
+			}
+			if err := mongoExpectDelim(dec, ']'); err != nil {
+				return parseErr(err)
+			}
+		}
+		if err := mongoExpectDelim(dec, '}'); err != nil {
+			return parseErr(err)
 		}
 	}
-	progress.Finish()
+	if err := mongoExpectDelim(dec, '}'); err != nil {
+		return parseErr(err)
+	}
+	// A schema-only dump has no data member to set the schema off.
+	if !schemaDone {
+		return applySchema()
+	}
 	return nil
+}
+
+// mongoExpectDelim reads the next token of dec and fails unless it is want.
+func mongoExpectDelim(dec *json.Decoder, want json.Delim) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok != want {
+		return fmt.Errorf("want %q, got %v", want, tok)
+	}
+	return nil
+}
+
+// countMongoDump counts, for RestoreProgress.CountTotal, the collections the
+// dump at path carries documents for, and the documents.
+func countMongoDump(ctx context.Context, path string) (colls, docs int, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+
+	seen := map[string]bool{}
+	err = eachMongoDump(json.NewDecoder(bufio.NewReaderSize(f, 1<<20)),
+		func(*mongoDumpFile) error { return nil },
+		func(coll string, _ json.RawMessage) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			seen[coll] = true
+			docs++
+			return nil
+		})
+	return len(seen), docs, err
 }
 
 // createCollection creates a collection using the stored create options.

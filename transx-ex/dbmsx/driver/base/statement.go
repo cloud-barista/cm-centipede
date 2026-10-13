@@ -3,6 +3,7 @@ package base
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
@@ -280,7 +281,14 @@ func RestoreStatementError(dbmsType, owner, stmt string, index, total int, err e
 	)
 
 	if !subject.Recognised() {
-		return fmt.Errorf("statement %d/%d (%s) failed: %w", index, total,
+		// A restore reading its dump as a stream may fail before the dump's
+		// statements have been counted; the position is then given alone, as
+		// Obj gives it.
+		pos := strconv.Itoa(index)
+		if total > 0 {
+			pos += "/" + strconv.Itoa(total)
+		}
+		return fmt.Errorf("statement %s (%s) failed: %w", pos,
 			truncateStatement(stmt, statementSnippet), err)
 	}
 
