@@ -2685,6 +2685,13 @@ func (d *PostgreSQLDriver) buildSSHDumpArgs(cfg *base.SSHTunnelConfig, loc base.
 
 	args = append(args, connStr)
 
+	// Roles are cluster-level and not part of a database dump, so a GRANT or an
+	// OWNER TO naming a source role fails on a target that lacks it (ERROR: role
+	// "readonly" does not exist), and psql's ON_ERROR_STOP aborts the restore.
+	// Leave both out, as the direct path's own DDL does: the restoring login owns
+	// what it creates.
+	args = append(args, "--no-owner", "--no-privileges")
+
 	switch scope {
 	case base.ScopeSchemaOnly:
 		args = append(args, "--schema-only")
