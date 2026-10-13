@@ -604,32 +604,34 @@ func TestPostgreSQLInspect_SchemaObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if !containsAll(info.Views, "active_users") {
-		t.Errorf("Views = %v, want active_users", info.Views)
+	// Names come back schema-qualified, and routines with their identity
+	// signature (see the pgObjectQuery* contract); extensions alone are bare.
+	if !containsAll(info.Views, "public.active_users") {
+		t.Errorf("Views = %v, want public.active_users", info.Views)
 	}
-	if !containsAll(info.MaterializedViews, "mv_user_count") {
-		t.Errorf("MaterializedViews = %v, want mv_user_count", info.MaterializedViews)
+	if !containsAll(info.MaterializedViews, "public.mv_user_count") {
+		t.Errorf("MaterializedViews = %v, want public.mv_user_count", info.MaterializedViews)
 	}
-	if !containsAll(info.Functions, "user_count") {
-		t.Errorf("Functions = %v, want user_count", info.Functions)
+	if !containsAll(info.Functions, "public.user_count()") {
+		t.Errorf("Functions = %v, want public.user_count()", info.Functions)
 	}
-	if !containsAll(info.Procedures, "add_user") {
-		t.Errorf("Procedures = %v, want add_user", info.Procedures)
+	if !containsAll(info.Procedures, "public.add_user(IN uname text)") {
+		t.Errorf("Procedures = %v, want public.add_user(IN uname text)", info.Procedures)
 	}
-	if !containsAll(info.Triggers, "trg_orders_ai") {
-		t.Errorf("Triggers = %v, want trg_orders_ai", info.Triggers)
+	if !containsAll(info.Triggers, "public.trg_orders_ai") {
+		t.Errorf("Triggers = %v, want public.trg_orders_ai", info.Triggers)
 	}
-	if !containsAll(info.Sequences, "seq_demo") {
-		t.Errorf("Sequences = %v, want seq_demo", info.Sequences)
+	if !containsAll(info.Sequences, "public.seq_demo") {
+		t.Errorf("Sequences = %v, want public.seq_demo", info.Sequences)
 	}
-	if !containsAll(info.Types, "mood") {
-		t.Errorf("Types = %v, want mood", info.Types)
+	if !containsAll(info.Types, "public.mood") {
+		t.Errorf("Types = %v, want public.mood", info.Types)
 	}
 	if !containsAll(info.Extensions, "pgcrypto") {
 		t.Errorf("Extensions = %v, want pgcrypto", info.Extensions)
 	}
-	if !containsAll(info.Rules, "rule_noop") {
-		t.Errorf("Rules = %v, want rule_noop", info.Rules)
+	if !containsAll(info.Rules, "public.rule_noop") {
+		t.Errorf("Rules = %v, want public.rule_noop", info.Rules)
 	}
 	if len(info.ForeignKeys) == 0 {
 		t.Error("expected at least one foreign key")
