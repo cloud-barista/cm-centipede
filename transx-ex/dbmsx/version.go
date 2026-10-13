@@ -61,9 +61,88 @@ func CheckVersion(src, dst DBMSLocation) (*VersionCompatibility, error) {
 	return checkVersion(context.Background(), src, dst)
 }
 
+// NonStandardForeignKeys lists, as table.constraint, the foreign keys of loc's
+// database that refer to a non-unique key or to only part of a unique one.
+// MySQL accepted such keys until 8.4, which deprecates them and refuses to
+// create them by default; a migration onto 8.4 still carries them over, with a
+// warning, since a later release is to refuse them for good. It reads loc and
+// changes nothing.
+//
+// Only MySQL has the distinction, so any other engine gets nil. A migration
+// warns of these keys for itself before it starts (see warnNonStandardFKs);
+// this is for a caller that wants to show them, before or after.
+func NonStandardForeignKeys(loc DBMSLocation) ([]string, error) {
+	if err := validateLocation("location", loc); err != nil {
+		return nil, err
+	}
+	driver, err := drvpkg.NewDBDriver(loc.DBMSType)
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := driver.(nonStandardFKLister)
+	if !ok {
+		return nil, nil
+	}
+	return lister.NonStandardForeignKeys(context.Background(), loc)
+}
+
+// RestrictsNonStandardForeignKeys reports whether a server of dbmsType at
+// version refuses NonStandardForeignKeys' keys by default: MySQL from 8.4.
+func RestrictsNonStandardForeignKeys(dbmsType, version string) bool {
+	if dbmsType != DBMSTypeMySQL {
+		return false
+	}
+	v := ParseServerVersion(version)
+	return len(v) >= 2 && (v[0] > 8 || (v[0] == 8 && v[1] >= 4))
+}
+
 // =============================================================================
 // Internal
 // =============================================================================
+
+// nonStandardFKLister is the driver side of NonStandardForeignKeys.
+type nonStandardFKLister interface {
+	NonStandardForeignKeys(ctx context.Context, loc DBMSLocation) ([]string, error)
+}
+
+// warnNonStandardFKs is a pre-flight warning, not a gate: the restore creates
+// these keys on MySQL 8.4 as the source has them, but 8.4 deprecates them, and
+// the operator should hear so before the target depends on them rather than
+// when a later upgrade refuses them. Like the other checks it is waived when
+// either side cannot be read, and skipped for ScopeDataOnly, which creates no
+// keys.
+func warnNonStandardFKs(ctx context.Context, dmm DBMSMigrationModel, dstDriver drvpkg.DBDriver) {
+	if dmm.Scope == ScopeDataOnly || dmm.Source.DBMSType != DBMSTypeMySQL {
+		return
+	}
+	dstVersion, err := dstDriver.ServerVersion(ctx, dmm.Destination)
+	if err != nil || !RestrictsNonStandardForeignKeys(dmm.Destination.DBMSType, dstVersion) {
+		return
+	}
+	srcDriver, err := drvpkg.NewDBDriver(dmm.Source.DBMSType)
+	if err != nil {
+		return
+	}
+	lister, ok := srcDriver.(nonStandardFKLister)
+	if !ok {
+		return
+	}
+	keys, err := lister.NonStandardForeignKeys(ctx, dmm.Source)
+	if err != nil {
+		logger.Warn("non-standard foreign key check skipped",
+			slog.String("database", dmm.Source.Database),
+			slog.String("err", err.Error()))
+		return
+	}
+	if len(keys) == 0 {
+		return
+	}
+	logger.Warn("source has foreign keys on non-unique or partial keys, which the target deprecates; "+
+		"they are migrated as they are, but a later MySQL release is to refuse them",
+		slog.String("target", dstVersion),
+		slog.Int("count", len(keys)),
+		slog.Any("foreignKeys", keys))
+}
 
 // checkVersion reads both endpoints and builds the verdict. Both locations are
 // assumed validated.

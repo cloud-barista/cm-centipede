@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	base "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/driver/base"
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
@@ -552,6 +553,18 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 		defer writers.Close(false) //nolint:errcheck
 	}
 
+	// Large tables have their secondary indexes deferred — see
+	// MySQLDriver.restoreViaSQL.
+	deferred := base.NewIndexDeferrer(ctx, db, conn, loc.Database, nil, progress)
+	barrier := func() error {
+		if writers != nil {
+			if err := writers.Barrier(); err != nil {
+				return err
+			}
+		}
+		return commits.Flush()
+	}
+
 	var lastNotifyTable, lastTable string
 	i := 0
 	err = eachMariaDBStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string) error {
@@ -573,6 +586,11 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 				notify(tbl)
 			}
 		}
+		if table != "" {
+			if err := deferred.Insert(ctx, table, len(stmt), barrier); err != nil {
+				return err
+			}
+		}
 
 		if writers != nil {
 			if table != "" {
@@ -583,7 +601,7 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 					lastTable = table
 					progress.Statement(0, 0, table)
 				}
-				return writers.Insert(stmt, i)
+				return writers.Insert(stmt, i, table)
 			}
 			if base.IsMySQLTableLockStmt(stmt) {
 				return nil
@@ -594,6 +612,14 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 		}
 
 		res, err := conn.ExecContext(ctx, stmt)
+		if err != nil && deferred.Pending() && mariadbMissingKeyForFK(err) {
+			// A foreign key on columns whose index was deferred — see
+			// MySQLDriver.restoreViaSQL.
+			if err := deferred.Rebuild(ctx); err != nil {
+				return err
+			}
+			res, err = conn.ExecContext(ctx, stmt)
+		}
 		if err != nil {
 			return base.RestoreStatementError(
 				base.DBMSTypeMariaDB, loc.Database, stmt, i, progress.Statements(), err)
@@ -623,6 +649,9 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 		return fmt.Errorf("commit restored rows: %w", err)
 	}
 	progress.Finish()
+	if err := deferred.Rebuild(ctx); err != nil {
+		return err
+	}
 	if _, err := conn.ExecContext(ctx, "SET unique_checks=1, autocommit=1"); err != nil {
 		return fmt.Errorf("re-enable autocommit: %w", err)
 	}
@@ -630,6 +659,22 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 		return fmt.Errorf("re-enable FK checks: %w", err)
 	}
 	return nil
+}
+
+// mariadbMissingKeyForFK reports whether err is a foreign key refused for want
+// of an index on the columns it refers to — see mysqlMissingKeyForFK.
+func mariadbMissingKeyForFK(err error) bool {
+	var me *mysqldrv.MySQLError
+	if !errors.As(err, &me) {
+		return false
+	}
+	switch me.Number {
+	case 1822, 1215:
+		return true
+	case 1005:
+		return strings.Contains(me.Message, "150")
+	}
+	return false
 }
 
 func (d *MariaDBDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation, inputPath string, notify func(string)) error {

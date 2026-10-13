@@ -43,6 +43,7 @@ type RowWriters struct {
 	pending sync.WaitGroup // queued statements not yet run
 	running sync.WaitGroup // the writer goroutines
 	closed  bool
+	seen    map[string]bool // tables whose first INSERT has been written
 
 	mu  sync.Mutex
 	err error
@@ -195,10 +196,34 @@ func (w *RowWriters) Err() error {
 	return w.err
 }
 
-// Insert queues stmt, the index-th statement of the dump, for the next free
-// writer. It returns the first error any writer has met, so the restore stops
-// reading the dump once one has.
-func (w *RowWriters) Insert(stmt string, index int) error {
+// Insert queues stmt, the index-th statement of the dump and an INSERT into
+// table, for the next free writer. It returns the first error any writer has
+// met, so the restore stops reading the dump once one has.
+//
+// A table's first INSERT is written alone and committed before any other is
+// queued. MariaDB, loading an empty table with the checks off, takes a lock on
+// the whole table; two writers starting on the same empty table at once each
+// wait for the other's, and one is killed as a deadlock (1213) - its whole
+// transaction rolled back. Once a row is committed the table is not empty, and
+// the writers go on side by side.
+func (w *RowWriters) Insert(stmt string, index int, table string) error {
+	if w.seen == nil {
+		w.seen = map[string]bool{}
+	}
+	if !w.seen[table] {
+		w.seen[table] = true
+		if err := w.Barrier(); err != nil {
+			return err
+		}
+		if err := w.queue(stmt, index); err != nil {
+			return err
+		}
+		return w.Barrier()
+	}
+	return w.queue(stmt, index)
+}
+
+func (w *RowWriters) queue(stmt string, index int) error {
 	if err := w.Err(); err != nil {
 		return err
 	}

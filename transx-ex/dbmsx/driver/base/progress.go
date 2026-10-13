@@ -3,6 +3,7 @@ package base
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -42,6 +43,7 @@ type RestoreProgress struct {
 	bytes, rows int64
 	done, total int
 	current     string
+	phase       string
 	statements  int
 	counted     chan struct{}
 }
@@ -110,6 +112,43 @@ func (p *RestoreProgress) Statement(n int, rows int64, table string) {
 	p.report()
 }
 
+// Phase reports what the restore is doing beyond writing rows, from now on:
+// that it is leaving some tables' indexes until the rows are in, say. It goes
+// out with every report after, until the next Phase.
+func (p *RestoreProgress) Phase(phase string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.phase = phase
+	p.report()
+}
+
+// Rebuilding reports the restore building the indexes it held back: phase
+// says how far (see IndexDeferrer.Rebuild), and table is the one started last.
+// The tables, rows and bytes stay where the rows left them - the rebuild's
+// count is in the phase, so the restore's own is not overwritten with it.
+func (p *RestoreProgress) Rebuilding(table, phase string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.phase = phase
+	p.r.Report(core.Update{
+		Bytes: p.bytes, Files: -1, Item: table,
+		Rows: p.rows, Units: p.done, UnitsTotal: p.total, Phase: p.phase,
+	})
+}
+
+// PhaseRebuildingIndexes opens the phase of a restore building the indexes it
+// held back until the rows were in: "rebuilding indexes: 1/2 tables, orders 42%".
+const PhaseRebuildingIndexes = "rebuilding indexes"
+
+// PhaseIndexesDeferred is the phase of a restore that is writing rows with the
+// indexes of tables held back until the rows are in.
+func PhaseIndexesDeferred(tables int) string {
+	if tables == 1 {
+		return "indexes deferred: 1 table"
+	}
+	return fmt.Sprintf("indexes deferred: %d tables", tables)
+}
+
 // Finish counts the table the restore ended on as finished. A CountTotal still
 // running is waited for, so the total it brings cannot land after the end.
 func (p *RestoreProgress) Finish() {
@@ -131,7 +170,7 @@ func (p *RestoreProgress) Finish() {
 func (p *RestoreProgress) report() {
 	p.r.Report(core.Update{
 		Bytes: p.bytes, Files: -1, Item: p.current,
-		Rows: p.rows, Units: p.done, UnitsTotal: p.total,
+		Rows: p.rows, Units: p.done, UnitsTotal: p.total, Phase: p.phase,
 	})
 }
 

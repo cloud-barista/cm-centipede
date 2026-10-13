@@ -164,6 +164,11 @@ type MigrationProgress struct {
 	// RowsDone counts the rows (or documents) the restore has written. A
 	// restore through a CLI over SSH cannot count them, and leaves it zero.
 	RowsDone int64 `json:"rowsDone,omitempty"`
+	// Phase is what the current step is doing when Status alone says too
+	// little: "indexes deferred: 2 tables" while a restore writes rows with
+	// those tables' indexes held back, "rebuilding indexes" once it builds them.
+	// Empty when there is nothing more to say.
+	Phase string `json:"phase,omitempty"`
 }
 
 // The accessors below satisfy core.Progress, which is how core.Handle keeps

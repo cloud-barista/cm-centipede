@@ -28,6 +28,11 @@ import "context"
 // far, and tables (or collections) finished out of how many. Zero means "not
 // reported" for all three — no file transfer sets them, and a consumer reading
 // a database step treats an absent count as unknown rather than none.
+//
+// Phase says what the step is doing when that is more than the step itself -
+// a restore holding indexes back until the rows are in, then building them. A
+// reporter that has phases sends its current one in every update, so unlike
+// Item an empty Phase means "none now", not "no news".
 type Update struct {
 	Step  int
 	Steps int
@@ -38,6 +43,8 @@ type Update struct {
 	Rows       int64
 	Units      int
 	UnitsTotal int
+
+	Phase string
 }
 
 // Reporter receives observations from inside a transfer.

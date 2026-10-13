@@ -170,6 +170,7 @@ func (h *MigrationHandle) run(dmm DBMSMigrationModel) error {
 		h.setFailed(err)
 		return err
 	}
+	warnNonStandardFKs(h.Context(), dmm, dstDriver)
 
 	// Migrate via direct-pipe or two-step staging.
 	if err := h.migrate(dmm, dstDriver); err != nil {
@@ -370,7 +371,7 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 		p.Step = 2
 		p.BytesTransferred, p.BytesTotal = 0, size
 		p.TablesFinished, p.TablesTotal, p.RowsDone = 0, 0, 0
-		p.CurrentTable = ""
+		p.CurrentTable, p.Phase = "", ""
 	})
 
 	if err := dstDriver.Restore(h.restoreContext(), dmm.Destination, outputPath, h.newTableNotify()); err != nil {
@@ -416,6 +417,7 @@ func (h *MigrationHandle) restoreContext() context.Context {
 			if u.Item != "" {
 				p.CurrentTable = u.Item
 			}
+			p.Phase = u.Phase
 		})
 	}))
 }

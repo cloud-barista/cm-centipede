@@ -208,6 +208,20 @@ func CheckVersion(src, dst DBMSLocation) (*VersionCompatibility, error) {
 	return dbmsx.CheckVersion(src, dst)
 }
 
+// NonStandardForeignKeys lists, as table.constraint, the foreign keys of loc's
+// database that refer to a non-unique key or to only part of a unique one,
+// which MySQL 8.4 deprecates. nil for any other engine. MigrateDBMS carries
+// them onto 8.4 as they are and warns of them before it starts.
+func NonStandardForeignKeys(loc DBMSLocation) ([]string, error) {
+	return dbmsx.NonStandardForeignKeys(loc)
+}
+
+// RestrictsNonStandardForeignKeys reports whether a server of dbmsType at
+// version refuses NonStandardForeignKeys' keys by default: MySQL from 8.4.
+func RestrictsNonStandardForeignKeys(dbmsType, version string) bool {
+	return dbmsx.RestrictsNonStandardForeignKeys(dbmsType, version)
+}
+
 // ============================================================================
 // Field Encryption — storage domain only
 // ============================================================================
