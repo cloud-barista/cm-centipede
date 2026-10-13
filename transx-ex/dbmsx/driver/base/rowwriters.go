@@ -48,7 +48,23 @@ type RowWriters struct {
 	err error
 }
 
+// A writer commits far more often than the restore connection does, every
+// rowWriterCommitStatements statements or rowWriterCommitBytes of SQL. Its
+// open transaction holds locks the other writers may be waiting on: MariaDB,
+// loading an empty table with the checks off, locks the whole table until the
+// commit, and a transaction of the usual 16 MB kept the other writers - and a
+// Barrier waiting on them - past innodb_lock_wait_timeout over a slow link.
+// A megabyte is one statement of the SQL dump, so batching still pays for a
+// dump of single-row INSERTs and costs nothing for one of multi-row ones.
+const (
+	rowWriterCommitStatements = 1000
+	rowWriterCommitBytes      = 1 << 20
+)
+
 type rowWriter struct {
+	// mu serialises the connection between the writer's goroutine and the
+	// restore's own, which commits and replays session statements on it.
+	mu      sync.Mutex
 	conn    *sql.Conn
 	commits *CommitBatcher
 }
@@ -84,10 +100,10 @@ func NewRowWriters(ctx context.Context, db *sql.DB, n int,
 			return nil, fmt.Errorf("open row writer: %w", err)
 		}
 		rw := &rowWriter{conn: conn}
-		rw.commits = NewCommitBatcher(func() error {
+		rw.commits = newCommitBatcherEvery(func() error {
 			_, err := conn.ExecContext(ctx, "COMMIT")
 			return err
-		})
+		}, rowWriterCommitStatements, rowWriterCommitBytes)
 		w.writers = append(w.writers, rw)
 	}
 	for _, rw := range w.writers {
@@ -108,9 +124,34 @@ func execAll(ctx context.Context, conn *sql.Conn, stmts []string) error {
 
 func (w *RowWriters) run(rw *rowWriter) {
 	defer w.running.Done()
-	for j := range w.jobs {
+	for {
+		var j rowJob
+		var ok bool
+		select {
+		case j, ok = <-w.jobs:
+		default:
+			// Nothing queued: commit before waiting. A writer idling with its
+			// transaction open keeps its locks, and the writers blocked on
+			// them - and a Barrier waiting for those - would wait for good.
+			w.commitIdle(rw)
+			j, ok = <-w.jobs
+		}
+		if !ok {
+			return
+		}
 		w.write(rw, j)
 		w.pending.Done()
+	}
+}
+
+func (w *RowWriters) commitIdle(rw *rowWriter) {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	if w.Err() != nil {
+		return // rolled back by Close
+	}
+	if err := rw.commits.Flush(); err != nil {
+		w.fail(fmt.Errorf("commit restored rows: %w", err))
 	}
 }
 
@@ -118,6 +159,8 @@ func (w *RowWriters) write(rw *rowWriter, j rowJob) {
 	if w.Err() != nil {
 		return // drain, so Insert never blocks on a queue nobody empties
 	}
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
 	res, err := rw.conn.ExecContext(w.ctx, j.stmt)
 	if err != nil {
 		// Cancelled because another writer failed first: that failure is the
@@ -180,10 +223,13 @@ func (w *RowWriters) Barrier() error {
 	if err := w.Err(); err != nil {
 		return err
 	}
-	// The writers are idle until the next Insert, so their connections are free
-	// to be used from here.
+	// The writers have nothing left to write, but one may still be committing
+	// on its way to idle: rw.mu waits for it.
 	for _, rw := range w.writers {
-		if err := rw.commits.Flush(); err != nil {
+		rw.mu.Lock()
+		err := rw.commits.Flush()
+		rw.mu.Unlock()
+		if err != nil {
 			w.fail(fmt.Errorf("commit restored rows: %w", err))
 			return w.Err()
 		}
@@ -201,7 +247,10 @@ func (w *RowWriters) Session(stmt string) error {
 		return err
 	}
 	for _, rw := range w.writers {
-		if _, err := rw.conn.ExecContext(w.ctx, stmt); err != nil {
+		rw.mu.Lock()
+		_, err := rw.conn.ExecContext(w.ctx, stmt)
+		rw.mu.Unlock()
+		if err != nil {
 			w.fail(fmt.Errorf("replay %q on a row writer: %w", truncateStatement(stmt, statementSnippet), err))
 			return w.Err()
 		}

@@ -214,13 +214,20 @@ const (
 // one per statement — together with the round trip, the whole cost of
 // restoring over a WAN.
 type CommitBatcher struct {
-	commit       func() error
-	stmts, bytes int
+	commit                 func() error
+	stmts, bytes           int
+	everyStmts, everyBytes int
 }
 
 // NewCommitBatcher returns a batcher that calls commit to commit.
 func NewCommitBatcher(commit func() error) *CommitBatcher {
-	return &CommitBatcher{commit: commit}
+	return newCommitBatcherEvery(commit, commitEveryStatements, commitEveryBytes)
+}
+
+// newCommitBatcherEvery returns a batcher committing every stmts statements or
+// bytes of SQL instead of the restore's usual thresholds.
+func newCommitBatcherEvery(commit func() error, stmts, bytes int) *CommitBatcher {
+	return &CommitBatcher{commit: commit, everyStmts: stmts, everyBytes: bytes}
 }
 
 // Done counts one executed statement of n bytes, committing when a threshold
@@ -228,7 +235,7 @@ func NewCommitBatcher(commit func() error) *CommitBatcher {
 func (b *CommitBatcher) Done(n int) error {
 	b.stmts++
 	b.bytes += n
-	if b.stmts >= commitEveryStatements || b.bytes >= commitEveryBytes {
+	if b.stmts >= b.everyStmts || b.bytes >= b.everyBytes {
 		return b.Flush()
 	}
 	return nil
