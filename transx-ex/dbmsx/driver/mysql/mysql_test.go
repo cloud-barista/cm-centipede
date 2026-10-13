@@ -2,12 +2,15 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	base "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/driver/base"
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
 	"os"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // =============================================================================
@@ -1218,5 +1221,302 @@ func TestMysqlBuildDSN_CarriesTheTLSParam(t *testing.T) {
 	}
 	if !strings.Contains(dsn, "tls=skip-verify") {
 		t.Errorf("DSN does not carry the TLS parameter:\n%s", dsn)
+	}
+}
+
+// =============================================================================
+// Restore round trips (MySQL server required)
+// =============================================================================
+//
+// These put dumps back through Restore and compare what lands with what was
+// dumped. The fixture alone is a couple of rows per table, which never reaches
+// the paths a real restore takes - an INSERT split across statements and
+// written over several connections - so each test adds rtRows rows first.
+
+const rtRows = 200000
+
+// rtRowsPerInsert keeps one INSERT near the megabyte the SQL dump batches to.
+const rtRowsPerInsert = 10000
+
+func rtOpen(t *testing.T, loc base.DBMSLocation) *sql.DB {
+	t.Helper()
+	db, err := NewMySQLDriver().openDB(loc)
+	if err != nil {
+		t.Fatalf("open %s: %v", loc.Database, err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+func rtExec(t *testing.T, db *sql.DB, stmts ...string) {
+	t.Helper()
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+}
+
+// rtFreshDB creates an empty database name, dropped again when the test ends.
+func rtFreshDB(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+	rtExec(t, db, "DROP DATABASE IF EXISTS `"+name+"`", "CREATE DATABASE `"+name+"`")
+	t.Cleanup(func() { db.Exec("DROP DATABASE IF EXISTS `" + name + "`") })
+}
+
+// rtTS is row i's TIMESTAMP, in UTC.
+func rtTS(i int) time.Time { return time.Unix(int64(1700000000+i*37), 0).UTC() }
+
+// rtValues renders rows [from, to) as INSERT value tuples. Row 0 is in the
+// AUTO_INCREMENT column, which comes back as 0 only under NO_AUTO_VALUE_ON_ZERO.
+func rtValues(from, to int) string {
+	var sb strings.Builder
+	for i := from; i < to; i++ {
+		if i > from {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, "(%d,'%s','%x',%d)", i, rtTS(i).Format("2006-01-02 15:04:05"), uint64(i)*2654435761, (i*7919)%100000)
+	}
+	return sb.String()
+}
+
+const rtBulkTable = "CREATE TABLE `rt_bulk` (`id` INT AUTO_INCREMENT PRIMARY KEY, `ts` TIMESTAMP NULL, " +
+	"`v` VARCHAR(32), `n` INT, UNIQUE KEY `uq_v` (`v`), KEY `idx_n` (`n`), KEY `idx_ts` (`ts`))"
+
+// rtFillBulk adds rt_bulk to the source database for the test's duration.
+func rtFillBulk(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, s := range []string{
+		"SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO')",
+		"SET SESSION time_zone = '+00:00'",
+		"DROP TABLE IF EXISTS `rt_bulk`",
+		rtBulkTable,
+	} {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS `rt_bulk`") })
+	for from := 0; from < rtRows; from += rtRowsPerInsert {
+		if _, err := conn.ExecContext(ctx, "INSERT INTO `rt_bulk` VALUES "+rtValues(from, min(from+rtRowsPerInsert, rtRows))); err != nil {
+			t.Fatalf("fill rt_bulk: %v", err)
+		}
+	}
+}
+
+// rtSnapshot describes a database as far as a restore must reproduce it: each
+// table's rows and checksum, and the objects around them - triggers and
+// routines with the sql_mode they were created under.
+func rtSnapshot(t *testing.T, db *sql.DB, schema string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	rows, err := db.Query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'", schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var n string
+		rows.Scan(&n)
+		tables = append(tables, n)
+	}
+	rows.Close()
+	for _, tbl := range tables {
+		var count int64
+		var name string
+		var sum sql.NullInt64
+		db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, tbl)).Scan(&count)
+		db.QueryRow(fmt.Sprintf("CHECKSUM TABLE `%s`.`%s`", schema, tbl)).Scan(&name, &sum)
+		out["table "+tbl] = fmt.Sprintf("rows=%d checksum=%d", count, sum.Int64)
+	}
+	for label, q := range map[string]string{
+		"indexes":  "SELECT CONCAT(TABLE_NAME, '.', INDEX_NAME, ':', NON_UNIQUE, ':', COLUMN_NAME) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ?",
+		"fks":      "SELECT CONCAT(TABLE_NAME, '.', CONSTRAINT_NAME) FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = ?",
+		"views":    "SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = ?",
+		"triggers": "SELECT CONCAT(TRIGGER_NAME, ':', SQL_MODE) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?",
+		"routines": "SELECT CONCAT(ROUTINE_TYPE, ' ', ROUTINE_NAME, ':', SQL_MODE) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ?",
+		"events":   "SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ?",
+	} {
+		rows, err := db.Query(q, schema)
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		var vals []string
+		for rows.Next() {
+			var v string
+			rows.Scan(&v)
+			vals = append(vals, v)
+		}
+		rows.Close()
+		sort.Strings(vals)
+		out[label] = strings.Join(vals, "; ")
+	}
+	return out
+}
+
+func rtCompare(t *testing.T, db *sql.DB, src, dst string) {
+	t.Helper()
+	want, got := rtSnapshot(t, db, src), rtSnapshot(t, db, dst)
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s: %s = %q, source has %q", dst, k, got[k], w)
+		}
+	}
+	for k := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("%s: %s is not in the source", dst, k)
+		}
+	}
+}
+
+// rtRestoreFails runs a restore that must fail and checks it returns: a writer
+// failing while others are mid-statement must not leave the restore waiting.
+func rtRestoreFails(t *testing.T, loc base.DBMSLocation, path string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- NewMySQLDriver().Restore(context.Background(), loc, path, nil) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("restore onto rows already there succeeded, want a duplicate key error")
+		} else if !strings.Contains(err.Error(), "Duplicate entry") {
+			t.Errorf("restore error = %v, want a duplicate key error", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("restore onto rows already there did not return")
+	}
+}
+
+// TestMySQLDumpRestore_Full round-trips the driver's own full dump - schema,
+// rows, triggers and events - into an empty database, then restores its rows
+// once more onto the rows already there.
+func TestMySQLDumpRestore_Full(t *testing.T) {
+	env := mysqlTestSetup(t)
+	drv := NewMySQLDriver()
+	ctx := context.Background()
+
+	src := env.loc
+	src.Database = env.srcDB
+	db := rtOpen(t, src)
+	rtFillBulk(t, db)
+
+	dst := src
+	dst.Database = "testdb_rt"
+	rtFreshDB(t, db, dst.Database)
+
+	dir := t.TempDir()
+	if err := drv.Dump(ctx, src, base.ScopeFull, dir+"/full.sql", nil, nil); err != nil {
+		t.Fatalf("Dump full: %v", err)
+	}
+	if err := drv.Restore(ctx, dst, dir+"/full.sql", nil); err != nil {
+		t.Fatalf("Restore full: %v", err)
+	}
+	rtCompare(t, db, src.Database, dst.Database)
+
+	if err := drv.Dump(ctx, src, base.ScopeDataOnly, dir+"/data.sql", nil, nil); err != nil {
+		t.Fatalf("Dump data-only: %v", err)
+	}
+	rtRestoreFails(t, dst, dir+"/data.sql")
+}
+
+// rtMysqldump is a dump in mysqldump's shape: the session it sets up around the
+// rows (TIME_ZONE, SQL_MODE), LOCK TABLES around each table's INSERTs, and the
+// session put back at the end. A staged dump from an ssh-tunnel source has this
+// shape and is restored over the SQL path.
+func rtMysqldump() string {
+	var sb strings.Builder
+	sb.WriteString("-- MySQL dump 10.13  Distrib 8.0, for Linux (x86_64)\n" +
+		"--\n-- Host: localhost    Database: testdb_src\n" +
+		"-- ------------------------------------------------------\n\n" +
+		"/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n" +
+		"/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;\n" +
+		"/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;\n" +
+		"/*!50503 SET NAMES utf8mb4 */;\n" +
+		"/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;\n" +
+		"/*!40103 SET TIME_ZONE='+00:00' */;\n" +
+		"/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;\n" +
+		"/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n" +
+		"/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n" +
+		"/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;\n\n" +
+		"--\n-- Table structure for table `rt_bulk`\n--\n\n" +
+		"DROP TABLE IF EXISTS `rt_bulk`;\n" +
+		"/*!40101 SET @saved_cs_client     = @@character_set_client */;\n" +
+		"/*!50503 SET character_set_client = utf8mb4 */;\n" +
+		rtBulkTable + ";\n" +
+		"/*!40101 SET character_set_client = @saved_cs_client */;\n\n" +
+		"--\n-- Dumping data for table `rt_bulk`\n--\n\n" +
+		"LOCK TABLES `rt_bulk` WRITE;\n" +
+		"/*!40000 ALTER TABLE `rt_bulk` DISABLE KEYS */;\n")
+	for from := 0; from < rtRows; from += rtRowsPerInsert {
+		sb.WriteString("INSERT INTO `rt_bulk` VALUES " + rtValues(from, min(from+rtRowsPerInsert, rtRows)) + ";\n")
+	}
+	sb.WriteString("/*!40000 ALTER TABLE `rt_bulk` ENABLE KEYS */;\n" +
+		"UNLOCK TABLES;\n" +
+		"/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;\n\n" +
+		"/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n" +
+		"/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n" +
+		"/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;\n" +
+		"/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;\n" +
+		"/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;\n" +
+		"/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;\n" +
+		"/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;\n\n" +
+		"-- Dump completed\n")
+	return sb.String()
+}
+
+// TestMySQLRestore_MysqldumpFormat restores a mysqldump-shaped dump with the
+// server's default zone moved off UTC. Every connection the restore writes
+// rows over has to run the dump's SET TIME_ZONE and SQL_MODE, or the
+// TIMESTAMPs land shifted and row 0 under another id; and LOCK TABLES, taken
+// by one connection, must not keep the others out.
+func TestMySQLRestore_MysqldumpFormat(t *testing.T) {
+	env := mysqlTestSetup(t)
+	src := env.loc
+	src.Database = env.srcDB
+	db := rtOpen(t, src)
+
+	var zone string
+	if err := db.QueryRow("SELECT @@GLOBAL.time_zone").Scan(&zone); err != nil {
+		t.Fatal(err)
+	}
+	rtExec(t, db, "SET GLOBAL time_zone = '+09:00'")
+	t.Cleanup(func() { db.Exec("SET GLOBAL time_zone = ?", zone) })
+
+	dst := src
+	dst.Database = "testdb_rt_cli"
+	rtFreshDB(t, db, dst.Database)
+	path := t.TempDir() + "/mysqldump.sql"
+	if err := os.WriteFile(path, []byte(rtMysqldump()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewMySQLDriver().Restore(context.Background(), dst, path, nil); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	var count, zeros int
+	var tsSum, nSum int64
+	if err := db.QueryRow("SELECT COUNT(*), SUM(id = 0), SUM(UNIX_TIMESTAMP(ts)), SUM(n) FROM `testdb_rt_cli`.`rt_bulk`").
+		Scan(&count, &zeros, &tsSum, &nSum); err != nil {
+		t.Fatal(err)
+	}
+	var wantTS, wantN int64
+	for i := 0; i < rtRows; i++ {
+		wantTS += rtTS(i).Unix()
+		wantN += int64((i * 7919) % 100000)
+	}
+	if count != rtRows || zeros != 1 {
+		t.Errorf("rows = %d with %d of id 0, want %d with 1", count, zeros, rtRows)
+	}
+	if tsSum != wantTS {
+		t.Errorf("sum of TIMESTAMPs = %d, want %d (off by %ds a row)", tsSum, wantTS, (tsSum-wantTS)/int64(rtRows))
+	}
+	if nSum != wantN {
+		t.Errorf("sum of n = %d, want %d", nSum, wantN)
 	}
 }
