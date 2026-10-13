@@ -772,10 +772,13 @@ func (d *MongoDBDriver) createIndexes(ctx context.Context, coll *mongo.Collectio
 	return err
 }
 
-// insertDocuments converts Extended JSON documents to BSON and inserts them,
-// unordered: the documents are independent, so the server may apply them in
-// any order instead of one after another, and a rejected one fails the batch
-// all the same.
+// insertDocuments converts Extended JSON documents to BSON and inserts them.
+//
+// Ordered, so a rejected document stops the batch and is the one error
+// reported. Unordered, a restore onto a collection already holding the
+// documents answers with a write error for every one of them, and past 16 MB
+// of those the server cannot build its reply at all: the restore failed on
+// BSONObjectTooLarge instead of the duplicate key behind it.
 func (d *MongoDBDriver) insertDocuments(ctx context.Context, db *mongo.Database, collName string, docs []json.RawMessage) error {
 	if len(docs) == 0 {
 		return nil
@@ -788,7 +791,7 @@ func (d *MongoDBDriver) insertDocuments(ctx context.Context, db *mongo.Database,
 		}
 		batch = append(batch, raw)
 	}
-	_, err := db.Collection(collName).InsertMany(ctx, batch, options.InsertMany().SetOrdered(false))
+	_, err := db.Collection(collName).InsertMany(ctx, batch)
 	return err
 }
 
