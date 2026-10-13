@@ -22,8 +22,14 @@ echo "[DB-Target/MySQL] MySQL ready."
 # ── Set the root password + accounts + create empty databases ─────────────────
 # Unquoted heredoc, so the password is substituted; backslashes are doubled to
 # survive it. DOCKERENV_PASSWORD carries no quote, backslash or $ (validated).
-mysql --default-character-set=utf8mb4 -u root <<SQL
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${DOCKERENV_PASSWORD}';
+#
+# The package creates root@localhost with auth_socket, and a bare IDENTIFIED BY
+# keeps that plugin, so a TCP login to 127.0.0.1 (the honeybee agent's) is
+# refused with 1698. Name the plugin to switch it to the password. MYSQL_PWD is
+# ignored by auth_socket on the first run and needed on every run after it, since
+# this script runs again at each container start.
+MYSQL_PWD="$DOCKERENV_PASSWORD" mysql --default-character-set=utf8mb4 -u root <<SQL
+ALTER USER 'root'@'localhost' IDENTIFIED WITH caching_sha2_password BY '${DOCKERENV_PASSWORD}';
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1');
 
