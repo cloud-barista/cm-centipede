@@ -363,11 +363,21 @@ func (b *mariadbInsertBatch) flush() {
 	b.values.Reset()
 }
 
+// mariadbDataPrologue and mariadbDataEpilogue wrap the rows of a dump in
+// NO_AUTO_VALUE_ON_ZERO, so a 0 in an AUTO_INCREMENT column comes back as 0 —
+// see mysqlDataPrologue on why only around the rows.
+const (
+	mariadbDataPrologue = "SET @OLD_SQL_MODE = @@SESSION.sql_mode, SESSION sql_mode = " +
+		"IF(@@SESSION.sql_mode = '', 'NO_AUTO_VALUE_ON_ZERO', CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO'));\n\n"
+	mariadbDataEpilogue = "SET SESSION sql_mode = @OLD_SQL_MODE;\n\n"
+)
+
 func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database string, filter *filterpkg.DBMSFilterOption, dst io.Writer) error {
 	tables, err := d.listTables(ctx, db, database, filter)
 	if err != nil {
 		return base.Obj{Kind: base.ObjectKindTable, Owner: database}.Fail(base.ActionList, err)
 	}
+	io.WriteString(dst, mariadbDataPrologue) //nolint:errcheck
 
 	for i, table := range tables {
 		base.ReportDumpTable(ctx, i, len(tables), table)
@@ -433,6 +443,7 @@ func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database
 		}
 		fmt.Fprintln(dst)
 	}
+	io.WriteString(dst, mariadbDataEpilogue) //nolint:errcheck
 	base.ReportDumpTable(ctx, len(tables), len(tables), "")
 	return nil
 }

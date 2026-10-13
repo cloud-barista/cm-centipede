@@ -370,11 +370,27 @@ func (b *mysqlInsertBatch) flush() {
 	b.values.Reset()
 }
 
+// mysqlDataPrologue and mysqlDataEpilogue wrap the rows of a dump in
+// NO_AUTO_VALUE_ON_ZERO. Without it a 0 written into an AUTO_INCREMENT column
+// is taken as "the next value", and the row comes back under another id.
+//
+// The mode is added to the session's own rather than set outright, and only
+// around the rows: a view, routine or trigger keeps the sql_mode it was
+// created under, so the schema above and the triggers below are created in the
+// session's mode untouched. mysqldump sets it for the whole file instead, and
+// sets each object's mode back by hand.
+const (
+	mysqlDataPrologue = "SET @OLD_SQL_MODE = @@SESSION.sql_mode, SESSION sql_mode = " +
+		"IF(@@SESSION.sql_mode = '', 'NO_AUTO_VALUE_ON_ZERO', CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO'));\n\n"
+	mysqlDataEpilogue = "SET SESSION sql_mode = @OLD_SQL_MODE;\n\n"
+)
+
 func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database string, filter *filterpkg.DBMSFilterOption, dst io.Writer) error {
 	tables, err := d.listTables(ctx, db, database, filter)
 	if err != nil {
 		return base.Obj{Kind: base.ObjectKindTable, Owner: database}.Fail(base.ActionList, err)
 	}
+	io.WriteString(dst, mysqlDataPrologue) //nolint:errcheck
 
 	for i, table := range tables {
 		base.ReportDumpTable(ctx, i, len(tables), table)
@@ -440,6 +456,7 @@ func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database s
 		}
 		fmt.Fprintln(dst)
 	}
+	io.WriteString(dst, mysqlDataEpilogue) //nolint:errcheck
 	base.ReportDumpTable(ctx, len(tables), len(tables), "")
 	return nil
 }
