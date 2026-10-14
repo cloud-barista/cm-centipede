@@ -863,6 +863,17 @@ definitions:
         type: string
       srcConnection:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      strategy:
+        description: |-
+          Strategy is the transx transfer strategy (auto/direct/relay). It only affects
+          S3→S3 transfers — direct streams each object, relay stages them locally —
+          and objectstorage→filesystem cross-storage always relays. Set by the plan
+          layer; empty runs as direct.
+        enum:
+        - auto
+        - direct
+        - relay
+        type: string
     required:
     - dstConnection
     - srcConnection
@@ -1323,9 +1334,8 @@ definitions:
         description: |-
           FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)
           tasks. Empty is normalised to "direct" (agent-forward: the source host
-          sends straight to the destination, with nothing staged here). It has no
-          effect on object-storage or DBMS tasks, where relay is always used / not
-          applicable.
+          sends straight to the destination, with nothing staged here). Object
+          storage tasks take ObjectStorageStrategy instead; DBMS tasks have none.
         enum:
         - auto
         - direct
@@ -1333,6 +1343,18 @@ definitions:
         type: string
       objectStorageFilter:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ObjectStorageFilter'
+      objectStorageStrategy:
+        description: |-
+          ObjectStorageStrategy is the transfer strategy applied to object storage
+          (S3→S3) tasks. Empty is normalised to "direct": each object streams from
+          source to destination, with nothing staged here. "relay" downloads to
+          local staging first, then uploads. It has no effect on objectstorage→
+          filesystem cross-storage, which always relays.
+        enum:
+        - auto
+        - direct
+        - relay
+        type: string
       srcConnection:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
     required:

@@ -19,17 +19,19 @@ const (
 
 // ── Transfer strategy ────────────────────────────────────────────────────────
 
-// Transfer strategy values, mapping 1:1 onto transx-ex's Strategy. They only
-// carry real meaning for SSH→SSH (file system) transfers: cross-storage and
-// S3→S3 always relay through local staging inside transx, and DBMS transfers
-// are handled by dbmsx, so both are strategy-independent.
+// Transfer strategy values, mapping 1:1 onto transx-ex's Strategy. They carry
+// real meaning for SSH→SSH (file system) and S3→S3 (object storage) transfers:
+// cross-storage always relays through local staging inside transx, and DBMS
+// transfers are handled by dbmsx, so both are strategy-independent.
 const (
 	// StrategyAuto: transx picks the best method from the source/destination types.
 	StrategyAuto = "auto"
-	// StrategyDirect: force a direct SSH→SSH transfer (agent-forward).
+	// StrategyDirect: transfer with nothing staged locally — agent-forward
+	// between two SSH hosts, a streamed copy between two object stores. This
+	// is the default.
 	StrategyDirect = "direct"
-	// StrategyRelay: force a relay through the local machine (bypasses the
-	// agent-forward requirement). This is the default.
+	// StrategyRelay: force a relay through local staging (bypasses the
+	// agent-forward requirement).
 	StrategyRelay = "relay"
 )
 

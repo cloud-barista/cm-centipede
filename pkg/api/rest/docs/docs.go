@@ -1692,6 +1692,15 @@ const docTemplate = `{
                 },
                 "srcConnection": {
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "strategy": {
+                    "description": "Strategy is the transx transfer strategy (auto/direct/relay). It only affects\nS3→S3 transfers — direct streams each object, relay stages them locally —\nand objectstorage→filesystem cross-storage always relays. Set by the plan\nlayer; empty runs as direct.",
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "direct",
+                        "relay"
+                    ]
                 }
             }
         },
@@ -2262,7 +2271,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.FileSystemFilter"
                 },
                 "fileSystemStrategy": {
-                    "description": "FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)\ntasks. Empty is normalised to \"direct\" (agent-forward: the source host\nsends straight to the destination, with nothing staged here). It has no\neffect on object-storage or DBMS tasks, where relay is always used / not\napplicable.",
+                    "description": "FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)\ntasks. Empty is normalised to \"direct\" (agent-forward: the source host\nsends straight to the destination, with nothing staged here). Object\nstorage tasks take ObjectStorageStrategy instead; DBMS tasks have none.",
                     "type": "string",
                     "enum": [
                         "auto",
@@ -2272,6 +2281,15 @@ const docTemplate = `{
                 },
                 "objectStorageFilter": {
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ObjectStorageFilter"
+                },
+                "objectStorageStrategy": {
+                    "description": "ObjectStorageStrategy is the transfer strategy applied to object storage\n(S3→S3) tasks. Empty is normalised to \"direct\": each object streams from\nsource to destination, with nothing staged here. \"relay\" downloads to\nlocal staging first, then uploads. It has no effect on objectstorage→\nfilesystem cross-storage, which always relays.",
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "direct",
+                        "relay"
+                    ]
                 },
                 "srcConnection": {
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"

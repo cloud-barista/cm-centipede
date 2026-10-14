@@ -51,11 +51,17 @@ type PlanEntry struct {
 
 	// FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)
 	// tasks. Empty is normalised to "direct" (agent-forward: the source host
-	// sends straight to the destination, with nothing staged here). It has no
-	// effect on object-storage or DBMS tasks, where relay is always used / not
-	// applicable.
+	// sends straight to the destination, with nothing staged here). Object
+	// storage tasks take ObjectStorageStrategy instead; DBMS tasks have none.
 	FileSystemStrategy  string                           `json:"fileSystemStrategy,omitempty" validate:"omitempty,oneof=auto direct relay"`
 	FileSystemFilter    *commonmodel.FileSystemFilter    `json:"fileSystemFilter,omitempty"`
 	ObjectStorageFilter *commonmodel.ObjectStorageFilter `json:"objectStorageFilter,omitempty"`
 	DBMSFilter          *commonmodel.DBMSFilter          `json:"dbmsFilter,omitempty"`
+
+	// ObjectStorageStrategy is the transfer strategy applied to object storage
+	// (S3→S3) tasks. Empty is normalised to "direct": each object streams from
+	// source to destination, with nothing staged here. "relay" downloads to
+	// local staging first, then uploads. It has no effect on objectstorage→
+	// filesystem cross-storage, which always relays.
+	ObjectStorageStrategy string `json:"objectStorageStrategy,omitempty" validate:"omitempty,oneof=auto direct relay"`
 }

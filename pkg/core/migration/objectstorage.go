@@ -383,6 +383,13 @@ func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStor
 	if dstType == "" {
 		dstType = commonmodel.StorageTypeObjectStorage
 	}
+	// Normalise the transfer strategy; empty defaults to direct. Guards
+	// migrations created directly (bypassing the plan layer) or before the
+	// field existed.
+	strategy := m.Strategy
+	if strategy == "" {
+		strategy = commonmodel.StrategyDirect
+	}
 
 	buckets := make([]targetmodel.ObjectMigrationInfo, len(m.Buckets))
 	copy(buckets, m.Buckets)
@@ -443,6 +450,7 @@ func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStor
 			movedBytes, transferErr := runStorageTransfer(ctx, transxex.StorageMigrationModel{
 				Source:      srcLoc,
 				Destination: dstLoc,
+				Strategy:    strategy,
 			}, bucket.SrcPath, progressCh)
 
 			resultCh <- result{

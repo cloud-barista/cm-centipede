@@ -581,7 +581,7 @@ func indexSource(src sourcemodel.SourceDataMigrationProperty) (map[string]source
 //
 // An ignored filter is worse than a rejected one: the caller reads back a plan
 // that migrated everything and believes their filter ran. The same goes for a
-// strategy, which only a filesystem transfer has anywhere to apply.
+// strategy: each has a field of its own, for the one domain it applies to.
 func validateEntryDomain(kind dataKind, e model.PlanEntry) string {
 	given := []struct {
 		name string
@@ -591,6 +591,7 @@ func validateEntryDomain(kind dataKind, e model.PlanEntry) string {
 		{"objectStorageFilter", e.ObjectStorageFilter != nil},
 		{"dbmsFilter", e.DBMSFilter != nil},
 		{"fileSystemStrategy", e.FileSystemStrategy != ""},
+		{"objectStorageStrategy", e.ObjectStorageStrategy != ""},
 	}
 
 	var allowed map[string]bool
@@ -598,7 +599,7 @@ func validateEntryDomain(kind dataKind, e model.PlanEntry) string {
 	case kindSSH:
 		allowed = map[string]bool{"fileSystemFilter": true, "fileSystemStrategy": true}
 	case kindObjectStorage:
-		allowed = map[string]bool{"objectStorageFilter": true}
+		allowed = map[string]bool{"objectStorageFilter": true, "objectStorageStrategy": true}
 	case kindDBMS:
 		allowed = map[string]bool{"dbmsFilter": true}
 	}
@@ -701,6 +702,12 @@ func buildObjectStorageEntry(
 	dstType dataKind,
 ) (targetmodel.MigrationObjectStorageModel, error) {
 
+	// Normalise the object storage transfer strategy; empty defaults to direct.
+	strategy := e.ObjectStorageStrategy
+	if strategy == "" {
+		strategy = commonmodel.StrategyDirect
+	}
+
 	var rules []commonmodel.PathFilterRule
 	var mapping *commonmodel.TargetMapping
 	if f := e.ObjectStorageFilter; f != nil {
@@ -757,6 +764,7 @@ func buildObjectStorageEntry(
 			DstPath: dstPath,
 			Rules:   rules,
 		}},
+		Strategy: strategy,
 	}, nil
 }
 
