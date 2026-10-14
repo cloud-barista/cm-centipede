@@ -50,9 +50,10 @@ type PlanEntry struct {
 	DstConnection commonmodel.ConnectionRef `json:"dstConnection" validate:"required"`
 
 	// FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)
-	// tasks. Empty is normalised to "relay" (safer default: avoids agent-forward
-	// setup requirements). It has no effect on object-storage or DBMS tasks, where
-	// relay is always used / not applicable.
+	// tasks. Empty is normalised to "direct" (agent-forward: the source host
+	// sends straight to the destination, with nothing staged here). It has no
+	// effect on object-storage or DBMS tasks, where relay is always used / not
+	// applicable.
 	FileSystemStrategy  string                           `json:"fileSystemStrategy,omitempty" validate:"omitempty,oneof=auto direct relay"`
 	FileSystemFilter    *commonmodel.FileSystemFilter    `json:"fileSystemFilter,omitempty"`
 	ObjectStorageFilter *commonmodel.ObjectStorageFilter `json:"objectStorageFilter,omitempty"`

@@ -619,10 +619,10 @@ func buildFileSystemEntry(
 	dstType dataKind,
 ) (targetmodel.MigrationFileSystemModel, error) {
 
-	// Normalise the filesystem transfer strategy; empty defaults to relay.
+	// Normalise the filesystem transfer strategy; empty defaults to direct.
 	strategy := e.FileSystemStrategy
 	if strategy == "" {
-		strategy = commonmodel.StrategyRelay
+		strategy = commonmodel.StrategyDirect
 	}
 
 	var rules []commonmodel.PathFilterRule

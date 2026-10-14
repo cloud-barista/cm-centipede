@@ -137,11 +137,11 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 	if dstType == "" {
 		dstType = commonmodel.StorageTypeFilesystem
 	}
-	// Normalise the transfer strategy; empty defaults to relay. Guards migrations
+	// Normalise the transfer strategy; empty defaults to direct. Guards migrations
 	// created directly (bypassing the plan layer) with an unset strategy.
 	strategy := m.Strategy
 	if strategy == "" {
-		strategy = commonmodel.StrategyRelay
+		strategy = commonmodel.StrategyDirect
 	}
 
 	folders := make([]targetmodel.FSMigrationInfo, len(m.Folders))

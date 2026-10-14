@@ -2262,7 +2262,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.FileSystemFilter"
                 },
                 "fileSystemStrategy": {
-                    "description": "FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)\ntasks. Empty is normalised to \"relay\" (safer default: avoids agent-forward\nsetup requirements). It has no effect on object-storage or DBMS tasks, where\nrelay is always used / not applicable.",
+                    "description": "FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)\ntasks. Empty is normalised to \"direct\" (agent-forward: the source host\nsends straight to the destination, with nothing staged here). It has no\neffect on object-storage or DBMS tasks, where relay is always used / not\napplicable.",
                     "type": "string",
                     "enum": [
                         "auto",
