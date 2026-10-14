@@ -315,6 +315,12 @@ func NewTumblebugProvider(config *TumblebugConfig) (*TumblebugProvider, error) {
 // NewS3Executor wraps a provider as a pipeline executor.
 func NewS3Executor(provider S3Provider) *S3Executor { return storagex.NewS3Executor(provider) }
 
+// NewS3StreamExecutor wraps two providers as a pipeline executor that streams
+// each object from src to dst, with nothing staged.
+func NewS3StreamExecutor(src, dst S3Provider) *S3StreamExecutor {
+	return storagex.NewS3StreamExecutor(src, dst)
+}
+
 // NewRsyncExecutor builds the rsync executor for a source/destination pair,
 // choosing pull, push or agent-forward from their access types.
 func NewRsyncExecutor(src, dst StorageLocation) (*RsyncExecutor, error) {

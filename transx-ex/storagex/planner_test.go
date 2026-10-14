@@ -177,6 +177,7 @@ func TestRelayPipelinesStageInTheirOwnDirectory(t *testing.T) {
 			model: DataMigrationModel{
 				Source:      s3Loc("src-bucket/"),
 				Destination: s3Loc("dst-bucket/"),
+				Strategy:    StrategyRelay,
 			},
 			stagingStep: 0,
 		},

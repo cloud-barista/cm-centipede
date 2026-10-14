@@ -152,7 +152,7 @@ Model → Validate() → Plan() → Pipeline{Steps} → Executor.Execute(ctx, sr
 | Source → Destination            | Pipeline                   | How                                  |
 | ------------------------------- | -------------------------- | ------------------------------------ |
 | filesystem ↔ filesystem         | `filesystem-transfer`      | rsync pull, push, or agent-forward   |
-| objectstorage ↔ objectstorage   | `objectstorage-transfer`   | download → local staging → upload    |
+| objectstorage ↔ objectstorage   | `objectstorage-transfer`   | each object streamed GET → PUT; `relay`: download → local staging → upload |
 | filesystem ↔ objectstorage      | `cross-storage-transfer`   | rsync and S3 combined                |
 
 Object storage access type `minio` covers every S3-compatible service and Azure

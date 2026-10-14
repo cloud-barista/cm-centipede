@@ -49,14 +49,21 @@ const (
 // Transfer Strategies
 // ============================================================================
 
+// What tells the two apart is whether the data is staged on local disk on its
+// way. Direct stages nothing: SSH → SSH runs rsync on the source host with the
+// agent forwarded, and object storage → object storage streams each object
+// through memory. Relay copies everything into a local staging directory first,
+// then sends it on. Cross-storage with an SSH side always relays.
 const (
-	// StrategyAuto automatically selects the best transfer method.
+	// StrategyAuto automatically selects the best transfer method: direct
+	// where the pair has one.
 	StrategyAuto = "auto"
 
-	// StrategyDirect forces direct transfer (e.g., SSH agent forwarding).
+	// StrategyDirect forces direct transfer: SSH agent forwarding between two
+	// hosts, streaming between two object stores.
 	StrategyDirect = "direct"
 
-	// StrategyRelay forces relay via local machine.
+	// StrategyRelay forces relay via local staging.
 	StrategyRelay = "relay"
 )
 
@@ -74,6 +81,7 @@ const (
 	StepUploadToS3      = "upload-to-s3"
 	StepRsyncFromServer = "rsync-from-server"
 	StepRsyncToServer   = "rsync-to-server"
+	StepStreamS3ToS3    = "stream-s3-to-s3"
 )
 
 // ============================================================================

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -263,6 +264,173 @@ func (e *S3Executor) downloadFile(ctx context.Context, s3Key, localPath string) 
 	return nil
 }
 
+// S3StreamExecutor implements Executor for object storage → object storage
+// transfers without staging: each object's download is the body of its upload.
+//
+// Against the relay through a local directory, the two legs overlap instead of
+// following one another, and nothing the size of the bucket lands on local
+// disk. The data still passes through this process, in memory, an object at a
+// time per worker.
+type S3StreamExecutor struct {
+	Src S3Provider // where objects are read from
+	Dst S3Provider // where they are written to
+}
+
+// NewS3StreamExecutor creates an S3StreamExecutor between two providers.
+func NewS3StreamExecutor(src, dst S3Provider) *S3StreamExecutor {
+	return &S3StreamExecutor{Src: src, Dst: dst}
+}
+
+// Execute copies every object under source's prefix that its filter keeps to
+// the same relative key under destination's prefix — the keys the relay
+// produces, so validation compares the two the same way.
+func (e *S3StreamExecutor) Execute(ctx context.Context, source, destination DataLocation) error {
+	if !source.IsObjectStorage() || !destination.IsObjectStorage() {
+		return fmt.Errorf("stream transfer needs object storage on both sides")
+	}
+
+	_, srcPrefix := ParseBucketAndKey(source.Path)
+	_, dstPrefix := ParseBucketAndKey(destination.Path)
+
+	objects, err := e.Src.ListObjects(srcPrefix)
+	if err != nil {
+		return Obj{Kind: ObjectKindObject, Owner: srcPrefix}.Fail(ActionList, err)
+	}
+
+	var matched []int
+	for i, obj := range objects {
+		if source.Filter.MatchPath(filter.Rel(srcPrefix, obj.Key), obj.Size, false) {
+			matched = append(matched, i)
+		}
+	}
+
+	progress := &s3Progress{reporter: core.ReporterFrom(ctx)}
+
+	return forEachConcurrently(ctx, len(matched), func(ctx context.Context, n int) error {
+		i := matched[n]
+		obj := objects[i]
+
+		// A transfer of thousands of objects reports which one it stopped on,
+		// and how far in it got.
+		item := Obj{Kind: ObjectKindObject, Name: obj.Key, Index: i + 1, Total: len(objects)}
+
+		dstKey := streamDstKey(srcPrefix, dstPrefix, obj.Key)
+
+		// Shared by every attempt at this object, so a retry counts only what
+		// goes past the furthest an earlier attempt got.
+		var credited int64
+		copyOnce := func() error {
+			return e.copyObject(ctx, obj, dstKey, func(pos int64) { progress.credit(&credited, pos, obj.Key) })
+		}
+		if err := withRetry(ctx, copyOnce); err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
+			return item.Fail(ActionUpload, err)
+		}
+
+		progress.finish(&credited, obj.Size, obj.Key)
+		return nil
+	})
+}
+
+// copyObject streams one object from Src to Dst, calling read with how far into
+// the object the upload has read.
+func (e *S3StreamExecutor) copyObject(ctx context.Context, obj ObjectInfo, dstKey string, read func(pos int64)) error {
+	get, err := e.Src.GeneratePresignedURL("download", obj.Key)
+	if err != nil {
+		return fmt.Errorf("failed to generate presigned download URL: %w", err)
+	}
+	put, err := e.Dst.GeneratePresignedURL("upload", dstKey)
+	if err != nil {
+		return fmt.Errorf("failed to generate presigned upload URL: %w", err)
+	}
+
+	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, get.URL, nil)
+	if err != nil {
+		return permanent(fmt.Errorf("failed to create download request: %w", err))
+	}
+	resp, err := httpClientFor(e.Src).Do(getReq)
+	if err != nil {
+		return fmt.Errorf("download request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return statusError("download", resp)
+	}
+
+	// A presigned PUT needs its length up front. The response's own is the one
+	// the body will match; the listing's stands in for a response that streams
+	// without one.
+	length := resp.ContentLength
+	if length < 0 {
+		length = obj.Size
+	}
+
+	var body io.Reader = &countingReader{r: resp.Body, read: read}
+	if length == 0 {
+		// A zero ContentLength with a body is sent chunked, which a presigned
+		// PUT refuses. An empty object — a folder marker among them — is
+		// sent with no body at all.
+		body = http.NoBody
+	}
+
+	putReq, err := http.NewRequestWithContext(ctx, http.MethodPut, put.URL, body)
+	if err != nil {
+		return permanent(fmt.Errorf("failed to create upload request: %w", err))
+	}
+	putReq.ContentLength = length
+	// Apply CSP-specific headers provided by Tumblebug (e.g. x-ms-blob-type for Azure).
+	for k, v := range put.RequiredHeaders {
+		putReq.Header.Set(k, v)
+	}
+
+	putResp, err := httpClientFor(e.Dst).Do(putReq)
+	if err != nil {
+		return fmt.Errorf("upload request failed: %w", err)
+	}
+	defer putResp.Body.Close()
+
+	if putResp.StatusCode < 200 || putResp.StatusCode >= 300 {
+		return statusError("upload", putResp)
+	}
+	return nil
+}
+
+// streamDstKey maps a source key to its destination key: the part below the
+// source prefix, put under the destination prefix. It is what the relay's
+// download-then-upload produces, with one difference: a trailing slash — a
+// folder marker's — is kept, where the relay's path cleaning dropped it.
+func streamDstKey(srcPrefix, dstPrefix, key string) string {
+	rel := strings.TrimPrefix(strings.TrimPrefix(key, srcPrefix), "/")
+	if rel == "" {
+		// The prefix named the object itself, not a folder above it.
+		rel = path.Base(key)
+	}
+	dst := path.Join(dstPrefix, rel)
+	if strings.HasSuffix(rel, "/") {
+		dst += "/"
+	}
+	return dst
+}
+
+// countingReader passes reads through, telling read the running position.
+type countingReader struct {
+	r    io.Reader
+	pos  int64
+	read func(pos int64)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.pos += int64(n)
+		c.read(c.pos)
+	}
+	return n, err
+}
+
 // forEachConcurrently calls fn for every index in [0, n), at most
 // s3Concurrency at a time.
 //
@@ -302,7 +470,12 @@ type s3Progress struct {
 	reporter core.Reporter
 	bytes    int64
 	files    int64
+	reported int64 // bytes as of the last report
 }
+
+// s3ReportEvery is how far the bytes of objects in flight move between reports.
+// Every read would be a report per 32 KB, from every worker.
+const s3ReportEvery = 1 << 20
 
 // done records one finished object of size bytes and reports the new totals.
 func (p *s3Progress) done(size int64, item string) {
@@ -310,6 +483,41 @@ func (p *s3Progress) done(size int64, item string) {
 	defer p.mu.Unlock()
 	p.bytes += size
 	p.files++
+	p.report(item)
+}
+
+// credit counts an object in flight up to pos, past what *credited — that
+// object's own count, over all its attempts — already holds. A retry re-reads
+// from the start, and counts nothing until it passes where the last one got.
+func (p *s3Progress) credit(credited *int64, pos int64, item string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pos <= *credited {
+		return
+	}
+	p.bytes += pos - *credited
+	*credited = pos
+	if p.bytes-p.reported >= s3ReportEvery {
+		p.report(item)
+	}
+}
+
+// finish records an object credit has been counting as done: whatever of its
+// size the reads did not reach is added, and the new totals are reported.
+func (p *s3Progress) finish(credited *int64, size int64, item string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if size > *credited {
+		p.bytes += size - *credited
+		*credited = size
+	}
+	p.files++
+	p.report(item)
+}
+
+// report sends the totals. The caller holds p.mu.
+func (p *s3Progress) report(item string) {
+	p.reported = p.bytes
 	p.reporter.Report(core.Update{Bytes: p.bytes, Files: p.files, Item: item})
 }
 

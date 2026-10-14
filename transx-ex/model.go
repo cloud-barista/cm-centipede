@@ -59,6 +59,7 @@ type (
 	TumblebugProvider = storagex.TumblebugProvider
 	RsyncExecutor     = storagex.RsyncExecutor
 	S3Executor        = storagex.S3Executor
+	S3StreamExecutor  = storagex.S3StreamExecutor
 
 	FSEntry         = storagex.FSEntry
 	FSInspectResult = storagex.FSInspectResult
@@ -99,6 +100,7 @@ const (
 	StepUploadToS3      = storagex.StepUploadToS3
 	StepRsyncFromServer = storagex.StepRsyncFromServer
 	StepRsyncToServer   = storagex.StepRsyncToServer
+	StepStreamS3ToS3    = storagex.StepStreamS3ToS3
 )
 
 // Authentication types for the Spider and Tumblebug object storage APIs.

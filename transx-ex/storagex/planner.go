@@ -138,8 +138,46 @@ func planRelayFilesystemTransfer(model DataMigrationModel) (*Pipeline, error) {
 // ============================================================================
 
 // planObjectStorageTransfer handles objectstorage ↔ objectstorage transfers.
-// Always uses relay via local staging: S3 → local → S3
+//
+// By default — auto, direct or unset — each object streams from source to
+// destination with nothing staged (S3 → S3). Strategy "relay" keeps the
+// two-step route through local staging (S3 → local → S3), for a source and
+// destination that should not be read and written at once.
 func planObjectStorageTransfer(model DataMigrationModel) (*Pipeline, error) {
+	if model.Strategy == StrategyRelay {
+		return planRelayObjectStorageTransfer(model)
+	}
+
+	srcProvider, err := NewS3Provider(model.Source)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create source S3 provider: %w", err)
+	}
+	dstProvider, err := NewS3Provider(model.Destination)
+	if err != nil {
+		_ = CloseS3Provider(srcProvider)
+		return nil, fmt.Errorf("failed to create destination S3 provider: %w", err)
+	}
+
+	return &Pipeline{
+		Name: PipelineObjectStorageTransfer,
+		// What was resolved, not what was asked: auto and unset both end here.
+		Strategy: StrategyDirect,
+		Cleanup:  withProviders(nil, srcProvider, dstProvider),
+		Steps: []Step{
+			{
+				Name:        StepStreamS3ToS3,
+				Source:      model.Source,
+				Destination: model.Destination,
+				Executor:    NewS3StreamExecutor(srcProvider, dstProvider),
+			},
+		},
+	}, nil
+}
+
+// planRelayObjectStorageTransfer creates a two-step transfer via local staging.
+// Step 1: Download from source S3 to local staging
+// Step 2: Upload from local staging to destination S3
+func planRelayObjectStorageTransfer(model DataMigrationModel) (*Pipeline, error) {
 	stagingLoc, cleanup, err := newStagingLocation()
 	if err != nil {
 		return nil, err
