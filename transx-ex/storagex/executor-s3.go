@@ -2,15 +2,19 @@ package storagex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cloud-barista/cm-centipede/transx-ex/core"
 	"github.com/cloud-barista/cm-centipede/transx-ex/storagex/filter"
+	"golang.org/x/sync/errgroup"
 )
 
 // S3Executor implements Executor for S3 object storage transfers.
@@ -47,6 +51,19 @@ func (e *S3Executor) Execute(ctx context.Context, source, destination DataLocati
 	}
 }
 
+// s3Concurrency is how many objects move at once in each direction.
+//
+// One at a time, a transfer of many small objects is bound by round trips, not
+// bandwidth: each object costs a presigned URL — through Tumblebug or Spider an
+// API call of its own — and a request, and the next waits for both. Several in
+// flight hide those round trips behind one another.
+const s3Concurrency = 8
+
+// s3Attempts is how many times one object is tried before the transfer fails
+// on it. A transient error — a dropped connection, a 5xx — otherwise ended a
+// transfer of thousands of objects on the one it hit.
+const s3Attempts = 3
+
 // upload transfers local files to S3.
 func (e *S3Executor) upload(ctx context.Context, localPath, s3Path string, flt *FilterOption) error {
 	files, err := e.listLocalFiles(localPath, flt)
@@ -62,15 +79,10 @@ func (e *S3Executor) upload(ctx context.Context, localPath, s3Path string, flt *
 		basePath = filepath.Dir(localPath)
 	}
 
-	reporter := core.ReporterFrom(ctx)
-	var sent int64
+	progress := &s3Progress{reporter: core.ReporterFrom(ctx)}
 
-	for i, file := range files {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+	return forEachConcurrently(ctx, len(files), func(ctx context.Context, i int) error {
+		file := files[i]
 
 		// A transfer of thousands of files reports which one it stopped on,
 		// and how far in it got.
@@ -85,18 +97,21 @@ func (e *S3Executor) upload(ctx context.Context, localPath, s3Path string, flt *
 		s3Key := filepath.Join(keyPrefix, relPath)
 		s3Key = strings.ReplaceAll(s3Key, "\\", "/") // Normalize to forward slashes
 
-		if err := e.uploadFile(file, s3Key); err != nil {
+		if err := withRetry(ctx, func() error { return e.uploadFile(ctx, file, s3Key) }); err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
 			return item.Fail(ActionUpload, err)
 		}
 
 		// After the upload, not before: what is reported is what landed.
+		var size int64
 		if info, statErr := os.Stat(file); statErr == nil {
-			sent += info.Size()
+			size = info.Size()
 		}
-		reporter.Report(core.Update{Bytes: sent, Files: int64(i + 1), Item: s3Key})
-	}
-
-	return nil
+		progress.done(size, s3Key)
+		return nil
+	})
 }
 
 // download transfers S3 objects to local filesystem.
@@ -130,20 +145,20 @@ func (e *S3Executor) download(ctx context.Context, s3Path, localPath string, flt
 		return Obj{Kind: ObjectKindObject, Owner: keyPrefix}.Fail(ActionList, err)
 	}
 
-	reporter := core.ReporterFrom(ctx)
-	var received int64
-	var done int64
-
+	// The filter is applied up front so only matching objects take a worker;
+	// each keeps its index in the full listing for the error that names it.
+	var matched []int
 	for i, obj := range objects {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if flt.MatchPath(filter.Rel(keyPrefix, obj.Key), obj.Size, false) {
+			matched = append(matched, i)
 		}
+	}
 
-		if !flt.MatchPath(filter.Rel(keyPrefix, obj.Key), obj.Size, false) {
-			continue
-		}
+	progress := &s3Progress{reporter: core.ReporterFrom(ctx)}
+
+	return forEachConcurrently(ctx, len(matched), func(ctx context.Context, n int) error {
+		i := matched[n]
+		obj := objects[i]
 
 		// A transfer of thousands of objects reports which one it stopped on,
 		// and how far in it got.
@@ -158,20 +173,20 @@ func (e *S3Executor) download(ctx context.Context, s3Path, localPath string, flt
 			return item.Fail(ActionDownload, err)
 		}
 
-		if err := e.downloadFile(obj.Key, localFile); err != nil {
+		if err := withRetry(ctx, func() error { return e.downloadFile(ctx, obj.Key, localFile) }); err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
 			return item.Fail(ActionDownload, err)
 		}
 
-		received += obj.Size
-		done++
-		reporter.Report(core.Update{Bytes: received, Files: done, Item: obj.Key})
-	}
-
-	return nil
+		progress.done(obj.Size, obj.Key)
+		return nil
+	})
 }
 
 // uploadFile uploads a single file using presigned URL.
-func (e *S3Executor) uploadFile(localPath, s3Key string) error {
+func (e *S3Executor) uploadFile(ctx context.Context, localPath, s3Key string) error {
 	result, err := e.Provider.GeneratePresignedURL("upload", s3Key)
 	if err != nil {
 		return fmt.Errorf("failed to generate presigned URL: %w", err)
@@ -179,18 +194,18 @@ func (e *S3Executor) uploadFile(localPath, s3Key string) error {
 
 	file, err := os.Open(localPath)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+		return permanent(fmt.Errorf("failed to open file: %w", err))
 	}
 	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("failed to stat file: %w", err)
+		return permanent(fmt.Errorf("failed to stat file: %w", err))
 	}
 
-	req, err := http.NewRequest(http.MethodPut, result.URL, file)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, result.URL, file)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return permanent(fmt.Errorf("failed to create request: %w", err))
 	}
 	req.ContentLength = stat.Size()
 
@@ -206,34 +221,38 @@ func (e *S3Executor) uploadFile(localPath, s3Key string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(body))
+		return statusError("upload", resp)
 	}
 
 	return nil
 }
 
 // downloadFile downloads a single file using presigned URL.
-func (e *S3Executor) downloadFile(s3Key, localPath string) error {
+func (e *S3Executor) downloadFile(ctx context.Context, s3Key, localPath string) error {
 	result, err := e.Provider.GeneratePresignedURL("download", s3Key)
 	if err != nil {
 		return fmt.Errorf("failed to generate presigned URL: %w", err)
 	}
 
-	resp, err := httpClientFor(e.Provider).Get(result.URL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, result.URL, nil)
+	if err != nil {
+		return permanent(fmt.Errorf("failed to create request: %w", err))
+	}
+
+	resp, err := httpClientFor(e.Provider).Do(req)
 	if err != nil {
 		return fmt.Errorf("download request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
+		return statusError("download", resp)
 	}
 
+	// Create truncates, so a retry after a broken body starts the file over.
 	file, err := os.Create(localPath)
 	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
+		return permanent(fmt.Errorf("failed to create file: %w", err))
 	}
 	defer file.Close()
 
@@ -242,6 +261,104 @@ func (e *S3Executor) downloadFile(s3Key, localPath string) error {
 	}
 
 	return nil
+}
+
+// forEachConcurrently calls fn for every index in [0, n), at most
+// s3Concurrency at a time.
+//
+// The first failure cancels the ctx the others run under, and is the error
+// returned: the ones it cut short fail with a cancellation that comes second.
+// A cancellation from outside with nothing failing still returns the context
+// error, since the indices never started were not transferred.
+func forEachConcurrently(ctx context.Context, n int, fn func(ctx context.Context, i int) error) error {
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(s3Concurrency)
+
+	for i := 0; i < n; i++ {
+		if gctx.Err() != nil {
+			break
+		}
+		g.Go(func() error {
+			// A slot can free up after the cancellation that should stop it.
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			return fn(gctx, i)
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// s3Progress totals what concurrent transfers have finished and reports it.
+//
+// Under one lock, so the totals a reporter sees only ever grow — two workers
+// finishing together cannot report their sums in the wrong order.
+type s3Progress struct {
+	mu       sync.Mutex
+	reporter core.Reporter
+	bytes    int64
+	files    int64
+}
+
+// done records one finished object of size bytes and reports the new totals.
+func (p *s3Progress) done(size int64, item string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.bytes += size
+	p.files++
+	p.reporter.Report(core.Update{Bytes: p.bytes, Files: p.files, Item: item})
+}
+
+// permanentError marks a failure that trying again cannot fix — a local file
+// that will not open, a 403 — so withRetry gives up on it at once.
+type permanentError struct{ err error }
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
+
+func permanent(err error) error { return &permanentError{err: err} }
+
+// statusError reads a failed response into an error. A 5xx, 408 or 429 is the
+// server's passing trouble and stays retryable; any other status is permanent.
+func statusError(op string, resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	err := fmt.Errorf("%s failed with status %d: %s", op, resp.StatusCode, string(body))
+	switch {
+	case resp.StatusCode >= 500,
+		resp.StatusCode == http.StatusRequestTimeout,
+		resp.StatusCode == http.StatusTooManyRequests:
+		return err
+	default:
+		return permanent(err)
+	}
+}
+
+// withRetry runs fn up to s3Attempts times, waiting 1s and then 2s between
+// tries. Each try runs fn whole, so a new presigned URL is fetched with it.
+// It stops early on a permanent error or a cancelled ctx.
+func withRetry(ctx context.Context, fn func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		var perm *permanentError
+		if errors.As(err, &perm) || ctx.Err() != nil {
+			return err
+		}
+		if attempt == s3Attempts {
+			return fmt.Errorf("%w (after %d attempts)", err, attempt)
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(1<<(attempt-1)) * time.Second):
+		}
+	}
 }
 
 // listLocalFiles returns a list of files matching the filter.

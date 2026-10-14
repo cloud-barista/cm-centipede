@@ -56,7 +56,7 @@ func NewMinioProvider(config *MinioConfig, bucket string) (*MinioProvider, error
 	var httpClient *http.Client
 	if config.SSHTunnel != nil {
 		tunnel = core.NewSSHDialer(config.SSHTunnel)
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport := newPresignedTransport(http.DefaultTransport.(*http.Transport))
 		transport.Proxy = nil // the SSH host is the only hop
 		transport.DialContext = tunnel.DialContext
 		opts.Transport = transport
