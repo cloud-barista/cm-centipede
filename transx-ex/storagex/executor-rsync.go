@@ -239,7 +239,11 @@ func (e *RsyncExecutor) executeAgentForward(ctx context.Context, source, destina
 	// VM provisioned with its own key pair answers "Permission denied
 	// (publickey)". The source key stays for those that do. With no destination
 	// key there is nothing to add, and the source key is all there is to try.
-	if dstKeyData, err := e.loadPrivateKeyData(dstSSH); err == nil {
+	if dstSSH.PrivateKey != "" || dstSSH.PrivateKeyPath != "" {
+		dstKeyData, err := e.loadPrivateKeyData(dstSSH)
+		if err != nil {
+			return fmt.Errorf("failed to load destination private key data: %w", err)
+		}
 		dstRawKey, err := ssh.ParseRawPrivateKey(dstKeyData)
 		if err != nil {
 			return fmt.Errorf("failed to parse destination private key: %w", err)
