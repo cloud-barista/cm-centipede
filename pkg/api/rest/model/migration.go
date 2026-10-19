@@ -30,6 +30,11 @@ type Migration struct {
 	// has to outlive the call that set it. Empty means DBMSOnFailureCleanup.
 	DBMSOnFailure string `gorm:"column:dbms_on_failure" json:"dbmsOnFailure,omitempty"`
 
+	// StagingDir is the staging root the request named, kept as given for the
+	// same reason as DBMSOnFailure. Empty means the server's configured default,
+	// resolved when the migration runs.
+	StagingDir string `gorm:"column:staging_dir" json:"stagingDir,omitempty"`
+
 	Status        string `gorm:"column:status"         json:"status"`
 	StatusMessage string `gorm:"column:status_message" json:"statusMessage,omitempty"`
 
@@ -185,6 +190,14 @@ type CreateMigrationReq struct {
 	//
 	// Cancellation is not a failure and always cleans up, whatever this says.
 	DBMSOnFailure string `json:"dbmsOnFailure,omitempty" validate:"omitempty,oneof=cleanup keep"`
+
+	// StagingDir is the local directory, on the cm-centipede host, that
+	// transfers stage data under when they cannot go straight from source to
+	// destination: a filesystem or object storage relay, a cross-storage
+	// transfer, a DBMS dump. Must be an absolute path; it is created if missing.
+	// Empty uses centipede.migration.stagingDir from the configuration, and when
+	// that is empty too, $TMPDIR/transxex-staging or /tmp/transxex-staging.
+	StagingDir string `json:"stagingDir,omitempty" example:"/data/centipede-staging"`
 }
 
 // RetryReq is the optional request body for POST /centipede/migration/{id}/retry.
@@ -235,6 +248,7 @@ type MigrationSummary struct {
 	PlanSummary PlanSummary `json:"planSummary"`
 
 	DBMSOnFailure string `json:"dbmsOnFailure,omitempty"`
+	StagingDir    string `json:"stagingDir,omitempty"`
 
 	Status        string `json:"status"`
 	StatusMessage string `json:"statusMessage,omitempty"`
@@ -285,6 +299,7 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 			CrossStorage:   countCrossStorage(p),
 		},
 		DBMSOnFailure:     m.DBMSOnFailure,
+		StagingDir:        m.StagingDir,
 		Status:            m.Status,
 		StatusMessage:     m.StatusMessage,
 		TotalItems:        m.TotalItems,

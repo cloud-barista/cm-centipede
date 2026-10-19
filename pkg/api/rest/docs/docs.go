@@ -1956,6 +1956,11 @@ const docTemplate = `{
                 },
                 "plan": {
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel"
+                },
+                "stagingDir": {
+                    "description": "StagingDir is the local directory, on the cm-centipede host, that\ntransfers stage data under when they cannot go straight from source to\ndestination: a filesystem or object storage relay, a cross-storage\ntransfer, a DBMS dump. Must be an absolute path; it is created if missing.\nEmpty uses centipede.migration.stagingDir from the configuration, and when\nthat is empty too, $TMPDIR/transxex-staging or /tmp/transxex-staging.",
+                    "type": "string",
+                    "example": "/data/centipede-staging"
                 }
             }
         },
@@ -2066,6 +2071,10 @@ const docTemplate = `{
                 },
                 "processedItems": {
                     "type": "integer"
+                },
+                "stagingDir": {
+                    "description": "StagingDir is the staging root the request named, kept as given for the\nsame reason as DBMSOnFailure. Empty means the server's configured default,\nresolved when the migration runs.",
+                    "type": "string"
                 },
                 "startedAt": {
                     "type": "string"
@@ -2215,6 +2224,9 @@ const docTemplate = `{
                 },
                 "processedItems": {
                     "type": "integer"
+                },
+                "stagingDir": {
+                    "type": "string"
                 },
                 "startedAt": {
                     "type": "string"

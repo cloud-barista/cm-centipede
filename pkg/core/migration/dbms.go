@@ -478,9 +478,12 @@ func createOptionFrom(dbmsType string, src *transxex.DBMSInfo) *transxex.CreateD
 // ssh-tunnel) is checked up-front by transxex.ValidateDBMS — MigrateDBMSAsync
 // does not validate on its own — and any violation is reported as a failed item.
 //
+// stagingDir is the local staging root a dump is written under (see
+// ResolveStagingDir); empty leaves it to transx-ex's default.
+//
 // Returns ctx.Err() on cancellation; per-item errors are reported through
 // progressCh and do not stop the remaining items.
-func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure string, progressCh chan<- ProgressEvent) error {
+func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure, stagingDir string, progressCh chan<- ProgressEvent) error {
 	dbType := string(m.DBType)
 
 	dbs := make([]targetmodel.DBMigrationInfo, len(m.Databases))
@@ -499,7 +502,7 @@ func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure 
 		default:
 		}
 
-		if err := migrateOneDatabase(ctx, m, d, dbType, onFailure, progressCh); err != nil {
+		if err := migrateOneDatabase(ctx, m, d, dbType, onFailure, stagingDir, progressCh); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -517,6 +520,7 @@ func migrateOneDatabase(
 	d targetmodel.DBMigrationInfo,
 	dbType string,
 	onFailure string,
+	stagingDir string,
 	progressCh chan<- ProgressEvent,
 ) error {
 	itemPath := fmt.Sprintf("%s/%s", dbType, d.SrcName)
@@ -583,6 +587,7 @@ func migrateOneDatabase(
 		// A database we created is dropped whole on failure, so there is nothing
 		// for the object-level rollback to do; the two paths are exclusive.
 		RollbackOnFailure: !created && !keep,
+		StagingDir:        stagingDir,
 	}
 
 	if err := transxex.ValidateDBMS(dmm); err != nil {

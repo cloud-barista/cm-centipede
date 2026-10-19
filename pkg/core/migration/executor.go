@@ -59,6 +59,8 @@ func (e *Executor) Execute(migrationID string) {
 	log.Info().Str("migrationID", migrationID).Int64("totalItems", m.TotalItems).Msg("migration execution started")
 
 	prop := m.Plan.TargetDataMigrationModel
+	stagingDir := ResolveStagingDir(m.StagingDir)
+	log.Info().Str("migrationID", migrationID).Str("stagingRoot", transxex.StagingRoot(stagingDir)).Msg("migration staging root")
 	var hasFailure bool
 
 	for i := range prop.FileSystems {
@@ -69,7 +71,7 @@ func (e *Executor) Execute(migrationID string) {
 		progressCh := make(chan ProgressEvent, 32)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateFileSystem(ctx, fs, progressCh)
+			_ = MigrateFileSystem(ctx, fs, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, fs.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -84,7 +86,7 @@ func (e *Executor) Execute(migrationID string) {
 		progressCh := make(chan ProgressEvent, 32)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateObjectStorage(ctx, oss, progressCh)
+			_ = MigrateObjectStorage(ctx, oss, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, oss.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -99,7 +101,7 @@ func (e *Executor) Execute(migrationID string) {
 		progressCh := make(chan ProgressEvent, 4)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateDBMS(ctx, dbEntry, m.DBMSOnFailure, progressCh)
+			_ = MigrateDBMS(ctx, dbEntry, m.DBMSOnFailure, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, dbEntry.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -386,7 +388,10 @@ func (e *Executor) Retry(migrationID, retryMode string) (*model.Migration, error
 		// quietly start cleaning them up. retryMode governs what is cleared *before*
 		// the retry runs; this governs what happens if the retry fails too.
 		DBMSOnFailure: orig.DBMSOnFailure,
-		Status:        "pending",
+		// Carried over as given: an empty value still means the configured
+		// default, resolved when the retry runs.
+		StagingDir: orig.StagingDir,
+		Status:     "pending",
 	}
 	if err := dao.CreateMigration(newMig); err != nil {
 		return nil, fmt.Errorf("create retry migration: %w", err)
@@ -435,6 +440,8 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 	log.Info().Str("migrationID", migrationID).Str("retryMode", retryMode).Msg("retry execution started")
 
 	prop := m.Plan.TargetDataMigrationModel
+	stagingDir := ResolveStagingDir(m.StagingDir)
+	log.Info().Str("migrationID", migrationID).Str("stagingRoot", transxex.StagingRoot(stagingDir)).Msg("migration staging root")
 	var hasFailure bool
 
 	// ── File Systems ──────────────────────────────────────────────────────────
@@ -461,7 +468,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 		progressCh := make(chan ProgressEvent, 32)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateFileSystem(ctx, fs, progressCh)
+			_ = MigrateFileSystem(ctx, fs, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, fs.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -492,7 +499,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 		progressCh := make(chan ProgressEvent, 32)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateObjectStorage(ctx, oss, progressCh)
+			_ = MigrateObjectStorage(ctx, oss, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, oss.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -598,7 +605,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 		progressCh := make(chan ProgressEvent, 8)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateDBMS(ctx, dbEntry, m.DBMSOnFailure, progressCh)
+			_ = MigrateDBMS(ctx, dbEntry, m.DBMSOnFailure, stagingDir, progressCh)
 		}()
 		if e.drainProgressWithRollback(m, migrationID, dbEntry.PlanEntryID, progressCh, rollbackOf) {
 			hasFailure = true

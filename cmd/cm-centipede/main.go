@@ -16,6 +16,7 @@ import (
 	"github.com/cloud-barista/cm-centipede/pkg/api/rest"
 	"github.com/cloud-barista/cm-centipede/pkg/api/rest/controller"
 	"github.com/cloud-barista/cm-centipede/pkg/config"
+	"github.com/cloud-barista/cm-centipede/pkg/core/migration"
 	"github.com/cloud-barista/cm-centipede/pkg/cryptoutil"
 	"github.com/cloud-barista/cm-centipede/pkg/dao"
 	"github.com/cloud-barista/cm-centipede/pkg/db"
@@ -34,6 +35,14 @@ func main() {
 	// 3. Refuse the shipped placeholder credentials
 	if err := config.Validate(); err != nil {
 		log.Fatal().Err(err).Msg("placeholder credentials in configuration")
+	}
+
+	// 3a. Configured staging root, when one is set: a directory that cannot be
+	// written would otherwise fail every migration that stages.
+	if dir := config.Conf.Migration.StagingDir; dir != "" {
+		if err := migration.CheckStagingDir(dir); err != nil {
+			log.Fatal().Err(err).Msg("unusable centipede.migration.stagingDir")
+		}
 	}
 
 	// 4. Database

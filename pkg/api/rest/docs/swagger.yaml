@@ -1051,6 +1051,16 @@ definitions:
         type: string
       plan:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel'
+      stagingDir:
+        description: |-
+          StagingDir is the local directory, on the cm-centipede host, that
+          transfers stage data under when they cannot go straight from source to
+          destination: a filesystem or object storage relay, a cross-storage
+          transfer, a DBMS dump. Must be an absolute path; it is created if missing.
+          Empty uses centipede.migration.stagingDir from the configuration, and when
+          that is empty too, $TMPDIR/transxex-staging or /tmp/transxex-staging.
+        example: /data/centipede-staging
+        type: string
     required:
     - name
     - plan
@@ -1152,6 +1162,12 @@ definitions:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel'
       processedItems:
         type: integer
+      stagingDir:
+        description: |-
+          StagingDir is the staging root the request named, kept as given for the
+          same reason as DBMSOnFailure. Empty means the server's configured default,
+          resolved when the migration runs.
+        type: string
       startedAt:
         type: string
       status:
@@ -1297,6 +1313,8 @@ definitions:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary'
       processedItems:
         type: integer
+      stagingDir:
+        type: string
       startedAt:
         type: string
       status:

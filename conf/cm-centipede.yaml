@@ -35,6 +35,16 @@ centipede:
     rateLimit: 20
   db:
     path: ./db/cm-centipede.db
+  migration:
+    # Local directory transfers stage data under when they cannot go straight
+    # from source to destination: a filesystem or object storage relay, a
+    # cross-storage transfer, a DBMS dump. Dumps can be as large as the source
+    # database, so point this at a disk with room. A migration request's
+    # stagingDir overrides it. Empty uses $TMPDIR/transxex-staging, or
+    # /tmp/transxex-staging when TMPDIR is unset. The server refuses to start
+    # when a value set here cannot be created or written.
+    # Override with CENTIPEDE_MIGRATION_STAGING_DIR.
+    stagingDir: ""
   encryption:
     # Passphrase the connection credentials are encrypted with. Required: the
     # server will not start without it. Any passphrase of 12+ characters; it is
