@@ -81,7 +81,7 @@ func planDirectPipe(model DBMSMigrationModel) (*Pipeline, error) {
 // its path, so the two agree on one file that exists rather than on a formula
 // they each apply. See executor.NewStagingFile for why that matters.
 func planDBMSTransfer(model DBMSMigrationModel) (*Pipeline, error) {
-	dumpExec, err := execpkg.NewDumpExecutor(model.Source, model.Scope, dumpOption(model))
+	dumpExec, err := execpkg.NewDumpExecutor(model.Source, model.Scope, model.StagingDir, dumpOption(model))
 	if err != nil {
 		return nil, fmt.Errorf("planDBMSTransfer: create dump executor: %w", err)
 	}

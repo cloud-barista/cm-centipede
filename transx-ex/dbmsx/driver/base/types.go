@@ -70,10 +70,14 @@ const (
 // Staging Constants
 // =============================================================================
 
-// DefaultStagingPath is the local directory used to store intermediate dump
+// StagingPath returns the local directory used to store intermediate dump
 // files. It is the DBMS subdirectory of the module-wide staging root, so a
-// database dump and a filesystem relay never share a directory.
-const DefaultStagingPath = core.DBMSStagingPath
+// database dump and a filesystem relay never share a directory. dir is the
+// staging root the caller asked for; empty selects the default (see
+// core.StagingRoot).
+func StagingPath(dir string) string {
+	return core.DBMSStagingPath(dir)
+}
 
 // =============================================================================
 // TargetGrant

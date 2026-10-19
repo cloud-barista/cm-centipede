@@ -107,7 +107,7 @@ func TestRestoreExecutor_ReadsThePairedDumpFile(t *testing.T) {
 	src := drvpkg.DBMSLocation{DBMSType: drvpkg.DBMSTypeMySQL, Database: "srcdb"}
 	dst := drvpkg.DBMSLocation{DBMSType: drvpkg.DBMSTypeMySQL, Database: "dstdb"}
 
-	dumpExec, err := NewDumpExecutor(src, drvpkg.ScopeSchemaOnly, nil)
+	dumpExec, err := NewDumpExecutor(src, drvpkg.ScopeSchemaOnly, "", nil)
 	if err != nil {
 		t.Fatalf("NewDumpExecutor: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestRestoreExecutorIntegration_Execute(t *testing.T) {
 	}
 
 	// Dump first.
-	dumpExec, err := NewDumpExecutor(src, drvpkg.ScopeSchemaOnly, nil)
+	dumpExec, err := NewDumpExecutor(src, drvpkg.ScopeSchemaOnly, "", nil)
 	if err != nil {
 		t.Fatalf("NewDumpExecutor: %v", err)
 	}

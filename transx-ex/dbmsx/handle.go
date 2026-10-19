@@ -337,7 +337,7 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 	// A file of this migration's own, not a path derived from the database name —
 	// see executor.NewStagingFile. Two migrations of the same database at the same
 	// scope used to share one file and overwrite each other's dump.
-	outputPath, cleanup, err := execpkg.NewStagingFile(dmm.Source.DBMSType, dmm.Source.Database, scope)
+	outputPath, cleanup, err := execpkg.NewStagingFile(dmm.StagingDir, dmm.Source.DBMSType, dmm.Source.Database, scope)
 	if err != nil {
 		return err
 	}

@@ -109,8 +109,8 @@ const (
 	AuthTypeJWT   = storagex.AuthTypeJWT
 )
 
-// StorageStagingPath is the local directory storage relays stage data in.
-const StorageStagingPath = storagex.DefaultStagingPath
+// StorageStagingPath returns the local directory storage relays stage data in.
+var StorageStagingPath = storagex.StagingPath
 
 // ============================================================================
 // DBMS Domain
@@ -239,8 +239,9 @@ const (
 	StepDirectPipe       = dbmsx.StepDirectPipe
 )
 
-// DBMSStagingPath is the local directory intermediate dump files are written to.
-const DBMSStagingPath = dbmsx.DefaultStagingPath
+// DBMSStagingPath returns the local directory intermediate dump files are
+// written to.
+var DBMSStagingPath = dbmsx.StagingPath
 
 // ============================================================================
 // Shared — one declaration serves both domains
@@ -269,8 +270,8 @@ const (
 	StatusRolledBack  = dbmsx.StatusRolledBack
 )
 
-// StagingRoot is the local directory both domains stage data under.
-const StagingRoot = core.StagingRoot
+// StagingRoot returns the local directory both domains stage data under.
+var StagingRoot = core.StagingRoot
 
 // ============================================================================
 // Field Encryption (storage domain only)

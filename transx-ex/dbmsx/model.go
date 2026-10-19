@@ -90,9 +90,10 @@ const (
 
 	SeverityBlocker = drvpkg.SeverityBlocker
 	SeverityWarning = drvpkg.SeverityWarning
-
-	DefaultStagingPath = drvpkg.DefaultStagingPath
 )
+
+// StagingPath returns the local directory intermediate dump files go in.
+var StagingPath = drvpkg.StagingPath
 
 // =============================================================================
 // Type aliases — re-export executor types so callers use unqualified names
@@ -219,6 +220,12 @@ type DBMSMigrationModel struct {
 	// patch-level difference never blocks. Set this to migrate to an older
 	// server anyway — when the schema is known to use nothing the target lacks.
 	SkipVersionCheck bool `json:"skipVersionCheck,omitempty"`
+
+	// StagingDir is the local staging root a dump is written under before it is
+	// restored; the migration uses its dbms subdirectory. Empty selects the
+	// default, $TMPDIR/transxex-staging or /tmp/transxex-staging. It has no
+	// effect on an SSH-to-SSH pipe, which stages nothing.
+	StagingDir string `json:"stagingDir,omitempty"`
 }
 
 // =============================================================================

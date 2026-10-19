@@ -37,14 +37,17 @@ type DumpExecutor struct {
 // gives it to the RestoreExecutor that reads the dump back, and Cleanup removes
 // it once nobody needs it.
 //
+// stagingDir is the staging root the caller asked for, or empty for the default;
+// see NewStagingFile.
+//
 // opt carries the choices that depend on where the dump is headed — currently a
 // PostgreSQL schema rename — and may be nil, which dumps the source as it stands.
-func NewDumpExecutor(loc drvpkg.DBMSLocation, scope string, opt *drvpkg.DumpOption) (*DumpExecutor, error) {
+func NewDumpExecutor(loc drvpkg.DBMSLocation, scope, stagingDir string, opt *drvpkg.DumpOption) (*DumpExecutor, error) {
 	drv, err := drvpkg.NewDBDriver(loc.DBMSType)
 	if err != nil {
 		return nil, err
 	}
-	path, cleanup, err := NewStagingFile(loc.DBMSType, loc.Database, scope)
+	path, cleanup, err := NewStagingFile(stagingDir, loc.DBMSType, loc.Database, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -121,17 +124,22 @@ func stagingFilePattern(dbmsType, database, scope string) string {
 // reach it through os.Create or a shell redirect — both of which would leave it
 // world-readable.
 //
+// stagingDir is the staging root the caller asked for; the file goes in its
+// dbms subdirectory. Empty selects the default root, $TMPDIR/transxex-staging
+// or /tmp/transxex-staging.
+//
 // The returned cleanup is best effort and silent: a staging file that will not
 // delete is not something the caller of a finished migration can act on, and it
 // must never mask the migration's own result.
-func NewStagingFile(dbmsType, database, scope string) (string, func(), error) {
-	if err := os.MkdirAll(drvpkg.DefaultStagingPath, 0o750); err != nil {
-		return "", nil, fmt.Errorf("create staging directory %q: %w", drvpkg.DefaultStagingPath, err)
+func NewStagingFile(stagingDir, dbmsType, database, scope string) (string, func(), error) {
+	dir := drvpkg.StagingPath(stagingDir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", nil, fmt.Errorf("create staging directory %q: %w", dir, err)
 	}
 
-	f, err := os.CreateTemp(drvpkg.DefaultStagingPath, stagingFilePattern(dbmsType, database, scope))
+	f, err := os.CreateTemp(dir, stagingFilePattern(dbmsType, database, scope))
 	if err != nil {
-		return "", nil, fmt.Errorf("create staging file in %q: %w", drvpkg.DefaultStagingPath, err)
+		return "", nil, fmt.Errorf("create staging file in %q: %w", dir, err)
 	}
 	path := f.Name()
 	if err := f.Close(); err != nil {

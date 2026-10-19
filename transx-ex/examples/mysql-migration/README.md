@@ -35,7 +35,7 @@ Host Machine
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The staging directory is `/tmp/transxex-staging/dbms` (`transxex.DBMSStagingPath`).
+The staging directory is `$TMPDIR/transxex-staging/dbms`, or `/tmp/transxex-staging/dbms` when `TMPDIR` is unset (`transxex.DBMSStagingPath("")`). Set `StagingDir` on the model to use `<StagingDir>/dbms` instead.
 
 ---
 

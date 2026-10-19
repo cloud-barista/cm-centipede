@@ -88,12 +88,13 @@ const (
 // Staging Configuration
 // ============================================================================
 
-const (
-	// DefaultStagingPath is the default local staging directory for relay
-	// transfers. It is the storage subdirectory of the module-wide staging
-	// root, so a filesystem relay and a database dump never share a directory.
-	DefaultStagingPath = core.StorageStagingPath
-)
+// StagingPath returns the local staging directory for relay transfers. It is
+// the storage subdirectory of the module-wide staging root, so a filesystem
+// relay and a database dump never share a directory. dir is the staging root
+// the caller asked for; empty selects the default (see core.StagingRoot).
+func StagingPath(dir string) string {
+	return core.StorageStagingPath(dir)
+}
 
 // ============================================================================
 // Filter Options
@@ -180,6 +181,12 @@ type DataMigrationModel struct {
 	// "direct": Force direct transfer (e.g., SSH agent forwarding).
 	// "relay": Force relay via local machine.
 	Strategy string `json:"strategy,omitempty" default:"auto" validate:"omitempty,oneof=auto direct relay"`
+
+	// StagingDir is the local staging root a relay stages data under; the
+	// transfer uses its storage subdirectory. Empty selects the default,
+	// $TMPDIR/transxex-staging or /tmp/transxex-staging. It has no effect on a
+	// transfer that stages nothing.
+	StagingDir string `json:"stagingDir,omitempty"`
 
 	// EncryptionKeyID indicates that sensitive fields are encrypted.
 	// Empty string means plaintext, non-empty means encrypted with the specified key.

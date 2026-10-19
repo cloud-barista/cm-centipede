@@ -16,7 +16,7 @@ import (
 // =============================================================================
 
 func TestNewDumpExecutor_InvalidType(t *testing.T) {
-	_, err := NewDumpExecutor(drvpkg.DBMSLocation{DBMSType: "unsupported", Database: "db"}, drvpkg.ScopeFull, nil)
+	_, err := NewDumpExecutor(drvpkg.DBMSLocation{DBMSType: "unsupported", Database: "db"}, drvpkg.ScopeFull, "", nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported DBMS type, got nil")
 	}
@@ -27,7 +27,7 @@ func TestNewDumpExecutor_InvalidType(t *testing.T) {
 }
 
 func TestNewDumpExecutor_ValidType(t *testing.T) {
-	exec, err := NewDumpExecutor(drvpkg.DBMSLocation{DBMSType: drvpkg.DBMSTypeMySQL, Database: "testdb"}, drvpkg.ScopeFull, nil)
+	exec, err := NewDumpExecutor(drvpkg.DBMSLocation{DBMSType: drvpkg.DBMSTypeMySQL, Database: "testdb"}, drvpkg.ScopeFull, "", nil)
 	if err != nil {
 		t.Fatalf("NewDumpExecutor: %v", err)
 	}
@@ -36,8 +36,8 @@ func TestNewDumpExecutor_ValidType(t *testing.T) {
 		t.Fatal("expected non-nil DumpExecutor")
 	}
 	// Staging directory must exist after construction.
-	if _, statErr := os.Stat(drvpkg.DefaultStagingPath); statErr != nil {
-		t.Errorf("staging directory %q should exist: %v", drvpkg.DefaultStagingPath, statErr)
+	if _, statErr := os.Stat(drvpkg.StagingPath("")); statErr != nil {
+		t.Errorf("staging directory %q should exist: %v", drvpkg.StagingPath(""), statErr)
 	}
 }
 
@@ -45,7 +45,7 @@ func TestNewDumpExecutor_ValidType(t *testing.T) {
 // register its removal, hand back the path.
 func stagingFile(t *testing.T, dbmsType, database, scope string) string {
 	t.Helper()
-	p, cleanup, err := NewStagingFile(dbmsType, database, scope)
+	p, cleanup, err := NewStagingFile("", dbmsType, database, scope)
 	if err != nil {
 		t.Fatalf("NewStagingFile(%s, %s, %s): %v", dbmsType, database, scope, err)
 	}
@@ -106,8 +106,8 @@ func TestNewStagingFile_IsUniquePerCall(t *testing.T) {
 		t.Fatalf("two dumps of the same database and scope share %q; one would overwrite the other", first)
 	}
 	for _, p := range []string{first, second} {
-		if filepath.Dir(p) != drvpkg.DefaultStagingPath {
-			t.Errorf("staging file %q is not under %q", p, drvpkg.DefaultStagingPath)
+		if filepath.Dir(p) != drvpkg.StagingPath("") {
+			t.Errorf("staging file %q is not under %q", p, drvpkg.StagingPath(""))
 		}
 	}
 }
@@ -133,8 +133,45 @@ func TestNewStagingFile_CreatesAnEmptyPrivateFile(t *testing.T) {
 	}
 }
 
+// A staging root the caller names replaces the default: the dump lands in the
+// root's dbms subdirectory, and cleanup leaves the root in place.
+func TestNewStagingFile_UsesRequestedRoot(t *testing.T) {
+	root := t.TempDir()
+
+	p, cleanup, err := NewStagingFile(root, drvpkg.DBMSTypeMySQL, "mydb", drvpkg.ScopeFull)
+	if err != nil {
+		t.Fatalf("NewStagingFile(%q, ...): %v", root, err)
+	}
+	if got, want := filepath.Dir(p), filepath.Join(root, "dbms"); got != want {
+		t.Errorf("staging file %q is in %q, want %q", p, got, want)
+	}
+
+	cleanup()
+
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Errorf("staging file %q survived cleanup (stat error: %v)", p, err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("cleanup removed the requested root %q: %v", root, err)
+	}
+}
+
+func TestNewDumpExecutor_UsesRequestedRoot(t *testing.T) {
+	root := t.TempDir()
+
+	exec, err := NewDumpExecutor(drvpkg.DBMSLocation{DBMSType: drvpkg.DBMSTypeMySQL, Database: "mydb"}, drvpkg.ScopeFull, root, nil)
+	if err != nil {
+		t.Fatalf("NewDumpExecutor: %v", err)
+	}
+	defer exec.Cleanup()
+
+	if got, want := filepath.Dir(exec.OutputPath()), filepath.Join(root, "dbms"); got != want {
+		t.Errorf("OutputPath() = %q, want a file under %q", exec.OutputPath(), want)
+	}
+}
+
 func TestNewStagingFile_CleanupRemovesIt(t *testing.T) {
-	p, cleanup, err := NewStagingFile(drvpkg.DBMSTypeMySQL, "mydb", drvpkg.ScopeFull)
+	p, cleanup, err := NewStagingFile("", drvpkg.DBMSTypeMySQL, "mydb", drvpkg.ScopeFull)
 	if err != nil {
 		t.Fatalf("NewStagingFile: %v", err)
 	}
@@ -148,15 +185,15 @@ func TestNewStagingFile_CleanupRemovesIt(t *testing.T) {
 		t.Errorf("staging file %q survived cleanup (stat error: %v)", p, err)
 	}
 	// Cleanup owns its file, not the directory other migrations are using.
-	if _, err := os.Stat(drvpkg.DefaultStagingPath); err != nil {
-		t.Errorf("cleanup removed the staging directory %q: %v", drvpkg.DefaultStagingPath, err)
+	if _, err := os.Stat(drvpkg.StagingPath("")); err != nil {
+		t.Errorf("cleanup removed the staging directory %q: %v", drvpkg.StagingPath(""), err)
 	}
 }
 
 func TestDumpExecutor_OutputPath(t *testing.T) {
 	loc := drvpkg.DBMSLocation{DBMSType: drvpkg.DBMSTypeMySQL, Database: "mydb"}
 
-	exec, err := NewDumpExecutor(loc, drvpkg.ScopeFull, nil)
+	exec, err := NewDumpExecutor(loc, drvpkg.ScopeFull, "", nil)
 	if err != nil {
 		t.Fatalf("NewDumpExecutor: %v", err)
 	}
@@ -166,8 +203,8 @@ func TestDumpExecutor_OutputPath(t *testing.T) {
 	if got == "" {
 		t.Fatal("OutputPath() is empty")
 	}
-	if filepath.Dir(got) != drvpkg.DefaultStagingPath {
-		t.Errorf("OutputPath() = %q, want a file under %q", got, drvpkg.DefaultStagingPath)
+	if filepath.Dir(got) != drvpkg.StagingPath("") {
+		t.Errorf("OutputPath() = %q, want a file under %q", got, drvpkg.StagingPath(""))
 	}
 	if _, err := os.Stat(got); err != nil {
 		t.Errorf("OutputPath() %q does not exist: %v", got, err)
@@ -175,7 +212,7 @@ func TestDumpExecutor_OutputPath(t *testing.T) {
 
 	// Each executor owns a file of its own — this is what the RestoreExecutor is
 	// handed, and what makes two concurrent migrations independent.
-	other, err := NewDumpExecutor(loc, drvpkg.ScopeFull, nil)
+	other, err := NewDumpExecutor(loc, drvpkg.ScopeFull, "", nil)
 	if err != nil {
 		t.Fatalf("NewDumpExecutor: %v", err)
 	}
@@ -188,7 +225,7 @@ func TestDumpExecutor_OutputPath(t *testing.T) {
 func TestDumpExecutor_CleanupRemovesStagingFile(t *testing.T) {
 	exec, err := NewDumpExecutor(
 		drvpkg.DBMSLocation{DBMSType: drvpkg.DBMSTypeMySQL, Database: "mydb"},
-		drvpkg.ScopeFull, nil)
+		drvpkg.ScopeFull, "", nil)
 	if err != nil {
 		t.Fatalf("NewDumpExecutor: %v", err)
 	}
@@ -217,6 +254,7 @@ func TestDumpExecutor_Execute_WrapsError(t *testing.T) {
 			},
 		},
 		drvpkg.ScopeFull,
+		"",
 		nil,
 	)
 	if err != nil {
@@ -260,6 +298,7 @@ func TestDumpExecutor_Execute_MigrationErrorUnwrap(t *testing.T) {
 			},
 		},
 		drvpkg.ScopeFull,
+		"",
 		nil,
 	)
 	if err != nil {
@@ -321,7 +360,7 @@ func TestDumpExecutorIntegration_Execute(t *testing.T) {
 		t.Skipf("MySQL not reachable: %v", err)
 	}
 
-	exec, err := NewDumpExecutor(loc, drvpkg.ScopeSchemaOnly, nil)
+	exec, err := NewDumpExecutor(loc, drvpkg.ScopeSchemaOnly, "", nil)
 	if err != nil {
 		t.Fatalf("NewDumpExecutor: %v", err)
 	}
@@ -352,6 +391,7 @@ func TestDumpExecutorIntegration_Execute_MigrationError(t *testing.T) {
 	exec, err := NewDumpExecutor(
 		drvpkg.DBMSLocation{DBMSType: drvpkg.DBMSTypeMySQL, Database: "ghost"},
 		drvpkg.ScopeFull,
+		"",
 		nil,
 	)
 	if err != nil {

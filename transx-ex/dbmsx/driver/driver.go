@@ -116,9 +116,10 @@ const (
 
 	SeverityBlocker = base.SeverityBlocker
 	SeverityWarning = base.SeverityWarning
-
-	DefaultStagingPath = base.DefaultStagingPath
 )
+
+// StagingPath returns the local directory intermediate dump files go in.
+var StagingPath = base.StagingPath
 
 // =============================================================================
 // Function / constructor re-exports
