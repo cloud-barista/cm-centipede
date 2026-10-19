@@ -561,7 +561,16 @@ systemctl status testenv-init     # role initialization (every container)
 | Init system | systemd (`--privileged` + `cgroup: host`) |
 | Orchestration | Docker Compose (12 services, healthcheck-driven `--wait`) |
 | DBMS | MariaDB · MySQL · PostgreSQL · MongoDB (versions set in `.env`) |
-| Object storage | MinIO (latest stable binary) |
-| Client tooling | mc (MinIO Client) |
+| Object storage | MinIO `RELEASE.2025-09-07T16-13-09Z` (last community release with binaries, from GitHub) |
+| Client tooling | mc (MinIO Client) `RELEASE.2025-08-13T08-35-41Z` (from GitHub) |
+
+> **MinIO versions are pinned.** The open-source MinIO server and mc are archived, and
+> dl.min.io no longer serves their community builds, so `compose/Dockerfile.minio`
+> downloads both from their GitHub releases and checks a pinned SHA-256.
+> `RELEASE.2025-09-07T16-13-09Z` is the last server release that ships binaries; the
+> later security release (`RELEASE.2025-10-15T17-29-55Z`) is published as source only,
+> so its fix is not in this binary, and no further updates will come. To use another
+> release, change the `MINIO_RELEASE`/`MINIO_SHA256` (or `MC_RELEASE`/`MC_SHA256`) build
+> args together.
 
 > **Note**: the containers require the `--privileged` flag and a `/sys/fs/cgroup` mount. Use this for local development and testing only, never in production.
