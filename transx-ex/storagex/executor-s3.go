@@ -117,6 +117,36 @@ func (e *S3Executor) upload(ctx context.Context, localPath, s3Path string, flt *
 
 // download transfers S3 objects to local filesystem.
 func (e *S3Executor) download(ctx context.Context, s3Path, localPath string, flt *FilterOption) error {
+	// Parse bucket and key from s3Path (e.g., "bucket-name/prefix/")
+	_, keyPrefix := ParseBucketAndKey(s3Path)
+
+	objects, err := e.Provider.ListObjects(keyPrefix)
+	if err != nil {
+		return Obj{Kind: ObjectKindObject, Owner: keyPrefix}.Fail(ActionList, err)
+	}
+
+	// The filter is applied up front so only matching objects take a worker;
+	// each keeps its index in the full listing for the error that names it.
+	var matched []int
+	for i, obj := range objects {
+		if flt.MatchPath(filter.Rel(keyPrefix, obj.Key), obj.Size, false) {
+			matched = append(matched, i)
+		}
+	}
+
+	// Every key is placed before anything is written, and the destination is
+	// cleared only once they all can be: a key that cannot become a local path
+	// fails the transfer here, not after the destination is gone and part of
+	// the bucket is down (see objectLocalPaths).
+	keys := make([]string, len(matched))
+	for n, i := range matched {
+		keys[n] = objects[i].Key
+	}
+	places, skip, err := objectLocalPaths(localPath, keyPrefix, keys)
+	if err != nil {
+		return err
+	}
+
 	// Empty the destination before downloading, so the download replaces what is
 	// there rather than merging into it.
 	//
@@ -138,26 +168,12 @@ func (e *S3Executor) download(ctx context.Context, s3Path, localPath string, flt
 		return fmt.Errorf("failed to create local directory: %w", err)
 	}
 
-	// Parse bucket and key from s3Path (e.g., "bucket-name/prefix/")
-	_, keyPrefix := ParseBucketAndKey(s3Path)
-
-	objects, err := e.Provider.ListObjects(keyPrefix)
-	if err != nil {
-		return Obj{Kind: ObjectKindObject, Owner: keyPrefix}.Fail(ActionList, err)
-	}
-
-	// The filter is applied up front so only matching objects take a worker;
-	// each keeps its index in the full listing for the error that names it.
-	var matched []int
-	for i, obj := range objects {
-		if flt.MatchPath(filter.Rel(keyPrefix, obj.Key), obj.Size, false) {
-			matched = append(matched, i)
-		}
-	}
-
 	progress := &s3Progress{reporter: core.ReporterFrom(ctx)}
 
 	return forEachConcurrently(ctx, len(matched), func(ctx context.Context, n int) error {
+		if skip[n] {
+			return nil
+		}
 		i := matched[n]
 		obj := objects[i]
 
@@ -165,9 +181,15 @@ func (e *S3Executor) download(ctx context.Context, s3Path, localPath string, flt
 		// and how far in it got.
 		item := Obj{Kind: ObjectKindObject, Name: obj.Key, Index: i + 1, Total: len(objects)}
 
-		relPath := strings.TrimPrefix(obj.Key, keyPrefix)
-		relPath = strings.TrimPrefix(relPath, "/")
-		localFile := filepath.Join(localPath, relPath)
+		// A folder marker is the folder, not a file in it.
+		if places[n].Folder {
+			if err := os.MkdirAll(places[n].Local, 0755); err != nil {
+				return item.Fail(ActionDownload, err)
+			}
+			progress.done(0, obj.Key)
+			return nil
+		}
+		localFile := places[n].Local
 
 		// Create parent directories
 		if err := os.MkdirAll(filepath.Dir(localFile), 0755); err != nil {
@@ -299,7 +321,7 @@ func (e *S3StreamExecutor) Execute(ctx context.Context, source, destination Data
 
 	var matched []int
 	for i, obj := range objects {
-		if source.Filter.MatchPath(filter.Rel(srcPrefix, obj.Key), obj.Size, false) {
+		if keyUnderPrefix(srcPrefix, obj.Key) && source.Filter.MatchPath(filter.Rel(srcPrefix, obj.Key), obj.Size, false) {
 			matched = append(matched, i)
 		}
 	}
