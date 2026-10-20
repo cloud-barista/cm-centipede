@@ -232,10 +232,11 @@ func Dial(cfg *SSHConfig) (*ssh.Client, error) { return dial(cfg) }
 
 // dial opens an SSH connection to the host described by cfg.
 func dial(cfg *SSHConfig) (*ssh.Client, error) {
-	authMethods, err := parseAuthMethods(cfg)
+	authMethods, releaseAuth, err := parseAuthMethods(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("ssh auth setup: %w", err)
 	}
+	defer releaseAuth()
 
 	timeout := 30 * time.Second
 	if cfg.ConnectTimeout > 0 {
@@ -393,13 +394,27 @@ func (b *cappedBuffer) String() string { return string(b.buf) }
 // as a fallback. An empty result is returned rather than an error: a server
 // configured for NoClientAuth accepts a connection that offers no method, and
 // refusing to dial here would make that unreachable.
-func parseAuthMethods(cfg *SSHConfig) ([]ssh.AuthMethod, error) {
-	var methods []ssh.AuthMethod
+//
+// release closes the agent connection, if one was opened. The agent signs during
+// the handshake only, so the caller releases it once the handshake is over;
+// before, every dial left one agent connection open for the life of the process.
+func parseAuthMethods(cfg *SSHConfig) (methods []ssh.AuthMethod, release func(), err error) {
+	var agentConn net.Conn
+	closeAgent := func() {
+		if agentConn != nil {
+			agentConn.Close()
+		}
+	}
+	defer func() {
+		if err != nil {
+			closeAgent()
+		}
+	}()
 
 	if cfg.PrivateKey != "" {
 		signer, err := ssh.ParsePrivateKey([]byte(normalizePrivateKey(cfg.PrivateKey)))
 		if err != nil {
-			return nil, fmt.Errorf("parse inline private key: %w", err)
+			return nil, nil, fmt.Errorf("parse inline private key: %w", err)
 		}
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
@@ -407,11 +422,11 @@ func parseAuthMethods(cfg *SSHConfig) ([]ssh.AuthMethod, error) {
 	if cfg.PrivateKeyPath != "" {
 		pemBytes, err := os.ReadFile(cfg.PrivateKeyPath)
 		if err != nil {
-			return nil, fmt.Errorf("read private key file %q: %w", cfg.PrivateKeyPath, err)
+			return nil, nil, fmt.Errorf("read private key file %q: %w", cfg.PrivateKeyPath, err)
 		}
 		signer, err := ssh.ParsePrivateKey(pemBytes)
 		if err != nil {
-			return nil, fmt.Errorf("parse private key file %q: %w", cfg.PrivateKeyPath, err)
+			return nil, nil, fmt.Errorf("parse private key file %q: %w", cfg.PrivateKeyPath, err)
 		}
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
@@ -421,12 +436,13 @@ func parseAuthMethods(cfg *SSHConfig) ([]ssh.AuthMethod, error) {
 		// something to quietly skip.
 		socket := os.Getenv("SSH_AUTH_SOCK")
 		if socket == "" {
-			return nil, fmt.Errorf("SSH_AUTH_SOCK is not set: SSH agent is unavailable")
+			return nil, nil, fmt.Errorf("SSH_AUTH_SOCK is not set: SSH agent is unavailable")
 		}
 		conn, err := net.Dial("unix", socket)
 		if err != nil {
-			return nil, fmt.Errorf("dial SSH agent %q: %w", socket, err)
+			return nil, nil, fmt.Errorf("dial SSH agent %q: %w", socket, err)
 		}
+		agentConn = conn
 		methods = append(methods, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
 	}
 
@@ -437,27 +453,29 @@ func parseAuthMethods(cfg *SSHConfig) ([]ssh.AuthMethod, error) {
 	if len(methods) == 0 {
 		// Nothing was configured. An agent, if one happens to be running, is the
 		// conventional last resort; its absence is not an error here.
-		if m := agentAuthIfAvailable(); m != nil {
+		if m, conn := agentAuthIfAvailable(); m != nil {
+			agentConn = conn
 			methods = append(methods, m)
 		}
 	}
 
-	return methods, nil
+	return methods, closeAgent, nil
 }
 
-// agentAuthIfAvailable returns an SSH agent auth method, or nil when no agent is
-// reachable. Unlike the UseAgent branch above it never reports an error: it is
-// only consulted as a fallback the caller did not ask for.
-func agentAuthIfAvailable() ssh.AuthMethod {
+// agentAuthIfAvailable returns an SSH agent auth method and the connection it
+// signs over, or nil when no agent is reachable. Unlike the UseAgent branch
+// above it never reports an error: it is only consulted as a fallback the caller
+// did not ask for.
+func agentAuthIfAvailable() (ssh.AuthMethod, net.Conn) {
 	socket := os.Getenv("SSH_AUTH_SOCK")
 	if socket == "" {
-		return nil
+		return nil, nil
 	}
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return ssh.PublicKeysCallback(agent.NewClient(conn).Signers)
+	return ssh.PublicKeysCallback(agent.NewClient(conn).Signers), conn
 }
 
 // parsePrivateKey returns the single highest-priority auth method, honoring the
