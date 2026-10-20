@@ -225,6 +225,11 @@ func (e *SSHExec) Close() error {
 // Dial and session plumbing
 // =============================================================================
 
+// Dial opens an SSH connection to the host described by cfg, for a caller that
+// needs the connection itself — to watch it with keepalives, for instance —
+// rather than a command run over it. The caller must Close the client.
+func Dial(cfg *SSHConfig) (*ssh.Client, error) { return dial(cfg) }
+
 // dial opens an SSH connection to the host described by cfg.
 func dial(cfg *SSHConfig) (*ssh.Client, error) {
 	authMethods, err := parseAuthMethods(cfg)

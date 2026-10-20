@@ -1,6 +1,7 @@
 package transxex
 
 import (
+	"context"
 	"crypto/rsa"
 	"log/slog"
 	"time"
@@ -104,6 +105,20 @@ func InspectFilesystem(loc StorageLocation) (*FSInspectResult, error) {
 // and the metrics loc.Metric selects.
 func InspectObjectStorage(loc StorageLocation) (*OSInspectResult, error) {
 	return storagex.InspectObjectStorage(loc)
+}
+
+// ListFiles reads every regular file under the filesystem path at loc — path,
+// size and modification time — for checking a transfer file by file, which
+// InspectFilesystem's per-folder totals cannot do. See storagex.ListFiles.
+func ListFiles(ctx context.Context, loc StorageLocation) ([]FileInfo, error) {
+	return storagex.ListFiles(ctx, loc)
+}
+
+// HashFiles returns the SHA-256 of each of paths under the filesystem path at
+// loc, keyed by path, calling onFile as each one is hashed. See
+// storagex.HashFiles.
+func HashFiles(ctx context.Context, loc StorageLocation, paths []string, onFile func(path string)) (map[string]string, error) {
+	return storagex.HashFiles(ctx, loc, paths, onFile)
 }
 
 // InspectDBMS returns server- and schema-level metadata for the database at loc.

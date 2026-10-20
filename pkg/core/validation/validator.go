@@ -1,22 +1,12 @@
 package validation
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"net"
-	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
-
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 	targetmodel "github.com/cloud-barista/cm-centipede/dmdl/target-model"
@@ -262,344 +252,36 @@ type remoteFile struct {
 	hash  string
 }
 
+// sshFolder is the folder at root on the SSH host cfg describes, as transx-ex
+// takes a location.
+func sshFolder(cfg *transxex.SSHConfig, root string) transxex.StorageLocation {
+	return transxex.StorageLocation{
+		StorageType: transxex.StorageTypeFilesystem,
+		Path:        root,
+		Filesystem:  &transxex.FilesystemAccess{AccessType: transxex.AccessTypeSSH, SSH: cfg},
+	}
+}
+
 // listFiles reads every regular file under root on the host described by cfg,
-// keyed by its path relative to root.
-//
-// One find for the whole tree. NUL-delimited, and the path printed last, so
-// neither a newline nor a tab in a file name can shift the parse. -printf is
-// GNU find, which the hosts this reaches already were assumed to have.
+// keyed by its path relative to root. transx-ex reads the tree the way the
+// migration wrote it.
 func listFiles(ctx context.Context, cfg *transxex.SSHConfig, root string) (map[string]remoteFile, error) {
-	cmd := fmt.Sprintf("find %s -type f -printf '%%s\\t%%T@\\t%%P\\0'", shellQuote(root))
-	files := make(map[string]remoteFile)
-	err := runSSHStream(ctx, cfg, cmd, nil, 0, func(record string) {
-		size, rest, ok := strings.Cut(record, "\t")
-		if !ok {
-			return
-		}
-		mtime, relPath, ok := strings.Cut(rest, "\t")
-		if !ok || relPath == "" {
-			return
-		}
-		n, err := strconv.ParseInt(size, 10, 64)
-		if err != nil {
-			return
-		}
-		sec, _, _ := strings.Cut(mtime, ".")
-		t, err := strconv.ParseInt(sec, 10, 64)
-		if err != nil {
-			return
-		}
-		files[relPath] = remoteFile{size: n, mtime: t}
-	})
+	list, err := transxex.ListFiles(ctx, sshFolder(cfg, root))
 	if err != nil {
 		return nil, err
+	}
+	files := make(map[string]remoteFile, len(list))
+	for _, f := range list {
+		files[f.Path] = remoteFile{size: f.Size, mtime: f.ModTime}
 	}
 	return files, nil
 }
 
 // hashFiles returns the SHA256 of each of paths, relative to root, on the host
-// described by cfg — as many files at once as the host has cores.
-//
-// The paths travel on stdin, NUL-delimited, so only the files that need a hash
-// are read, and no command line grows with their number. onFile is called once
-// for every file hashed, as its line arrives.
+// described by cfg. onFile is called once for every file hashed, as its hash
+// arrives.
 func hashFiles(ctx context.Context, cfg *transxex.SSHConfig, root string, paths []string, onFile func()) (map[string]string, error) {
-	hashes := make(map[string]string, len(paths))
-	if len(paths) == 0 {
-		return hashes, nil
-	}
-	var in bytes.Buffer
-	for _, p := range paths {
-		in.WriteString(p)
-		in.WriteByte(0)
-	}
-	cmd := fmt.Sprintf(`cd %s && xargs -0 -r -P "$(nproc 2>/dev/null || echo 4)" -n 64 sha256sum --`,
-		shellQuote(root))
-	err := runSSHStream(ctx, cfg, cmd, &in, '\n', func(line string) {
-		hash, relPath, ok := parseSHA256Line(line)
-		if !ok {
-			return
-		}
-		hashes[relPath] = hash
-		onFile()
-	})
-	if err != nil {
-		return nil, err
-	}
-	return hashes, nil
-}
-
-// parseSHA256Line splits one line of sha256sum output, "<hash>  <path>".
-//
-// sha256sum escapes a name holding a backslash, newline or carriage return and
-// leads that line with a backslash; the escape is undone so the path matches
-// the one find listed.
-func parseSHA256Line(line string) (hash, path string, ok bool) {
-	escaped := strings.HasPrefix(line, `\`)
-	if escaped {
-		line = line[1:]
-	}
-	hash, path, ok = strings.Cut(line, "  ")
-	if !ok || hash == "" || path == "" {
-		return "", "", false
-	}
-	if escaped {
-		path = unescapeSHA256Name(path)
-	}
-	return hash, path, true
-}
-
-// unescapeSHA256Name reverses sha256sum's escaping of a file name.
-func unescapeSHA256Name(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] != '\\' || i+1 == len(s) {
-			b.WriteByte(s[i])
-			continue
-		}
-		i++
-		switch s[i] {
-		case 'n':
-			b.WriteByte('\n')
-		case 'r':
-			b.WriteByte('\r')
-		default:
-			b.WriteByte(s[i])
-		}
-	}
-	return b.String()
-}
-
-const (
-	// sshKeepaliveInterval is how often runSSHStream checks that the host is
-	// still there, and sshKeepaliveMaxMissed how many checks in a row may go
-	// unanswered before the connection is given up on.
-	sshKeepaliveInterval  = 30 * time.Second
-	sshKeepaliveMaxMissed = 3
-	// sshStderrLimit is how much of a command's stderr is kept for its error.
-	sshStderrLimit = 4 << 10
-)
-
-// runSSHStream runs command on the host described by cfg and hands its stdout
-// to onRecord one record at a time, split at delim, as the records arrive — so
-// a caller can follow a command that runs for minutes instead of waiting for
-// all of it. stdin, when non-nil, is fed to the command. onRecord is called from
-// this goroutine only.
-//
-// The connection is watched. A command reading 50 GB says nothing for minutes,
-// and a peer that went away in the meantime would otherwise leave this waiting
-// for good, with the validation reading "running" until the server restarts. A
-// keepalive goes out every sshKeepaliveInterval, and sshKeepaliveMaxMissed
-// unanswered in a row close the connection, which ends the command with an
-// error. ctx ends it the same way.
-func runSSHStream(
-	ctx context.Context,
-	cfg *transxex.SSHConfig,
-	command string,
-	stdin io.Reader,
-	delim byte,
-	onRecord func(string),
-) error {
-	client, addr, err := dialSSH(cfg)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	var lost atomic.Bool
-	stop := make(chan struct{})
-	defer close(stop)
-	go watchSSH(ctx, client, stop, &lost)
-
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("SSH new session: %w", err)
-	}
-	defer session.Close()
-
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("SSH stdout pipe: %w", err)
-	}
-	// Kept apart from stdout, which is parsed: a "Permission denied" from find
-	// belongs in the error, not in the listing.
-	stderr := &tailWriter{limit: sshStderrLimit}
-	session.Stderr = stderr
-	if stdin != nil {
-		session.Stdin = stdin
-	}
-
-	if err := session.Start(command); err != nil {
-		return fmt.Errorf("SSH command start on %s: %w", addr, err)
-	}
-	r := bufio.NewReaderSize(stdout, 64<<10)
-	for {
-		record, readErr := r.ReadString(delim)
-		if record = strings.TrimSuffix(record, string(delim)); record != "" {
-			onRecord(record)
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	err = session.Wait()
-
-	switch {
-	case ctx.Err() != nil:
-		return ctx.Err()
-	case lost.Load():
-		return fmt.Errorf("SSH connection to %s lost: %d keepalives went unanswered",
-			addr, sshKeepaliveMaxMissed)
-	case err != nil:
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return fmt.Errorf("SSH command failed on %s: %w: %s", addr, err, msg)
-		}
-		return fmt.Errorf("SSH command failed on %s: %w", addr, err)
-	}
-	return nil
-}
-
-// watchSSH sends keepalives on client until stop closes, and closes the client
-// when ctx ends or the host stops answering — setting lost in the second case,
-// so the caller can say why its command ended.
-func watchSSH(ctx context.Context, client *ssh.Client, stop <-chan struct{}, lost *atomic.Bool) {
-	ticker := time.NewTicker(sshKeepaliveInterval)
-	defer ticker.Stop()
-	missed := 0
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ctx.Done():
-			client.Close()
-			return
-		case <-ticker.C:
-		}
-
-		// Any reply proves the peer alive, a refusal included: OpenSSH answers
-		// a global request it does not know with a failure, and that is all this
-		// asks for.
-		reply := make(chan error, 1)
-		go func() {
-			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-			reply <- err
-		}()
-		select {
-		case <-stop:
-			return
-		case <-ctx.Done():
-			client.Close()
-			return
-		case err := <-reply:
-			if err != nil {
-				missed++
-			} else {
-				missed = 0
-			}
-		case <-time.After(sshKeepaliveInterval):
-			missed++
-		}
-		if missed >= sshKeepaliveMaxMissed {
-			lost.Store(true)
-			client.Close()
-			return
-		}
-	}
-}
-
-// dialSSH opens an SSH connection to the host described by cfg.
-func dialSSH(cfg *transxex.SSHConfig) (*ssh.Client, string, error) {
-	authMethods, err := buildAuthMethods(cfg)
-	if err != nil {
-		return nil, "", fmt.Errorf("build SSH auth: %w", err)
-	}
-	if len(authMethods) == 0 {
-		return nil, "", fmt.Errorf("no SSH authentication method available for %s", cfg.Host)
-	}
-
-	timeout := 30 * time.Second
-	if cfg.ConnectTimeout > 0 {
-		timeout = time.Duration(cfg.ConnectTimeout) * time.Second
-	}
-	port := cfg.Port
-	if port == 0 {
-		port = 22
-	}
-
-	clientCfg := &ssh.ClientConfig{
-		User:            cfg.Username,
-		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec — host key verification is handled at infrastructure level
-		Timeout:         timeout,
-	}
-
-	addr := fmt.Sprintf("%s:%d", cfg.Host, port)
-	client, err := ssh.Dial("tcp", addr, clientCfg)
-	if err != nil {
-		return nil, "", fmt.Errorf("SSH dial %s: %w", addr, err)
-	}
-	return client, addr, nil
-}
-
-// tailWriter keeps the last limit bytes written to it.
-type tailWriter struct {
-	mu    sync.Mutex
-	buf   []byte
-	limit int
-}
-
-func (w *tailWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.buf = append(w.buf, p...)
-	if len(w.buf) > w.limit {
-		w.buf = w.buf[len(w.buf)-w.limit:]
-	}
-	return len(p), nil
-}
-
-func (w *tailWriter) String() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return string(w.buf)
-}
-
-// buildAuthMethods constructs SSH auth methods from cfg.
-// Priority: PrivateKey string → PrivateKeyPath file → SSH agent.
-func buildAuthMethods(cfg *transxex.SSHConfig) ([]ssh.AuthMethod, error) {
-	var methods []ssh.AuthMethod
-
-	if strings.TrimSpace(cfg.PrivateKey) != "" {
-		key := normalizePrivateKey(cfg.PrivateKey)
-		signer, err := ssh.ParsePrivateKey([]byte(key))
-		if err != nil {
-			return nil, fmt.Errorf("parse private key: %w", err)
-		}
-		methods = append(methods, ssh.PublicKeys(signer))
-	}
-
-	if len(methods) == 0 && strings.TrimSpace(cfg.PrivateKeyPath) != "" {
-		keyBytes, err := os.ReadFile(cfg.PrivateKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("read private key file %s: %w", cfg.PrivateKeyPath, err)
-		}
-		signer, err := ssh.ParsePrivateKey(keyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("parse private key file: %w", err)
-		}
-		methods = append(methods, ssh.PublicKeys(signer))
-	}
-
-	if len(methods) == 0 || cfg.UseAgent {
-		if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-			conn, err := net.Dial("unix", sock)
-			if err == nil {
-				methods = append(methods, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
-			}
-		}
-	}
-
-	return methods, nil
+	return transxex.HashFiles(ctx, sshFolder(cfg, root), paths, func(string) { onFile() })
 }
 
 // resolveSSHConfig maps a ConnectionRef to a transxex.SSHConfig.
@@ -608,21 +290,6 @@ func buildAuthMethods(cfg *transxex.SSHConfig) ([]ssh.AuthMethod, error) {
 // rejected afterwards by the check that it worked.
 func resolveSSHConfig(ref commonmodel.ConnectionRef) (*transxex.SSHConfig, error) {
 	return migration.ResolveSSHConfig(ref)
-}
-
-// normalizePrivateKey converts escaped newline sequences to real newlines.
-// Handles keys stored as single-line strings in YAML or environment variables.
-func normalizePrivateKey(key string) string {
-	if strings.Contains(key, "\n") && !strings.Contains(key, "\\n") {
-		return key
-	}
-	return strings.ReplaceAll(key, "\\n", "\n")
-}
-
-// shellQuote wraps s in single quotes for safe shell interpolation,
-// escaping any embedded single quotes.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // ── Object Storage Validation ─────────────────────────────────────────────────

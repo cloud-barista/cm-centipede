@@ -65,6 +65,7 @@ type (
 	FSInspectResult = storagex.FSInspectResult
 	OSEntry         = storagex.OSEntry
 	OSInspectResult = storagex.OSInspectResult
+	FileInfo        = storagex.FileInfo
 )
 
 // Storage type discriminators.
