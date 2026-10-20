@@ -64,7 +64,7 @@ func TestBuildDumpCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 
 func TestBuildRestoreCmd_ContainsMySQL(t *testing.T) {
 	drv := NewMySQLDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelMySQL())
+	cmd := drv.BuildRestoreCmd(sshTunnelMySQL(), nil)
 	if !strings.HasPrefix(cmd, "mysql") {
 		t.Errorf("BuildRestoreCmd should start with 'mysql': %s", cmd)
 	}

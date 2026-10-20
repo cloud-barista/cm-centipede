@@ -48,7 +48,9 @@ func planDirectPipe(model DBMSMigrationModel) (*Pipeline, error) {
 	}
 
 	dumpCmd := drv.BuildDumpCmd(model.Source, model.Scope)
-	restoreCmd := drv.BuildRestoreCmd(model.Destination)
+	// The restore is told where the stream comes from: a MongoDB archive names
+	// its collections by the source database, which the target may not share.
+	restoreCmd := drv.BuildRestoreCmd(model.Destination, &RestoreOption{SourceDatabase: model.Source.Database})
 
 	pipeExec := execpkg.NewPipeExecutor(
 		dumpCmd, model.Source.SSHTunnel.SSH,

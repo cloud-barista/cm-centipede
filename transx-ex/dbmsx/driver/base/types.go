@@ -123,6 +123,26 @@ func PgSchemaRenameOpt(opt *DumpOption) map[string]string {
 	return opt.PgSchemaRename
 }
 
+// RestoreOption carries what a restore needs to know about the source its dump
+// was taken from. A nil option means nothing is known beyond the dump itself,
+// which is the case for a restore from a file.
+type RestoreOption struct {
+	// SourceDatabase is the database the dump was taken from. MongoDB only: its
+	// archive names every collection by it, so a restore into a database of
+	// another name has to map one to the other. The other engines' dumps carry
+	// no database name and ignore it.
+	SourceDatabase string
+}
+
+// SourceDatabaseOpt returns opt's source database, or "". It tolerates a nil
+// option like PgSchemaRenameOpt.
+func SourceDatabaseOpt(opt *RestoreOption) string {
+	if opt == nil {
+		return ""
+	}
+	return opt.SourceDatabase
+}
+
 // =============================================================================
 // DBMS Location
 // =============================================================================

@@ -804,7 +804,7 @@ func (d *MongoDBDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation
 
 	// The CLI on the far side runs the restore, so how much of the file has been
 	// sent is all there is to report.
-	cmd := d.BuildRestoreCmd(loc)
+	cmd := d.BuildRestoreCmd(loc, nil)
 	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
@@ -867,12 +867,39 @@ func (d *MongoDBDriver) BuildDumpCmd(loc base.DBMSLocation, scope string) string
 }
 
 // BuildRestoreCmd returns the mongorestore CLI command used by PipeExecutor (T13).
-func (d *MongoDBDriver) BuildRestoreCmd(loc base.DBMSLocation) string {
+//
+// With --archive, the database a URI names does not choose where the archive
+// lands: mongorestore takes it as a filter on the namespaces in the archive,
+// which are the source's. A target named differently from the source matched
+// nothing, and the restore reported "0 document(s) restored" and exited 0.
+// So when the source is known, the URI names no database, the source is
+// selected by --nsInclude, and a differing name is mapped by --nsFrom/--nsTo.
+// Without it the URI keeps the database, which is right for an archive taken
+// from a database of the same name.
+func (d *MongoDBDriver) BuildRestoreCmd(loc base.DBMSLocation, opt *base.RestoreOption) string {
 	if !loc.IsSSHTunnel() {
 		return ""
 	}
-	args := d.buildMongorestoreArgs(loc.SSHTunnel, loc.Database, base.ScopeFull)
+	src := base.SourceDatabaseOpt(opt)
+	if src == "" {
+		args := d.buildMongorestoreArgs(loc.SSHTunnel, loc.Database, base.ScopeFull)
+		return "mongorestore " + strings.Join(args, " ")
+	}
+	args := d.buildMongorestoreArgs(loc.SSHTunnel, "", base.ScopeFull)
+	args = append(args, "--nsInclude="+mongoShellQuote(mongoNamespacePattern(src)))
+	if src != loc.Database {
+		args = append(args,
+			"--nsFrom="+mongoShellQuote(mongoNamespacePattern(src)),
+			"--nsTo="+mongoShellQuote(mongoNamespacePattern(loc.Database)))
+	}
 	return "mongorestore " + strings.Join(args, " ")
+}
+
+// mongoNamespacePattern returns the mongorestore namespace pattern for every
+// collection of database. A database name may hold '*', which the pattern
+// would read as a wildcard, so it is escaped; '\' cannot occur in one.
+func mongoNamespacePattern(database string) string {
+	return strings.ReplaceAll(database, "*", `\*`) + ".*"
 }
 
 // =============================================================================

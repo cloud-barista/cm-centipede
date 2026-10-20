@@ -33,6 +33,7 @@ type (
 	SSHConfig                   = base.SSHConfig
 	TargetGrant                 = base.TargetGrant
 	DumpOption                  = base.DumpOption
+	RestoreOption               = base.RestoreOption
 	DBMSInfo                    = base.DBMSInfo
 	PgSchemaInfo                = base.PgSchemaInfo
 	TableInfo                   = base.TableInfo

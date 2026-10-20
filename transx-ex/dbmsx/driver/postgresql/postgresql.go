@@ -851,7 +851,7 @@ func (d *PostgreSQLDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocat
 
 	// The CLI on the far side runs the statements, so how much of the file has
 	// been sent is all there is to report.
-	cmd := d.BuildRestoreCmd(loc)
+	cmd := d.BuildRestoreCmd(loc, nil)
 	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
@@ -913,7 +913,7 @@ func (d *PostgreSQLDriver) BuildDumpCmd(loc base.DBMSLocation, scope string) str
 }
 
 // BuildRestoreCmd returns the psql CLI command used by PipeExecutor (T13).
-func (d *PostgreSQLDriver) BuildRestoreCmd(loc base.DBMSLocation) string {
+func (d *PostgreSQLDriver) BuildRestoreCmd(loc base.DBMSLocation, _ *base.RestoreOption) string {
 	if !loc.IsSSHTunnel() {
 		return ""
 	}

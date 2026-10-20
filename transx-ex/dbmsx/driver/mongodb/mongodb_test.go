@@ -83,7 +83,7 @@ func TestBuildMongoDumpCmd_WithExcludedCollection(t *testing.T) {
 
 func TestBuildMongoRestoreCmd_ContainsMongorestore(t *testing.T) {
 	drv := NewMongoDBDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelMongo())
+	cmd := drv.BuildRestoreCmd(sshTunnelMongo(), nil)
 	if !strings.HasPrefix(cmd, "mongorestore") {
 		t.Errorf("BuildRestoreCmd should start with 'mongorestore': %s", cmd)
 	}
@@ -94,7 +94,7 @@ func TestBuildMongoRestoreCmd_ContainsMongorestore(t *testing.T) {
 
 func TestBuildMongoRestoreCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 	drv := NewMongoDBDriver()
-	if cmd := drv.BuildRestoreCmd(directMongo()); cmd != "" {
+	if cmd := drv.BuildRestoreCmd(directMongo(), nil); cmd != "" {
 		t.Errorf("BuildRestoreCmd for direct mode should be empty, got %q", cmd)
 	}
 }

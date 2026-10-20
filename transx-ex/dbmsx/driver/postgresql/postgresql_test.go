@@ -68,7 +68,7 @@ func TestBuildPGDumpCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 
 func TestBuildPGRestoreCmd_ContainsPsql(t *testing.T) {
 	drv := NewPostgreSQLDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelPG())
+	cmd := drv.BuildRestoreCmd(sshTunnelPG(), nil)
 	if !strings.HasPrefix(cmd, "PGPASSWORD=") && !strings.HasPrefix(cmd, "psql") {
 		t.Errorf("BuildRestoreCmd should start with psql or PGPASSWORD=...: %s", cmd)
 	}
@@ -79,7 +79,7 @@ func TestBuildPGRestoreCmd_ContainsPsql(t *testing.T) {
 
 func TestBuildPGRestoreCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 	drv := NewPostgreSQLDriver()
-	if cmd := drv.BuildRestoreCmd(directPG()); cmd != "" {
+	if cmd := drv.BuildRestoreCmd(directPG(), nil); cmd != "" {
 		t.Errorf("BuildRestoreCmd for direct mode should be empty, got %q", cmd)
 	}
 }
@@ -786,7 +786,7 @@ func TestPgAnyColExcluded(t *testing.T) {
 
 func TestBuildPGRestoreCmd_HasOnErrorStop(t *testing.T) {
 	drv := NewPostgreSQLDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelPG())
+	cmd := drv.BuildRestoreCmd(sshTunnelPG(), nil)
 	if !strings.Contains(cmd, "ON_ERROR_STOP=1") {
 		t.Errorf("BuildRestoreCmd must set ON_ERROR_STOP=1 so a failed restore exits non-zero: %s", cmd)
 	}

@@ -686,7 +686,7 @@ func (d *MariaDBDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation
 
 	// The CLI on the far side runs the statements, so how much of the file has
 	// been sent is all there is to report.
-	cmd := d.BuildRestoreCmd(loc)
+	cmd := d.BuildRestoreCmd(loc, nil)
 	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
@@ -750,7 +750,7 @@ func (d *MariaDBDriver) BuildDumpCmd(loc base.DBMSLocation, scope string) string
 
 // BuildRestoreCmd returns the mariadb CLI command used by PipeExecutor (T13)
 // to restore on the remote SSH host.
-func (d *MariaDBDriver) BuildRestoreCmd(loc base.DBMSLocation) string {
+func (d *MariaDBDriver) BuildRestoreCmd(loc base.DBMSLocation, _ *base.RestoreOption) string {
 	if !loc.IsSSHTunnel() {
 		return ""
 	}

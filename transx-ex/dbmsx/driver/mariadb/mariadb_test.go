@@ -70,7 +70,7 @@ func TestBuildMariaDBDumpCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 
 func TestBuildMariaDBRestoreCmd_ContainsMariaDB(t *testing.T) {
 	drv := NewMariaDBDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelMariaDB())
+	cmd := drv.BuildRestoreCmd(sshTunnelMariaDB(), nil)
 	if !strings.HasPrefix(cmd, "mariadb") {
 		t.Errorf("BuildRestoreCmd should start with 'mariadb': %s", cmd)
 	}
@@ -78,7 +78,7 @@ func TestBuildMariaDBRestoreCmd_ContainsMariaDB(t *testing.T) {
 
 func TestBuildMariaDBRestoreCmd_NotMysql(t *testing.T) {
 	drv := NewMariaDBDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelMariaDB())
+	cmd := drv.BuildRestoreCmd(sshTunnelMariaDB(), nil)
 	if strings.HasPrefix(cmd, "mysql ") {
 		t.Errorf("BuildRestoreCmd must not use 'mysql' (MariaDB uses 'mariadb'): %s", cmd)
 	}
@@ -86,7 +86,7 @@ func TestBuildMariaDBRestoreCmd_NotMysql(t *testing.T) {
 
 func TestBuildMariaDBRestoreCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 	drv := NewMariaDBDriver()
-	if cmd := drv.BuildRestoreCmd(directMariaDB()); cmd != "" {
+	if cmd := drv.BuildRestoreCmd(directMariaDB(), nil); cmd != "" {
 		t.Errorf("BuildRestoreCmd for direct mode should be empty, got %q", cmd)
 	}
 }

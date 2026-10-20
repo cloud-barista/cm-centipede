@@ -44,6 +44,7 @@ type (
 	Severity             = drvpkg.Severity
 
 	DumpOption             = drvpkg.DumpOption
+	RestoreOption          = drvpkg.RestoreOption
 	CreateDatabaseOption   = drvpkg.CreateDatabaseOption
 	MySQLCreateOption      = drvpkg.MySQLCreateOption
 	MariaDBCreateOption    = drvpkg.MariaDBCreateOption
