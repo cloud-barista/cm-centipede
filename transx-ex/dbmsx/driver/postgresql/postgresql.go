@@ -528,7 +528,7 @@ func (d *PostgreSQLDriver) dumpViaSSH(ctx context.Context, loc base.DBMSLocation
 			DBMSType:    base.DBMSTypePostgreSQL,
 			Source:      loc.Database,
 			Destination: outputPath,
-			Command:     cmd,
+			Command:     d.BuildDumpCmd(base.RedactedLoc(loc), scope),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -857,7 +857,7 @@ func (d *PostgreSQLDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocat
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypePostgreSQL,
 			Destination: loc.Database,
-			Command:     cmd,
+			Command:     d.BuildRestoreCmd(base.RedactedLoc(loc), nil),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -881,14 +881,16 @@ func (d *PostgreSQLDriver) TestConnection(ctx context.Context, loc base.DBMSLoca
 	}
 
 	cfg := loc.SSHTunnel
-	cmd := d.buildPsqlCmd(cfg, loc.Database) + ` -c "SELECT 1"`
+	// The command is built again for the error with the password masked.
+	cmdFor := func(cfg *base.SSHTunnelConfig) string { return d.buildPsqlCmd(cfg, loc.Database) + ` -c "SELECT 1"` }
+	cmd := cmdFor(cfg)
 	var out bytes.Buffer
 	if err := base.ExecuteViaSSH(cfg.SSH, cmd, nil, &out); err != nil {
 		return &base.OperationError{
 			Operation: base.OperationConnect,
 			DBMSType:  base.DBMSTypePostgreSQL,
 			Source:    loc.Database,
-			Command:   cmd,
+			Command:   cmdFor(base.RedactedLoc(loc).SSHTunnel),
 			Output:    base.SSHStderr(err),
 			Err:       err,
 		}

@@ -378,7 +378,7 @@ func (d *MongoDBDriver) dumpViaSSH(ctx context.Context, loc base.DBMSLocation, s
 			DBMSType:    base.DBMSTypeMongoDB,
 			Source:      loc.Database,
 			Destination: outputPath,
-			Command:     cmd,
+			Command:     d.BuildDumpCmd(base.RedactedLoc(loc), scope),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -810,7 +810,7 @@ func (d *MongoDBDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypeMongoDB,
 			Destination: loc.Database,
-			Command:     cmd,
+			Command:     d.BuildRestoreCmd(base.RedactedLoc(loc), nil),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -834,15 +834,19 @@ func (d *MongoDBDriver) TestConnection(ctx context.Context, loc base.DBMSLocatio
 	}
 
 	cfg := loc.SSHTunnel
-	uri := d.buildSSHURI(cfg, loc.Database)
-	cmd := fmt.Sprintf(`mongosh %s --quiet --eval "db.version()"`, mongoShellQuote(uri))
+	// The command is built again for the error with the password masked.
+	cmdFor := func(cfg *base.SSHTunnelConfig) string {
+		uri := d.buildSSHURI(cfg, loc.Database)
+		return fmt.Sprintf(`mongosh %s --quiet --eval "db.version()"`, mongoShellQuote(uri))
+	}
+	cmd := cmdFor(cfg)
 	var out bytes.Buffer
 	if err := base.ExecuteViaSSH(cfg.SSH, cmd, nil, &out); err != nil {
 		return &base.OperationError{
 			Operation: base.OperationConnect,
 			DBMSType:  base.DBMSTypeMongoDB,
 			Source:    loc.Database,
-			Command:   cmd,
+			Command:   cmdFor(base.RedactedLoc(loc).SSHTunnel),
 			Output:    base.SSHStderr(err),
 			Err:       err,
 		}

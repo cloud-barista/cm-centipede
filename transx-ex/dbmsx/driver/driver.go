@@ -161,6 +161,10 @@ var TLSModes = base.TLSModes
 // See base.PgSchemaRenameOpt.
 var PgSchemaRenameOpt = base.PgSchemaRenameOpt
 
+// RedactedLoc returns a location with its database password replaced, for
+// building a command that can be shown. See base.RedactedLoc.
+var RedactedLoc = base.RedactedLoc
+
 // DiffCharset reports what stands between a source and a target profile.
 // See base.DiffCharset.
 var DiffCharset = base.DiffCharset

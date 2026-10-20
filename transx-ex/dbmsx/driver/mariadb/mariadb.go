@@ -475,7 +475,7 @@ func (d *MariaDBDriver) dumpViaSSH(ctx context.Context, loc base.DBMSLocation, s
 			DBMSType:    base.DBMSTypeMariaDB,
 			Source:      loc.Database,
 			Destination: outputPath,
-			Command:     cmd,
+			Command:     d.BuildDumpCmd(base.RedactedLoc(loc), scope),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -692,7 +692,7 @@ func (d *MariaDBDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypeMariaDB,
 			Destination: loc.Database,
-			Command:     cmd,
+			Command:     d.BuildRestoreCmd(base.RedactedLoc(loc), nil),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -716,14 +716,16 @@ func (d *MariaDBDriver) TestConnection(ctx context.Context, loc base.DBMSLocatio
 	}
 
 	cfg := loc.SSHTunnel
-	cmd := d.buildMariaDBCmd(cfg, loc.Database) + ` -e "SELECT 1"`
+	// The command is built again for the error with the password masked.
+	cmdFor := func(cfg *base.SSHTunnelConfig) string { return d.buildMariaDBCmd(cfg, loc.Database) + ` -e "SELECT 1"` }
+	cmd := cmdFor(cfg)
 	var out bytes.Buffer
 	if err := base.ExecuteViaSSH(cfg.SSH, cmd, nil, &out); err != nil {
 		return &base.OperationError{
 			Operation: base.OperationConnect,
 			DBMSType:  base.DBMSTypeMariaDB,
 			Source:    loc.Database,
-			Command:   cmd,
+			Command:   cmdFor(base.RedactedLoc(loc).SSHTunnel),
 			Output:    base.SSHStderr(err),
 			Err:       err,
 		}
