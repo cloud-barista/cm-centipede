@@ -39,6 +39,19 @@ type PipeExecutor struct {
 	restoreCmd string
 	srcSSH     *drvpkg.SSHConfig
 	dstSSH     *drvpkg.SSHConfig
+
+	// loggedDumpCmd and loggedRestoreCmd are what Execute logs in place of the
+	// commands it runs; see WithLoggedCmds.
+	loggedDumpCmd    string
+	loggedRestoreCmd string
+}
+
+// WithLoggedCmds sets the commands the start of Execute logs in place of the
+// ones it runs, which carry the database password. Without them the commands
+// are left out of the log.
+func (e *PipeExecutor) WithLoggedCmds(dumpCmd, restoreCmd string) *PipeExecutor {
+	e.loggedDumpCmd, e.loggedRestoreCmd = dumpCmd, restoreCmd
+	return e
 }
 
 // NewPipeExecutor constructs a PipeExecutor from pre-built CLI commands and the
@@ -68,8 +81,8 @@ func NewPipeExecutor(dumpCmd string, srcSSH *drvpkg.SSHConfig, restoreCmd string
 // is returned because it is the root cause.
 func (e *PipeExecutor) Execute(ctx context.Context, _, _ drvpkg.DBMSLocation) error {
 	logger.Info("pipe execute started",
-		slog.String("dumpCmd", e.dumpCmd),
-		slog.String("restoreCmd", e.restoreCmd),
+		slog.String("dumpCmd", e.loggedDumpCmd),
+		slog.String("restoreCmd", e.loggedRestoreCmd),
 	)
 	pr, pw := io.Pipe()
 
