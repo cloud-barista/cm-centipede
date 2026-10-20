@@ -247,6 +247,11 @@ func (d *PostgreSQLDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation
 			return fmt.Errorf("dump data: %w", err)
 		}
 	}
+	if scope == base.ScopeSchemaOnly || scope == base.ScopeFull {
+		if err := d.dumpPostDataViaSQL(ctx, conn, sc, loc.Filter, dst); err != nil {
+			return fmt.Errorf("dump schema: %w", err)
+		}
+	}
 
 	_, err = io.WriteString(dst, sc.renameTail())
 	return err
@@ -277,9 +282,16 @@ func (d *PostgreSQLDriver) setDumpSearchPath(ctx context.Context, conn *pgx.Conn
 	return nil
 }
 
-// dumpSchemaViaSQL writes DDL in PostgreSQL dependency order:
-// Extensions → Types → Sequences → Tables(FK excluded) → Indexes → FK Constraints →
-// Views → Materialized Views → Functions/Procedures → Triggers → Rules.
+// dumpSchemaViaSQL writes the DDL that goes ahead of the rows, in PostgreSQL
+// dependency order:
+// Extensions → Types → Sequences → Tables(FK excluded) → Views →
+// Materialized Views (WITH NO DATA) → Functions/Procedures.
+// dumpPostDataViaSQL writes the rest once the rows are in.
+//
+// The split is pg_dump's, and for the same reason: a restore through psql runs
+// the file as it stands, so a FK in force before the COPY blocks rejects a child
+// table loaded ahead of its parent, and a trigger in force fires on every
+// restored row.
 //
 // The order is by object kind, not by schema, and that is what makes several
 // schemas safe to dump together: every table exists before the first foreign key
@@ -329,30 +341,6 @@ func (d *PostgreSQLDriver) dumpSchemaViaSQL(ctx context.Context, conn *pgx.Conn,
 		fmt.Fprintf(dst, "%s\n\n", createSQL)
 	}
 
-	// --- Indexes (non-primary) ---
-	indexes, err := d.listIndexDefs(ctx, conn, sc, filter)
-	if err != nil {
-		return base.Obj{Kind: filterpkg.ObjectKindIndex}.Fail(base.ActionList, err)
-	}
-	for _, idx := range indexes {
-		fmt.Fprintf(dst, "%s;\n", idx)
-	}
-	if len(indexes) > 0 {
-		fmt.Fprintln(dst)
-	}
-
-	// --- FK Constraints ---
-	fks, err := d.listFKConstraints(ctx, conn, sc, filter)
-	if err != nil {
-		return base.Obj{Kind: filterpkg.ObjectKindForeignKey}.Fail(base.ActionList, err)
-	}
-	for _, fk := range fks {
-		fmt.Fprintf(dst, "%s;\n", fk)
-	}
-	if len(fks) > 0 {
-		fmt.Fprintln(dst)
-	}
-
 	// --- Views ---
 	views, err := d.listViews(ctx, conn, sc, filter)
 	if err != nil {
@@ -389,6 +377,37 @@ func (d *PostgreSQLDriver) dumpSchemaViaSQL(ctx context.Context, conn *pgx.Conn,
 		fmt.Fprintf(dst, "%s\n\n", p)
 	}
 
+	return nil
+}
+
+// dumpPostDataViaSQL writes the DDL that follows the rows:
+// Indexes → FK Constraints → Triggers → Rules → REFRESH MATERIALIZED VIEW.
+// See dumpSchemaViaSQL for why these wait for the rows.
+func (d *PostgreSQLDriver) dumpPostDataViaSQL(ctx context.Context, conn *pgx.Conn, sc pgDumpScope, filter *filterpkg.DBMSFilterOption, dst io.Writer) error {
+	// --- Indexes (non-primary) ---
+	indexes, err := d.listIndexDefs(ctx, conn, sc, filter)
+	if err != nil {
+		return base.Obj{Kind: filterpkg.ObjectKindIndex}.Fail(base.ActionList, err)
+	}
+	for _, idx := range indexes {
+		fmt.Fprintf(dst, "%s;\n", idx)
+	}
+	if len(indexes) > 0 {
+		fmt.Fprintln(dst)
+	}
+
+	// --- FK Constraints ---
+	fks, err := d.listFKConstraints(ctx, conn, sc, filter)
+	if err != nil {
+		return base.Obj{Kind: filterpkg.ObjectKindForeignKey}.Fail(base.ActionList, err)
+	}
+	for _, fk := range fks {
+		fmt.Fprintf(dst, "%s;\n", fk)
+	}
+	if len(fks) > 0 {
+		fmt.Fprintln(dst)
+	}
+
 	// --- Triggers ---
 	triggers, err := d.listTriggers(ctx, conn, sc, filter)
 	if err != nil {
@@ -405,6 +424,18 @@ func (d *PostgreSQLDriver) dumpSchemaViaSQL(ctx context.Context, conn *pgx.Conn,
 	}
 	for _, rule := range rules {
 		fmt.Fprintf(dst, "%s\n\n", rule)
+	}
+
+	// --- Materialized View data ---
+	// Created empty ahead of the rows; filled here, as pg_dump does it.
+	matviews, err := d.listMatViews(ctx, conn, sc, filter)
+	if err != nil {
+		return base.Obj{Kind: filterpkg.ObjectKindMaterializedView}.Fail(base.ActionList, err)
+	}
+	for _, mv := range matviews {
+		if ident := pgExtractMatViewIdent(mv); ident != "" {
+			fmt.Fprintf(dst, "REFRESH MATERIALIZED VIEW %s;\n\n", ident)
+		}
 	}
 
 	return nil
@@ -600,9 +631,11 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 	// columns. An index met after the first COPY is left where it is: that is
 	// pg_dump's post-data, which already follows the rows and is followed by
 	// statements naming the index (ALTER INDEX ... ATTACH PARTITION, COMMENT ON
-	// INDEX).
+	// INDEX). It is still built with maintenance_work_mem raised, set before the
+	// first of them and reset once the restore is through (indexMem).
 	var postIndexes []string
 	copied := false
+	indexMemTried, indexMem := false, false
 	var lastNotifyTable string
 
 	// The tables the dump carries rows for — one COPY block each — counted
@@ -655,6 +688,10 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 			postIndexes = append(postIndexes, stmt)
 			return nil
 		} else {
+			if copied && !indexMemTried && pgIsCreateIndexStmt(stmt) {
+				indexMemTried = true
+				indexMem = d.raiseIndexBuildMem(ctx, conn, loc)
+			}
 			tag, err := conn.Exec(ctx, stmt)
 			if err != nil {
 				return base.RestoreStatementError(
@@ -706,6 +743,11 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 			return fmt.Errorf("reset session_replication_role: %w", err)
 		}
 	}
+	if indexMem {
+		if _, err := conn.Exec(ctx, "RESET maintenance_work_mem"); err != nil {
+			return fmt.Errorf("reset maintenance_work_mem: %w", err)
+		}
+	}
 
 	// Refresh materialized views after all data is loaded. The name is re-quoted
 	// from the (schema, name) pair the statement was read as, not from the joined
@@ -739,21 +781,7 @@ func (d *PostgreSQLDriver) buildPostIndexes(ctx context.Context, conn *pgx.Conn,
 	if len(stmts) == 0 {
 		return nil
 	}
-	raised := false
-	var lower bool
-	err := conn.QueryRow(ctx,
-		"SELECT pg_size_bytes(current_setting('maintenance_work_mem')) < pg_size_bytes($1)",
-		pgIndexBuildMem).Scan(&lower)
-	if err == nil && lower {
-		if _, err = conn.Exec(ctx, "SET maintenance_work_mem = '"+pgIndexBuildMem+"'"); err == nil {
-			raised = true
-		}
-	}
-	if err != nil {
-		logger.Info("postgresql restore could not raise maintenance_work_mem; "+
-			"indexes will be built with the session's own",
-			"database", loc.Database, "err", err.Error())
-	}
+	raised := d.raiseIndexBuildMem(ctx, conn, loc)
 
 	for i, stmt := range stmts {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
@@ -769,6 +797,27 @@ func (d *PostgreSQLDriver) buildPostIndexes(ctx context.Context, conn *pgx.Conn,
 		}
 	}
 	return nil
+}
+
+// raiseIndexBuildMem raises maintenance_work_mem to pgIndexBuildMem for the
+// index builds to come, and reports whether it did, so the caller knows to
+// RESET it after them.
+func (d *PostgreSQLDriver) raiseIndexBuildMem(ctx context.Context, conn *pgx.Conn, loc base.DBMSLocation) bool {
+	var lower bool
+	err := conn.QueryRow(ctx,
+		"SELECT pg_size_bytes(current_setting('maintenance_work_mem')) < pg_size_bytes($1)",
+		pgIndexBuildMem).Scan(&lower)
+	if err == nil && lower {
+		if _, err = conn.Exec(ctx, "SET maintenance_work_mem = '"+pgIndexBuildMem+"'"); err == nil {
+			return true
+		}
+	}
+	if err != nil {
+		logger.Info("postgresql restore could not raise maintenance_work_mem; "+
+			"indexes will be built with the session's own",
+			"database", loc.Database, "err", err.Error())
+	}
+	return false
 }
 
 // setRestoreSearchPath creates and selects the destination schema when loc names
@@ -3347,7 +3396,7 @@ func (d *PostgreSQLDriver) listMatViews(ctx context.Context, conn *pgx.Conn, sc 
 		if pgObjectExcluded(filter, filterpkg.ObjectKindMaterializedView, schema, name) {
 			continue
 		}
-		stmts = append(stmts, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s;", sc.ident(schema, name), strings.TrimRight(def, ";")))
+		stmts = append(stmts, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s\nWITH NO DATA;", sc.ident(schema, name), strings.TrimRight(strings.TrimSpace(def), ";")))
 	}
 	return stmts, rows.Err()
 }
