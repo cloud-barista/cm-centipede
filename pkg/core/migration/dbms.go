@@ -243,10 +243,9 @@ func validateManagedEngine(engine string) error {
 // settings the lookup cannot supply — the password and the TLS choice — from the
 // ref.
 //
-// ProviderName is left empty on purpose. cm-beetle's RDBMS read does not report
-// which CSP holds the instance, and the field decides nothing (transx-ex carries
-// it into DBMSLocation.ProviderName but never reads it), so naming a provider
-// here would mean inventing one.
+// ProviderName is left empty on purpose. cm-beetle's RDBMS read does report the
+// CSP (connectionConfig.providerName), but the field decides nothing here
+// (transx-ex carries it into DBMSLocation.ProviderName but never reads it).
 func managedDBConnConfig(engine string, acc *beetle.DBConfig, ref commonmodel.BeetleDBRef) commonmodel.DBConnConfig {
 	return commonmodel.DBConnConfig{
 		DBMSType:   engine,
@@ -364,7 +363,11 @@ func EnsureTargetDatabase(
 		if err != nil {
 			return false, fmt.Errorf("decrypt connection ref: %w", err)
 		}
-		if err := beetle.CreateDatabase(*ref.BeetleDB, dstLoc.Database); err != nil {
+		var charset, collation string
+		if srcInfo != nil {
+			charset, collation = srcInfo.CharacterSet, srcInfo.Collation
+		}
+		if err := beetle.CreateDatabase(*ref.BeetleDB, dstLoc.Database, charset, collation); err != nil {
 			return false, fmt.Errorf("create target database %q: %w", dstLoc.Database, err)
 		}
 		return true, nil

@@ -1321,11 +1321,11 @@ delete_rdbms() {
 #   make new ones (NCP answers Error 1044, Access denied for user 'dbadmin'@'%').
 #   So the instance's owner, cm-beetle, is asked instead.
 #
-#   The request carries a name in the body and the admin account in two
-#   headers, and nothing else - no character set is sent, so the logical
-#   database follows the instance
-#   defaults. Table character sets travel inside the dump's CREATE TABLE
-#   statements, and centipede reports a database-level difference as a warning.
+#   The request carries a name, and the source's character set where the
+#   engine and CSP take one, in the body, and the admin account in two headers.
+#   What is left out follows the instance defaults. Table character sets travel
+#   inside the dump's CREATE TABLE statements either way, and centipede reports
+#   a database-level difference as a warning.
 #
 #   This step exists because centipede does not create the target database: it
 #   does so only for providerName "onprem", and a managed target is aws or ncp.
@@ -1361,9 +1361,61 @@ logical_db_list() {
 	bt_jq -r '.databases[]? // empty'
 }
 
+# _charset_policy_<engine> CSP — what this engine takes of the source character
+#   set on CSP:
+#     all      charset and collation
+#     charset  charset alone; the engine picks its default collation
+#     none     neither
+#   One function per engine, mirroring charsetPolicies in
+#   pkg/client/beetle/charset.go. An engine without one takes none.
+_charset_policy_mysql() {
+	case "$1" in
+	ncp|nhn) printf 'none' ;;   # either value switches creation to SQL
+	*)       printf 'all' ;;
+	esac
+}
+
+_charset_policy_mariadb() {
+	case "$1" in
+	ncp|nhn) printf 'none' ;;    # either value switches creation to SQL
+	alibaba) printf 'charset' ;; # Alibaba MariaDB rejects a collation
+	*)       printf 'all' ;;
+	esac
+}
+
+# src_charset_env ENGINE KIND — the source database's CHARSET or COLLATION as
+#   .env sets it, with the same defaults source.sh builds the source from.
+src_charset_env() {
+	local var
+	var="$(upper "$1")_SRC_$2"
+	case "$2" in
+	CHARSET)   printf '%s' "${!var-utf8mb4}" ;;
+	COLLATION) printf '%s' "${!var-utf8mb4_general_ci}" ;;
+	esac
+}
+
+# LOGICAL_DB_CHARSET — "charset/collation" the last logical_db_create sent,
+#   empty when it sent neither. For the log line only.
+LOGICAL_DB_CHARSET=""
+
+# logical_db_create CSP NAME DB ENGINE
 logical_db_create() {
-	local csp="$1" name="$2" db="$3" body raw
-	body="$(jq -n --arg db "$db" '{databaseName:$db}')"
+	local csp="$1" name="$2" db="$3" engine policy="none" cs="" co="" body raw
+	engine="$(lower "${4:-}")"
+	if declare -F "_charset_policy_$engine" >/dev/null; then
+		policy="$("_charset_policy_$engine" "$(lower "$csp")")"
+	fi
+	case "$policy" in
+	all)     cs="$(src_charset_env "$engine" CHARSET)"; co="$(src_charset_env "$engine" COLLATION)" ;;
+	charset) cs="$(src_charset_env "$engine" CHARSET)" ;;
+	esac
+	LOGICAL_DB_CHARSET=""
+	[ -n "$cs$co" ] && LOGICAL_DB_CHARSET="${cs:-default}/${co:-default}"
+
+	body="$(jq -n --arg db "$db" --arg cs "$cs" --arg co "$co" \
+		'{databaseName:$db}
+		 + (if $cs == "" then {} else {charset:$cs} end)
+		 + (if $co == "" then {} else {collation:$co} end)')"
 	bt_admin_headers "$csp"
 	if bt_post "$(_rdbms_path)/$(urlq "$name")/database" "$body"; then
 		return 0
@@ -1423,9 +1475,9 @@ target_db_create() {
 
 	target_db_clear "$csp" "$engine" "$dbs"
 	for db in $dbs; do
-		logical_db_create "$csp" "$inst" "$db" || return 1
+		logical_db_create "$csp" "$inst" "$db" "$engine" || return 1
 	done
-	info "target database created: $dbs  (instance $inst, instance default character set)"
+	info "target database created: $dbs  (instance $inst, character set ${LOGICAL_DB_CHARSET:-instance default})"
 	return 0
 }
 

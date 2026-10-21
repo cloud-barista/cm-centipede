@@ -96,6 +96,12 @@ type rdbmsInfo struct {
 	AdminUserName string `json:"adminUserName"`
 	Endpoint      string `json:"endpoint"`
 	PublicAccess  bool   `json:"publicAccess"`
+
+	// ConnectionConfig names the CSP holding the instance, which decides what
+	// of the source character set a new database can take (see charsetPolicies).
+	ConnectionConfig struct {
+		ProviderName string `json:"providerName"`
+	} `json:"connectionConfig"`
 }
 
 // rdbmsDatabaseList mirrors GET .../rdbms/{rdbmsId}/database.
@@ -104,11 +110,11 @@ type rdbmsDatabaseList struct {
 }
 
 // rdbmsDatabaseCreateReq is the body of POST .../rdbms/{rdbmsId}/database.
-// It has no character set field, which is why a database created here cannot
-// inherit the source's (see CreateDatabase). The admin account travels as
-// headers, not here (see adminCredsOf).
+// The admin account travels as headers, not here (see adminCredsOf).
 type rdbmsDatabaseCreateReq struct {
 	DatabaseName string `json:"databaseName"`
+	Charset      string `json:"charset,omitempty"`
+	Collation    string `json:"collation,omitempty"`
 }
 
 // cm-beetle requires both headers on every logical-database call and answers
@@ -256,7 +262,7 @@ func GetRDBMSAccessInfo(ref commonmodel.BeetleDBRef) (*DBConfig, error) {
 // it, and that answer is what decides whether centipede owns a database and must
 // drop it after a failure.
 func ListDatabases(ref commonmodel.BeetleDBRef) ([]string, error) {
-	admin, err := adminCredsOf(ref)
+	admin, err := adminCredsOf(ref, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -273,28 +279,45 @@ func ListDatabases(ref commonmodel.BeetleDBRef) ([]string, error) {
 // instance, so this never falls back to connecting to the database and issuing
 // CREATE DATABASE.
 //
-// The database takes the instance's default character set — the creation request
-// centipede sends carries only a name. That settles nothing for
-// the migration either way: a managed instance is MySQL or MariaDB, whose dumps
-// name a character set on every table they create, so the database default is
-// never what a restored table ends up with.
-//
-// TODO(beetle): pass the source character set through once cm-beetle's request
-// can carry one.
-func CreateDatabase(ref commonmodel.BeetleDBRef, database string) error {
-	admin, err := adminCredsOf(ref)
+// charset and collation are the source database's defaults. What the instance's
+// engine and CSP cannot take is dropped with a warning (see charsetPolicies),
+// and the database then follows the instance default for it. That costs the
+// migration nothing: a managed instance is MySQL or MariaDB, whose dumps name a
+// character set on every table they create, so the database default is never
+// what a restored table ends up with — only tables created later see it.
+func CreateDatabase(ref commonmodel.BeetleDBRef, database, charset, collation string) error {
+	// One instance read serves both the CSP and engine the character set
+	// depends on and the admin user name.
+	var res infoRDBMSResponse
+	if err := getJSON(rdbmsPath(ref), &res); err != nil {
+		return err
+	}
+	info := res.data()
+
+	admin, err := adminCredsOf(ref, &info)
 	if err != nil {
 		return err
 	}
-	path := fmt.Sprintf("/beetle/migration/middleware/ns/%s/rdbms/%s/database", ref.NsID, ref.RdbmsID)
-	body := rdbmsDatabaseCreateReq{DatabaseName: database}
+
+	cs, co, warning := databaseCharsetFor(info.ConnectionConfig.ProviderName, info.DBEngine, charset, collation)
+	if warning != "" {
+		log.Warn().
+			Str("rdbmsId", ref.RdbmsID).
+			Str("database", database).
+			Str("charset", charset).
+			Str("collation", collation).
+			Msg(warning)
+	}
+
+	path := rdbmsPath(ref) + "/database"
+	body := rdbmsDatabaseCreateReq{DatabaseName: database, Charset: cs, Collation: co}
 	return sendJSON(http.MethodPost, path, body, admin)
 }
 
 // DropDatabase removes a logical database centipede created through
 // CreateDatabase, after its migration failed or was cancelled.
 func DropDatabase(ref commonmodel.BeetleDBRef, database string) error {
-	admin, err := adminCredsOf(ref)
+	admin, err := adminCredsOf(ref, nil)
 	if err != nil {
 		return err
 	}
@@ -307,26 +330,36 @@ func DropDatabase(ref commonmodel.BeetleDBRef, database string) error {
 // The user name defaults to the one cm-beetle reports, as the connection itself
 // does (managedDBConnConfig), so both always name the same account.
 //
-// The lookup reads the instance directly rather than through GetRDBMSAccessInfo,
-// which fails on an instance without an endpoint and needs none of it here.
-func adminCredsOf(ref commonmodel.BeetleDBRef) (adminCreds, error) {
+// info is the instance when the caller has already read it; nil makes this read
+// it, and only when the ref names no user. The read goes to the instance
+// directly rather than through GetRDBMSAccessInfo, which fails on an instance
+// without an endpoint and needs none of it here.
+func adminCredsOf(ref commonmodel.BeetleDBRef, info *rdbmsInfo) (adminCreds, error) {
 	if ref.Password == "" {
 		return adminCreds{}, fmt.Errorf("beetle rdbms %q: admin password is empty", ref.RdbmsID)
 	}
 	user := strings.TrimSpace(ref.Username)
 	if user == "" {
-		var res infoRDBMSResponse
-		path := fmt.Sprintf("/beetle/migration/middleware/ns/%s/rdbms/%s", ref.NsID, ref.RdbmsID)
-		if err := getJSON(path, &res); err != nil {
-			return adminCreds{}, err
+		if info == nil {
+			var res infoRDBMSResponse
+			if err := getJSON(rdbmsPath(ref), &res); err != nil {
+				return adminCreds{}, err
+			}
+			raw := res.data()
+			info = &raw
 		}
-		user = strings.TrimSpace(res.data().AdminUserName)
+		user = strings.TrimSpace(info.AdminUserName)
 	}
 	if user == "" {
 		return adminCreds{}, fmt.Errorf(
 			"beetle rdbms %q reports no admin user name; set username on the ref", ref.RdbmsID)
 	}
 	return adminCreds{user: user, password: ref.Password}, nil
+}
+
+// rdbmsPath is the cm-beetle path of ref's managed instance.
+func rdbmsPath(ref commonmodel.BeetleDBRef) string {
+	return fmt.Sprintf("/beetle/migration/middleware/ns/%s/rdbms/%s", ref.NsID, ref.RdbmsID)
 }
 
 // ── HTTP plumbing ────────────────────────────────────────────────────────────
