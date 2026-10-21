@@ -137,7 +137,7 @@ green.
 ./scripts/aws-db-matrix.sh                    # everything in AWS_ENGINES
 ./scripts/ncp-db-matrix.sh --engines mysql
 ./scripts/aws-db-matrix.sh --only 8.4:8.0     # one cell of an existing matrix
-./scripts/aws-db-matrix.sh --tls-mode require # demand TLS instead of preferring it
+./scripts/aws-db-matrix.sh --tls-mode require # demand TLS instead of letting centipede decide
 ./scripts/aws-db-matrix.sh --target-db-create matrix
                                               # create the target database here,
                                               # instead of leaving it to centipede
@@ -242,7 +242,7 @@ password, and the file mode is what protects it.
   db_password() in beetle.sh               the only place it is read
       │
       ├──▶ instance create                 adminUserPassword in the request body
-      ├──▶ logical database create/drop    X-Admin-User-Password header
+      ├──▶ logical database create/drop    X-Admin-User-Name + X-Admin-User-Password headers
       └──▶ centipede's target connection   db.password in the plan request
 ```
 
@@ -339,33 +339,40 @@ parameter the CSP attaches to a managed instance — the same engine version run
 outside a managed service does not carry it. A client that can only speak
 plaintext cannot reach those instances at all.
 
-`TARGET_TLS_MODE` sets transport security per connection, with the five
-libpq-style modes:
+`TARGET_TLS_MODE` sets transport security per connection: `auto`, or one of the
+five libpq-style modes:
 
 | Mode | Encrypt | Verify chain | Verify hostname | Server offers no TLS |
 | ---- | :-----: | :----------: | :-------------: | -------------------- |
+| `auto` **(matrix default)** | as below | as below | as below | as below |
 | `disable` | no | — | — | plaintext |
-| `prefer` **(matrix default)** | try | no | no | plaintext |
+| `prefer` | try | no | no | plaintext |
 | `require` | yes | no | no | error |
 | `verify-ca` | yes | yes | no | error |
 | `verify-full` | yes | yes | yes | error |
 
-It governs the migration — the `beetleDb.tlsMode` centipede carries into
-transx-ex's `DirectConfig` — and nothing else. **Setting up a cell does not use
-it.** Creating the target database is cm-beetle's call, made through cb-spider's
-SQL fallback, and that picks its own transport, whether centipede or this script
-asks for it.
+It governs the migration — the `beetleDb.tlsMode` centipede resolves and carries
+into transx-ex's `DirectConfig` — and nothing else. **Setting up a cell does not
+use it.** Creating the target database is cm-beetle's call, made through
+cb-spider's SQL fallback, and that picks its own transport, whether centipede or
+this script asks for it.
 
-The mode rides on the reference because cm-beetle has nothing to say about it:
-beetle reports where the instance is and who its admin is, while a managed
-instance offers TLS whether or not it demands it, so the choice is the caller's.
-Before `BeetleDBRef` carried the field, a managed target could only be reached in
-plaintext — the mode was accepted here and then silently dropped on the way.
+**What `auto` does.** It is what a `beetleDb` reference does when `tlsMode` is
+left out, and the matrix leaves it out for `auto`. centipede asks cm-beetle's
+secure-transport API, which relays what cb-spider measured on the instance, and
+picks the mode from its `recommendedSSLMode`:
 
-**Why `prefer` is the default.** A managed instance offers TLS whether or not it
-demands it, so `prefer` encrypts in practice and still connects to an instance
-that allows plaintext — including NCP Cloud DB for MySQL, which offers no TLS at
-all. One value runs every column, without touching what the CSP configured.
+| cm-beetle reports | centipede connects with |
+|---|---|
+| `VERIFY_IDENTITY` (AWS) | `verify-full`, against the CA cb-spider collected |
+| `VERIFY_CA` | `verify-ca`, against the CA cb-spider collected |
+| `DISABLED` (NCP Cloud DB for MySQL) | `disable` |
+| a verify mode, but no CA collected | `require` |
+| nothing, or the lookup failed | `prefer` |
+
+The mode centipede settled on is in its server log only, so the result JSON
+records `auto` as `auto`. Any other value is used as written — plaintext needs
+`disable` spelled out, since an absent value now means `auto`.
 
 Three limits worth knowing:
 
@@ -380,26 +387,31 @@ Three limits worth knowing:
   setting on either side that changes it. This is why the TLS field on the
   reference does **not** unblock the columns in the next section: the wall is in
   creation, not in the migration.
-- **`verify-ca` and `verify-full` use the system trust store only.** RDS and NCP
-  sign with their own CAs, so verification fails without their bundle, and this
-  matrix has no path to supply one.
+- **An explicit `verify-ca` or `verify-full` uses the system trust store only.**
+  RDS and NCP sign with their own CAs, so verification fails without their
+  bundle, and this matrix has no path to supply one. `auto` verifies against the
+  CA cb-spider collected instead.
 
-#### No parameter group, and no escape hatch
+#### Before cb-spider v0.13.10: no parameter group, and no escape hatch
 
-A parameter group that allows plaintext would settle this, and **there is no
-parameter-group API anywhere in the beetle stack** — which is also why there is
-no `--secure-transport` option here. What you can do instead:
+cb-spider's SQL fallback enabled TLS for IBM hosts only before v0.13.10, so it
+reached a `require_secure_transport=ON` instance in plaintext and was refused.
+From v0.13.10 (commit `600a4f07`) it connects with `tls=preferred` to every CSP,
+and these columns can run. With an older cb-spider, a parameter group that
+allows plaintext would settle this, and **there is no parameter-group API
+anywhere in the beetle stack** — which is also why there is no
+`--secure-transport` option here. What you can do instead:
 
 1. Target a version whose managed instance is created with the value off. The
    console's default parameter group shows which; `./scripts/aws-db-versions.sh`
    lists what the region offers.
 2. Create a parameter group in the console with `require_secure_transport=0`,
    attach it and reboot — manual, because nothing in the stack exposes it.
-3. Change cb-spider so its SQL fallback connects over TLS to this CSP too.
+3. Run cb-spider v0.13.10 or later.
 
-`AWS_MARIADB_DST_VERSIONS` still ships with 11.8 in it. A SKIP that prints why is
-a result about this stack worth having, and hiding the combination would only
-make the gap harder to find later.
+`AWS_MARIADB_DST_VERSIONS` still ships with 11.8 in it. With an older cb-spider
+the column SKIPs and prints why, a result about this stack worth having; with
+v0.13.10 or later it can PASS.
 
 ### 2. Automated backups turn on binary logging, and that blocks stored functions
 
@@ -544,13 +556,13 @@ Outputs land in `logs/`:
   "dstMode": "direct",
   "dstConnection": "beetleDb",
   "targetDbCreate": "centipede",
-  "targetTLSMode": "prefer",
+  "targetTLSMode": "auto",
   "dbmsOnFailure": "cleanup",
   "grantedPublicSchema": null,
   "pgTargetSchema": null,
   "finishedAt": "2026-09-09 18:20:11",
   "engines": [
-    { "engine": "mysql", "tlsMode": "prefer",
+    { "engine": "mysql", "tlsMode": "auto",
       "cells": [
         { "srcVersion": "8.0", "dstVersion": "8.4", "status": "PASS",
           "elapsedSec": 192, "srcServerVersion": "8.0.43",
@@ -601,7 +613,7 @@ CLI option  >  real shell variable  >  .env  >  script default
 | `<CSP>_ENGINES` | | engines to run on this CSP |
 | `<CSP>_<ENGINE>_SRC_VERSIONS` | | rows: apt repository versions |
 | `<CSP>_<ENGINE>_DST_VERSIONS` | | columns: managed engine versions |
-| `TARGET_TLS_MODE` | `prefer` | transport security for the **migration**, carried as `beetleDb.tlsMode` |
+| `TARGET_TLS_MODE` | `auto` | transport security for the **migration**, carried as `beetleDb.tlsMode`; `auto` lets centipede pick it from cm-beetle |
 | `TARGET_DB_CREATE` | `centipede` | who creates the target database — `centipede` or `matrix` |
 | `RDBMS_TIMEOUT` / `RDBMS_POLL_INTERVAL` | `2400` / `15` | waiting for a managed instance |
 | `POLL_INTERVAL` | `5` | centipede's polling — a different clock entirely |

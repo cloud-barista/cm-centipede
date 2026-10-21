@@ -86,7 +86,8 @@ Options:
   --keep-on-fail               keep a failed cell's source container
   --stop-on-fail               stop at the first FAIL
   --tls-mode MODE              transport security for the target (default: $TARGET_TLS_MODE)
-                               disable|prefer|require|verify-ca|verify-full
+                               auto|disable|prefer|require|verify-ca|verify-full
+                               auto — centipede picks it from cm-beetle's report
   --target-db-create WHO       who creates the target database (default: $TARGET_DB_CREATE)
                                centipede — centipede creates it and owns it, so a
                                            failed migration drops it whole
@@ -162,10 +163,16 @@ assert_tls_mode() {
 		warn "  To check it over TLS, run with --tls-mode require (it applies to every engine)."
 	done
 
+	# auto verifies against the CA cb-spider collected from the instance, so the
+	# trust-store warning belongs to the explicit verify modes alone.
 	case "$mode" in
+	auto)
+		info "TLS mode auto: centipede decides per connection from cm-beetle's secure-transport"
+		info "  report; the mode it settled on is in centipede's server log." ;;
 	verify-ca|verify-full)
 		warn "TLS mode $mode uses the system trust store only."
-		warn "  RDS and NCP sign with their own CAs, so verification may fail." ;;
+		warn "  RDS and NCP sign with their own CAs, so verification may fail."
+		warn "  --tls-mode auto verifies against the CA cb-spider collected instead." ;;
 	esac
 	return 0
 }
@@ -661,6 +668,10 @@ write_result_json() {
 		# tlsMode is recorded per engine. MongoDB cannot use prefer and drops to
 		# disable, so a run-wide targetTLSMode alone would make that column's PASS
 		# read as something it is not.
+		#
+		# auto is recorded as auto. The mode centipede settled on is decided per
+		# connection and reported only in centipede's server log, so nothing here
+		# can read it back.
 		engines="$(jq -c --arg e "$engine" --argjson c "$cells" \
 			--arg tls "$(target_tls_mode "$engine")" \
 			'. + [{engine:$e, tlsMode:$tls, cells:$c}]' <<<"$engines")"
@@ -826,7 +837,11 @@ matrix_main() {
 		info "target db   : TARGET_DB_CREATE=centipede — centipede creates it through beetle and"
 		info "              owns it, so a failed cell drops it whole"
 	fi
-	info "target TLS  : TARGET_TLS_MODE=$(target_tls_mode)   (transx-ex's connection setting for the migration)"
+	if [ "$(target_tls_mode)" = "auto" ]; then
+		info "target TLS  : TARGET_TLS_MODE=auto   (centipede picks the migration's mode from cm-beetle)"
+	else
+		info "target TLS  : TARGET_TLS_MODE=$(target_tls_mode)   (transx-ex's connection setting for the migration)"
+	fi
 	for engine in $engines; do
 		tls_mode_downgraded "$engine" \
 			&& info "              $engine alone runs at $(target_tls_mode "$engine") — it does not support $(target_tls_mode)"
@@ -1009,11 +1024,11 @@ matrix_defaults() {
 	# target ahead of time gets the second - so both are runnable.
 	TARGET_DB_CREATE="$(lower "${TARGET_DB_CREATE:-centipede}")"
 
-	# Transport security for the target. prefer is the default because a managed
-	# instance offers TLS either way, so the connection is encrypted in practice,
-	# and it still reaches the ones that refuse plaintext (MariaDB 11.8+, RDS
-	# PostgreSQL).
-	TARGET_TLS_MODE="${TARGET_TLS_MODE:-prefer}"
+	# Transport security for the target. auto is the default because it is what a
+	# beetleDb reference does when nothing is said: centipede asks cm-beetle how the
+	# instance does TLS and connects to match - verified where cb-spider collected
+	# a CA, plaintext where the instance offers no TLS (NCP).
+	TARGET_TLS_MODE="${TARGET_TLS_MODE:-auto}"
 	MONGODB_AUTH_SOURCE="${MONGODB_AUTH_SOURCE:-admin}"
 
 	# There is no secure-transport switch and no PostgreSQL template setting on this

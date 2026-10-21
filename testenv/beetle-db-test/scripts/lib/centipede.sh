@@ -112,8 +112,10 @@ cp_preflight() {
 #   cm-beetle reports it", which is the same value RDBMS_USER holds, and asking
 #   for it twice only creates a way for the two to disagree.
 #
-# tlsMode is omitted when it is disable: an empty value already means disable in
-# transx-ex, and stating it would only leave the impression that TLS was handled.
+# tlsMode is omitted when it is auto: an empty value already means auto on a
+# beetleDb reference, and leaving it out runs the path most callers take. Every
+# other mode is sent as written - disable included, since on this reference an
+# absent value no longer means plaintext.
 cp_dst_connection() {
 	local engine="$1" tls
 	tls="$(target_tls_mode "$engine")"
@@ -122,7 +124,7 @@ cp_dst_connection() {
 		--arg w "$(db_password "$(lower "$CSP")")" --arg tls "$tls" \
 		'{source:"beetleDb", beetleDb:(
 		    {nsId:$ns, rdbmsId:$id, password:$w}
-		    + (if $tls == "disable" then {} else {tlsMode:$tls} end))}'
+		    + (if $tls == "auto" then {} else {tlsMode:$tls} end))}'
 }
 
 # ---------------------------------------------------------------------------

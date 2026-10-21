@@ -53,9 +53,10 @@
 #     version at 200 rather than an error, so three checks guard it:
 #     assert_target_versions, recommend_rdbms, and version_compatible after
 #     creation. Removing any one of them lets the wrong version get built.
-#   - The matrix cannot touch the managed instance's parameters. Columns whose
-#     instance sets require_secure_transport=ON cannot have a logical database
-#     created at all — see explain_insecure_transport.
+#   - The matrix cannot touch the managed instance's parameters. With cb-spider
+#     before v0.13.10, columns whose instance sets require_secure_transport=ON
+#     cannot have a logical database created at all — see
+#     explain_insecure_transport.
 #   - Both CSPs need a network. beetle creates a vNet with two subnets in two
 #     zones plus a security group; there is no default-VPC shortcut on either.
 
@@ -1559,9 +1560,9 @@ target_db_drop() {
 # again. If the probe passes, the cells' creation passes.
 #
 # It earns its keep. Creating a logical database goes through cb-spider's SQL
-# fallback, which connects in plaintext to everything but IBM hosts, so an
-# instance with require_secure_transport=ON refuses it - and there is no setting
-# in this folder that changes that. Folding the column once and recording the
+# fallback, which before cb-spider v0.13.10 connects in plaintext to everything
+# but IBM hosts, so an instance with require_secure_transport=ON refuses it - and
+# there is no setting in this folder that changes that. Folding the column once and recording the
 # sentence the CSP produced reads far better than every cell dying of the same
 # error one at a time.
 TARGET_PROBE_REASON=""
@@ -1699,8 +1700,8 @@ cleanup_namespace() {
 # parameter group it attaches to a managed instance. So the same engine version
 # only refuses plaintext when a managed service built it.
 #
-# The path that creates a logical database, cb-spider's SQL fallback, enables TLS
-# for IBM hosts only:
+# The path that creates a logical database, cb-spider's SQL fallback, enabled TLS
+# for IBM hosts only before cb-spider v0.13.10:
 #
 #   // Enable TLS for IBM Cloud MySQL (skip server cert verification)
 #   if strings.Contains(strings.ToLower(host), ".databases.appdomain.cloud") {
@@ -1708,9 +1709,11 @@ cleanup_namespace() {
 #   }
 #   (cb-spider api-runtime/common-runtime/RDBMSManager.go, openRDBMSSQLConn)
 #
-# So it connects to AWS in plaintext and the server closes it with 3159. This is
-# not something the matrix can work around - it is lower in the stack - so what
-# can be done is spelled out instead.
+# So such a cb-spider connects to AWS in plaintext and the server closes it with
+# 3159. From v0.13.10 (commit 600a4f07) it connects with tls=preferred to every
+# CSP, which this error should no longer meet. Either way it is not something the
+# matrix can work around - it is lower in the stack - so what can be done is
+# spelled out instead.
 #
 # ⚠ TARGET_TLS_MODE does not help here. That value governs the migration
 #   transx-ex performs, not the connection cb-spider makes.
@@ -1780,9 +1783,10 @@ explain_insecure_transport() {
 	fail "         at every version, so the same engine version refuses plaintext only"
 	fail "         when a managed service built it."
 	fail "         Creating a logical database goes through cb-spider's SQL fallback, which"
-	fail "         enables TLS for IBM hosts only (RDBMSManager.go openRDBMSSQLConn), so it"
-	fail "         connects to every other CSP in plaintext. A constraint lower in the"
-	fail "         stack; nothing in this folder works around it."
+	fail "         before cb-spider v0.13.10 enables TLS for IBM hosts only"
+	fail "         (RDBMSManager.go openRDBMSSQLConn) and connects to every other CSP in"
+	fail "         plaintext. A constraint lower in the stack; nothing in this folder works"
+	fail "         around it."
 	fail "  Note : TARGET_TLS_MODE does not apply here. It governs the migration transx-ex"
 	fail "         performs, not the connection cb-spider makes."
 	fail "  What you can do:"
@@ -1791,7 +1795,7 @@ explain_insecure_transport() {
 	fail "       region offers with:  ./scripts/$(lower "${2:-aws}")-db-versions.sh"
 	fail "    2) Create a parameter group in the console with require_secure_transport=0,"
 	fail "       attach it and reboot (manual — no parameter-group API anywhere in the stack)."
-	fail "    3) Make cb-spider connect over TLS to other CSPs too (the one condition above)."
+	fail "    3) Run cb-spider v0.13.10 or later, which connects with tls=preferred to every CSP."
 }
 
 # explain_pg_maintenance_db ERROR — the "postgres" database transx-ex insists on.

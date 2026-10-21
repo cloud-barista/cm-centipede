@@ -350,7 +350,7 @@ curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/plans/tar
               "nsId": "cpbt01",
               "rdbmsId": "cpbt-aws-db-mysql",
               "password": "<the instance master password>",
-              "tlsMode": "prefer"
+              "tlsMode": "auto"
             }
           },
           "dbmsFilter": {
@@ -394,10 +394,15 @@ through cm-beetle. That call takes a name and a password and nothing else, so
 — which is why a character-set difference is a warning in step 6 rather than a
 failure.
 
-**`tlsMode`** is `prefer` on both ends here. The other values are `disable`,
-`require`, `verify-ca` and `verify-full`; the last two use the system trust store
-only, and RDS signs with its own CA, so they need a bundle this example has no
-way to supply.
+**`tlsMode`** is `auto` here, which is also what leaving it out means.
+cm-centipede asks cm-beetle how the instance does TLS — cm-beetle relays what
+cb-spider measured — and connects to match: for RDS that is `verify-full`,
+checked against the CA cb-spider collected from the instance. The source end
+stays on `prefer`, since `auto` exists on a `beetleDb` reference only. The other
+values are `disable`, `prefer`, `require`, `verify-ca` and `verify-full`, used
+exactly as given. An explicit `verify-ca` or `verify-full` checks against
+`tlsCAPem`, or the system trust store when it is empty — and RDS signs with its
+own CA, so that needs its bundle in `tlsCAPem`. `auto` ignores `tlsCAPem`.
 
 **`dbmsFilter` selects and then subtracts.** `srcName` names the database to
 migrate — the only one on this server, but a server holding several would be

@@ -164,8 +164,10 @@ echo "    collected: $(echo "$SRC_MODEL" | jq -r '[.sourceDataMigrationModel.dat
 # username is deliberately not sent: empty means "the instance admin as cm-beetle
 # reports it", and naming it too only creates a way for the two to disagree.
 #
-# tlsMode "prefer" encrypts where the instance offers TLS and still connects
-# where it does not — the same value the source connection uses.
+# tlsMode "auto" lets cm-centipede pick the mode from what cm-beetle reports on
+# the instance - verify-full against the CA cb-spider collected, for RDS. It is
+# also what an absent tlsMode means; it is written out here to be seen. The
+# source connection stays on prefer: auto exists on a beetleDb reference only.
 #
 # dbmsFilter names the one database on the server and drops one view from it.
 # Validation knows about the rule, so the view is reported as excluded rather
@@ -188,7 +190,7 @@ RESPONSE=$(curl -s -X POST "$CP_BASE/plans/target" -u "$CP_AUTH" \
               \"nsId\": \"$NS_ID\",
               \"rdbmsId\": \"$RDBMS_ID\",
               \"password\": \"$DB_PASSWORD\",
-              \"tlsMode\": \"prefer\"
+              \"tlsMode\": \"auto\"
             }
           },
           \"dbmsFilter\": {

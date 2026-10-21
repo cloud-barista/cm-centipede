@@ -153,8 +153,9 @@ echo "    collected: $(echo "$SRC_MODEL" | jq -r '[.sourceDataMigrationModel.dat
 # username is deliberately not sent: empty means "the instance admin as cm-beetle
 # reports it", and naming it too only creates a way for the two to disagree.
 #
-# tlsMode "prefer" encrypts where the instance offers TLS and still connects
-# where it does not.
+# tlsMode "auto" lets cm-centipede pick the mode from what cm-beetle reports on
+# the instance - verify-full against the CA cb-spider collected, for RDS. It is
+# also what an absent tlsMode means; it is written out here to be seen.
 #
 # dbmsFilter is a selection as much as a rule set. Naming shop_db migrates that
 # database and leaves hr_db behind, and the rule drops one view. Validation knows
@@ -177,7 +178,7 @@ RESPONSE=$(curl -s -X POST "$CP_BASE/plans/target" -u "$CP_AUTH" \
               \"nsId\": \"$NS_ID\",
               \"rdbmsId\": \"$RDBMS_ID\",
               \"password\": \"$DB_PASSWORD\",
-              \"tlsMode\": \"prefer\"
+              \"tlsMode\": \"auto\"
             }
           },
           \"dbmsFilter\": {
