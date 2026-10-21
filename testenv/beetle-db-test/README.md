@@ -457,6 +457,30 @@ and just as manual.
 
 ### 3. NCP managed databases need a public domain, issued by hand
 
+Reaching an NCP Cloud DB from outside the VPC takes two things:
+
+| | How | Setting |
+|---|---|---|
+| Public domain | **by hand**, in the console | — |
+| ACG inbound rule | automatic, by cb-spider | `NCP_DB_ACG_ALLOW_ALL_INBOUND=true` (default) |
+
+`publicAccess` cannot ask for either. cb-spider v0.13.16+ refuses an NCP create
+with `publicAccess=true`, so `NCP_DB_PUBLIC_ACCESS` must be `false` and the
+pre-flight stops the run before anything is created when it is not.
+
+The ACG rule goes through cm-beetle's `ncpDBACGToAllowAllInbound` (cb-spider
+`NCPAutoOpenACG`): once the instance is running, cb-spider adds
+`TCP 0.0.0.0/0 -> DB port` to the ACG NCP created for it. The matrix's own
+security group plays no part — NCP Cloud DB ignores `securityGroupIds`.
+
+> ⚠ **That rule opens the DB port to the whole internet.** It is meant for test
+> instances only; each column deletes its instance when it is done.
+
+cb-spider treats a failed ACG rule as a warning and still reports the create as
+a success, so the run reads `ncpDBACGToAllowAllInbound` back after the console
+step and warns when it is `false`. With the option off, add the rule yourself:
+`Server > ACG > the DB server's ACG > Inbound > TCP <port>`.
+
 NCP answers with a private domain until a public domain is requested, and the
 request exists only in the console — no API action.
 

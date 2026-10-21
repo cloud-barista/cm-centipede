@@ -198,7 +198,9 @@ if [ "$AS_JSON" -eq 1 ]; then
             cspResourceId: .cspResourceId, cspResourceName: .cspResourceName,
             engine: .dbEngine, version: .dbEngineVersion,
             endpoint: .endpoint, adminUserName: .adminUserName,
-            publicAccess: .publicAccess, status: .status }')" \
+            publicAccess: .publicAccess,
+            ncpDBACGToAllowAllInbound: .ncpDBACGToAllowAllInbound,
+            status: .status }')" \
         --argjson buckets "$(ours_json "$BUCKET_ALL" '.objectStorage[]' '{
             osId: (.id // .name), uid: .uid,
             cspResourceId: .cspResourceId, cspResourceName: .cspResourceName,

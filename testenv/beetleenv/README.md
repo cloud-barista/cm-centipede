@@ -115,7 +115,7 @@ other even though they share one namespace.
             |              └ the shared vNet is created on the way if absent
             |
  Step 5  Connection info ./scripts/conn-info.sh aws [--reveal] [--ssh] [--json]
-         NCP only        ./scripts/ncp-db-domain.sh   -> public domain check
+         NCP only        ./scripts/ncp-db-domain.sh   -> public domain + ACG check
             |
  Step 6  Check           ./scripts/status.sh   -> what is up. Deletes nothing.
             |
@@ -615,10 +615,29 @@ only on cb-tumblebug's default image.
 
 ## NCP public domains — `ncp-db-domain.sh`
 
+Reaching an NCP Cloud DB from outside the vNet takes two things:
+
+| | How | Setting |
+|---|---|---|
+| Public domain | **by hand**, in the console | — |
+| ACG inbound rule | automatic, by cb-spider | `BEETLEENV_NCP_DB_ACG_ALLOW_ALL_INBOUND=true` (default) |
+
 A managed database on NCP answers on a **private** domain until a public one is
-issued, and issuing it is a console action with no API behind it.
-`BEETLEENV_NCP_DB_PUBLIC_ACCESS=true` is carried into the create call, but
-whether a public domain exists is a separate fact only the console decides.
+issued, and issuing it is a console action with no API behind it. `publicAccess`
+cannot ask for it: cb-spider v0.13.16+ refuses an NCP create with
+`publicAccess=true`, so `BEETLEENV_NCP_DB_PUBLIC_ACCESS` must be `false`, and
+`up.sh` / `provision.sh` stop before anything is created when it is not.
+
+The ACG rule goes through cm-beetle's `ncpDBACGToAllowAllInbound` (cb-spider
+`NCPAutoOpenACG`): once the instance is running, cb-spider adds
+`TCP 0.0.0.0/0 -> DB port` to the ACG NCP created for it. The security group
+beetleenv creates plays no part — NCP Cloud DB ignores `securityGroupIds`.
+
+> ⚠ **That rule opens the DB port to the whole internet**, and it stays open
+> until `./scripts/deprovision.sh` deletes the instance. Test instances only.
+
+cb-spider treats a failed ACG rule as a warning and still reports the create as
+a success, so `ncp-db-domain.sh` checks the rule as well as the domain:
 
 ```bash
 ./scripts/ncp-db-domain.sh          # refresh, then report
@@ -629,21 +648,35 @@ whether a public domain exists is a separate fact only the console decides.
 ==> ncp: refreshing managed DB records from the CSP
   MISSING   mysql    still on the private domain (db-4a4pov.vpc-cdb.ntruss.com:3306)
 
-[WARN]  1 engine(s) have no public domain.
+[WARN]  1 engine(s) are not reachable yet (no public domain or no ACG rule).
 
-  Issue one per engine, in the NCP console:
+  MISSING - issue a public domain per engine, in the NCP console:
     Database > Cloud DB for <engine> > select the DB server
       > DB Management > Public domain > request
+
+  NO-ACG - add the inbound rule, in the NCP console:
+    Server > ACG > the ACG of the DB server > Inbound > TCP <db port>
+    (BEETLEENV_NCP_DB_ACG_ALLOW_ALL_INBOUND=true was asked for, so cb-spider
+     failed to add it, or the instance was created before the setting existed.)
 ```
 
-It exits 1 while any engine is still without one, so it can gate a script that
-needs the endpoint to be reachable.
+| Verdict | Meaning |
+|---|---|
+| `OK` | public domain and ACG rule both in place |
+| `MISSING` | still on the private domain |
+| `NO-ACG` | public domain issued, but the ACG has no inbound rule — connections time out |
+| `ABSENT` | no such instance |
+
+It exits 1 while any engine is not `OK`, so it can gate a script that needs the
+endpoint to be reachable.
 
 The verdict is not a guess at the hostname. cb-spider's NCP driver uses the
 public domain when there is one and the private one otherwise, and sets
 `publicAccess` to say which it used; cb-tumblebug copies that field on refresh.
 So `publicAccess` is an observation of what the CSP has, not an echo of what was
-asked for.
+asked for. `ncpDBACGToAllowAllInbound` is read the same way: cb-spider
+recomputes it from the tag on the rule it added, so `false` means the rule is
+not on the ACG.
 
 A public domain has to be re-issued whenever the instance is re-created.
 

@@ -417,6 +417,40 @@ assert_db_password() {
 	return 0
 }
 
+# db_public_access CSP — <CSP>_DB_PUBLIC_ACCESS as true/false. Unset means true,
+#   except on NCP, where true is refused (see assert_db_access).
+db_public_access() {
+	local def=true
+	[ "$(lower "$1")" = "ncp" ] && def=false
+	csp_env_bool "$1" DB_PUBLIC_ACCESS "$def"
+}
+
+# db_acg_open CSP — NCP_DB_ACG_ALLOW_ALL_INBOUND as true/false (unset = true).
+#   Always false elsewhere: beetle rejects ncpDBACGToAllowAllInbound for any CSP
+#   but NCP.
+db_acg_open() {
+	[ "$(lower "$1")" = "ncp" ] || { printf 'false'; return 0; }
+	csp_env_bool "$1" DB_ACG_ALLOW_ALL_INBOUND true
+}
+
+# assert_db_access CSP — before anything is created.
+#   cb-spider v0.13.16+ refuses an NCP create with PublicAccess=true (NCP has no
+#   API to issue a public domain), and cm-beetle's migration API passes it through
+#   unchecked, so without this the refusal arrives only once the create request
+#   has gone out.
+assert_db_access() {
+	[ "$(lower "$1")" = "ncp" ] || return 0
+	if [ "$(db_public_access "$1")" = "true" ]; then
+		fail "NCP_DB_PUBLIC_ACCESS=true cannot be used."
+		fail "  cb-spider refuses an NCP Cloud DB create with publicAccess=true - NCP has no"
+		fail "  API to issue a public domain. Set it to false in ${ENV_FILE:-.env}."
+		fail "  Outside access comes from the console's public domain (the run stops for"
+		fail "  it) plus NCP_DB_ACG_ALLOW_ALL_INBOUND=true for the ACG inbound rule."
+		return 1
+	fi
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Naming
 # ---------------------------------------------------------------------------
@@ -973,7 +1007,7 @@ inflight_report() {
 # The last layer is what makes a manual console deletion possible when automatic
 # deletion has failed.
 RDBMS_NAME=""; RDBMS_STATUS=""; RDBMS_ENDPOINT=""; RDBMS_HOST=""; RDBMS_PORT=""
-RDBMS_USER=""; RDBMS_ENGINE=""; RDBMS_VERSION=""; RDBMS_PUBLIC=""
+RDBMS_USER=""; RDBMS_ENGINE=""; RDBMS_VERSION=""; RDBMS_PUBLIC=""; RDBMS_ACG_OPEN=""
 RDBMS_UID=""; RDBMS_CSP_NAME=""; RDBMS_CSP_ID=""
 
 # rdbms_info CSP NAME — read the instance into RDBMS_*. 1 when it is not there.
@@ -981,6 +1015,9 @@ RDBMS_UID=""; RDBMS_CSP_NAME=""; RDBMS_CSP_ID=""
 #   overwrites endpoint / publicAccess / status with the live answer before
 #   storing it again (core/resource/rdbms.go GetRDBMS). That is what makes a
 #   public domain issued in the NCP console show up here.
+#   RDBMS_ACG_OPEN is the same kind of observation: cb-spider recomputes
+#   NCPAutoOpenACG from the rule tag it left on the ACG, so false means the rule
+#   is not there - including when adding it failed and the create still succeeded.
 rdbms_info() {
 	local csp="$1" name="$2"
 	bt_get "$(_rdbms_path)/$(urlq "$name")" || return 1
@@ -990,6 +1027,7 @@ rdbms_info() {
 	RDBMS_ENGINE="$(bt_data '.dbEngine')"
 	RDBMS_VERSION="$(bt_data '.dbEngineVersion')"
 	RDBMS_PUBLIC="$(bt_data '.publicAccess')"
+	RDBMS_ACG_OPEN="$(bt_data '.ncpDBACGToAllowAllInbound // false')"
 	RDBMS_UID="$(bt_data '.uid')"
 	RDBMS_CSP_NAME="$(bt_data '.cspResourceName')"
 	RDBMS_CSP_ID="$(bt_data '.cspResourceId')"
@@ -1062,7 +1100,8 @@ recommend_rdbms() {
 		--argjson memory "$(csp_env_int "$csp" DB_SRC_MEMORY_GB 4)" \
 		--argjson storage "$(csp_env_int "$csp" DB_SRC_STORAGE_GB 100)" \
 		--argjson port "$(engine_port "$engine")" \
-		--argjson public "$(csp_env_bool "$csp" DB_PUBLIC_ACCESS true)" \
+		--argjson public "$(db_public_access "$csp")" \
+		--argjson acg "$(db_acg_open "$csp")" \
 		'{desiredCloud:({csp:$csp, region:$region}
 		                + (if $zone == "" then {} else {zone:$zone} end)),
 		  sourceRDBMSInstances:[{
@@ -1073,7 +1112,8 @@ recommend_rdbms() {
 		            rootDisk:{type:"SSD", totalSize:$storage}}}],
 		  targetPreferences:({publicAccess:$public, highAvailability:false,
 		                      backupRetentionDays:0}
-		                     + (if $user == "" then {} else {adminUserName:$user} end))}')"
+		                     + (if $user == "" then {} else {adminUserName:$user} end)
+		                     + (if $csp == "ncp" then {ncpDBACGToAllowAllInbound:$acg} else {} end))}')"
 
 	if ! bt_post "/recommendation/middleware/rdbms?desiredCsp=$(urlq "$(lower "$csp")")&desiredRegion=$(urlq "$region")" "$body"; then
 		bt_report "RDBMS recommendation failed: $csp $engine $version"
@@ -1121,6 +1161,7 @@ recommend_rdbms() {
 #   rdbmsName                         : the recommendation always says mig-rdbms-01,
 #                                       so every column would collide.
 #   publicAccess                      : <CSP>_DB_PUBLIC_ACCESS — see below.
+#   ncpDBACGToAllowAllInbound         : NCP_DB_ACG_ALLOW_ALL_INBOUND, NCP only — see below.
 #   backupRetentionDays               : <CSP>_DB_BACKUP_RETENTION_DAYS — see below.
 #
 #   Left as the recommendation returned it: dbInstanceSpec, storageType and
@@ -1130,17 +1171,24 @@ recommend_rdbms() {
 #   the one thing the recommendation is good at.
 #
 # ── Why publicAccess is asserted again ──────────────────────────────────────
-#   A recommendation can lower it. On NCP it always does:
+#   A recommendation can lower it, and .env is where that decision belongs, so it
+#   is put back. On NCP the recommendation always answers false:
 #
-#     beetle: NCP Cloud DB does not provide external public IP by default;
-#             instance(s) will be created within private VPC.
+#     beetle: NCP Cloud DB does not support publicAccess=true (Open API does not
+#             support public domain allocation). Enforced private access. ...
 #
-#   so a requested true comes back false and, left alone, false is what the CSP
-#   is asked for. .env is where that decision belongs, so it is put back.
+#   and false is the only value NCP can take - cb-spider refuses a create with
+#   true. assert_db_access stops NCP_DB_PUBLIC_ACCESS=true in the pre-flight, so
+#   what is put back here on NCP is always false.
 #
-#   ⚠ It does not conjure a public domain on NCP - that is still a console step
-#     (see the NCP notes in README.md). It only stops the request from disagreeing
-#     with the configuration.
+# ── Why ncpDBACGToAllowAllInbound is asserted again (NCP only) ──────────────
+#   Same reason: the create body is what reaches the CSP. With it true cb-spider
+#   waits for the instance to run and adds TCP 0.0.0.0/0 -> DB port to the ACG
+#   NCP made for it; the security group passed in securityGroupIds is ignored by
+#   NCP Cloud DB, so that ACG is the one that decides reachability.
+#
+#   ⚠ Neither field produces a public domain on NCP - that is still a console
+#     step (see the NCP notes in README.md).
 #
 # ── Why the backup retention is forced back down ────────────────────────────
 #   targetPreferences.backupRetentionDays=0 in the recommendation request comes
@@ -1172,13 +1220,16 @@ inject_rdbms_target() {
 		--arg pass "$(db_password "$csp")" \
 		--arg user "$(csp_env "$csp" DB_ADMIN_USERNAME)" \
 		--argjson backup "$(csp_env_int "$csp" DB_BACKUP_RETENTION_DAYS 0)" \
-		--argjson public "$(csp_env_bool "$csp" DB_PUBLIC_ACCESS true)" \
+		--argjson public "$(db_public_access "$csp")" \
+		--argjson acg "$(db_acg_open "$csp")" --arg csp "$(lower "$csp")" \
 		'.targetRDBMSInstances = [ .targetRDBMSInstances[] | (
 		      .rdbmsName = $name
 		    | .vNetId = $vnet
 		    | .subnetIds = $subnets
 		    | .securityGroupIds = (if $sg == "" then [] else [$sg] end)
 		    | .publicAccess = $public
+		    | (if $csp == "ncp" then .ncpDBACGToAllowAllInbound = $acg
+		       else del(.ncpDBACGToAllowAllInbound) end)
 		    | .backupRetentionDays = $backup
 		    | .adminUserPassword = $pass
 		    | (if $user == "" then . else .adminUserName = $user end)
@@ -1225,6 +1276,8 @@ create_rdbms() {
 			"    storage     \(if (.storageType // "") == "" then "(CSP managed)" else "\(.storageType) \(.storageSize)GB" end)",
 			"    admin       \(.adminUserName)",
 			"    public      \(.publicAccess)",
+			(if has("ncpDBACGToAllowAllInbound") then
+			"    acg-open    \(.ncpDBACGToAllowAllInbound)" else empty end),
 			"    backups     \(.backupRetentionDays) day(s)"'
 
 		step "creating the instance: $name (a managed RDBMS takes 5-30 min)"
