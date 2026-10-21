@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 	"github.com/cloud-barista/cm-centipede/pkg/config"
@@ -47,6 +48,29 @@ type DBConfig struct {
 	Host     string
 	Port     int
 	Username string
+}
+
+// SecureTransport is what cb-spider measured on a managed instance's transport
+// security, as cm-beetle relays it. It is advice for choosing a TLS mode, not a
+// connection setting of its own.
+type SecureTransport struct {
+	// RecommendedSSLMode is DISABLED, VERIFY_CA, VERIFY_IDENTITY, or empty when
+	// the server offers TLS but its CA could not be collected (see CAError).
+	RecommendedSSLMode string
+
+	// RequireSecureTransport reports that the server refuses plaintext clients.
+	RequireSecureTransport bool
+
+	// CAPEM is the topmost certificate of the chain the server presented. cb-spider
+	// collects it without verifying it, so it is trusted on first use. Empty when
+	// the server sent none or the collection failed.
+	CAPEM string
+
+	// CANotAfter is when CAPEM expires; zero when unknown.
+	CANotAfter time.Time
+
+	// CAError says why CAPEM is empty when the server does offer TLS.
+	CAError string
 }
 
 // infraInfo mirrors the fields this package reads from
@@ -102,6 +126,20 @@ type rdbmsInfo struct {
 	ConnectionConfig struct {
 		ProviderName string `json:"providerName"`
 	} `json:"connectionConfig"`
+}
+
+// secureTransportInfo mirrors the fields this package reads from
+// GET .../rdbms/{rdbmsId}/secure-transport. cm-beetle measures them by
+// connecting to the instance through cb-spider on every call.
+type secureTransportInfo struct {
+	RequireSecureTransport string `json:"requireSecureTransport"` // MySQL/MariaDB: "ON" | "OFF"
+	Enforced               bool   `json:"enforced"`               // PostgreSQL; false also when unknown
+	CACertificate          struct {
+		PEM      string `json:"pem"`
+		NotAfter string `json:"notAfter"`
+	} `json:"caCertificate"`
+	CACertificateError string `json:"caCertificateError"`
+	RecommendedSSLMode string `json:"recommendedSSLMode"`
 }
 
 // rdbmsDatabaseList mirrors GET .../rdbms/{rdbmsId}/database.
@@ -253,6 +291,41 @@ func GetRDBMSAccessInfo(ref commonmodel.BeetleDBRef) (*DBConfig, error) {
 		Port:     port,
 		Username: raw.AdminUserName,
 	}, nil
+}
+
+// GetSecureTransport asks cm-beetle how a managed RDBMS instance does transport
+// security, for choosing a TLS mode to connect with.
+//
+// adminUser is the account the connection itself uses, which the caller has
+// already resolved; cm-beetle needs it with the password to reach the instance,
+// and stores neither.
+func GetSecureTransport(ref commonmodel.BeetleDBRef, adminUser string) (*SecureTransport, error) {
+	if ref.Password == "" {
+		return nil, fmt.Errorf("beetle rdbms %q: admin password is empty", ref.RdbmsID)
+	}
+	admin := adminCreds{user: strings.TrimSpace(adminUser), password: ref.Password}
+	if admin.user == "" {
+		return nil, fmt.Errorf(
+			"beetle rdbms %q reports no admin user name; set username on the ref", ref.RdbmsID)
+	}
+
+	var res infoSecureTransportResponse
+	if err := getJSONAsAdmin(rdbmsPath(ref)+"/secure-transport", admin, &res); err != nil {
+		return nil, err
+	}
+	raw := res.data()
+
+	st := &SecureTransport{
+		RecommendedSSLMode: strings.ToUpper(strings.TrimSpace(raw.RecommendedSSLMode)),
+		RequireSecureTransport: raw.Enforced ||
+			strings.EqualFold(raw.RequireSecureTransport, "ON") || raw.RequireSecureTransport == "1",
+		CAPEM:   strings.TrimSpace(normalizePEM(raw.CACertificate.PEM)),
+		CAError: raw.CACertificateError,
+	}
+	if t, err := time.Parse(time.RFC3339, raw.CACertificate.NotAfter); err == nil {
+		st.CANotAfter = t
+	}
+	return st, nil
 }
 
 // ListDatabases returns the logical databases inside a managed RDBMS instance.
@@ -418,6 +491,19 @@ func (r infoRDBMSResponse) data() rdbmsInfo {
 		return r.Data
 	}
 	return r.rdbmsInfo
+}
+
+type infoSecureTransportResponse struct {
+	Success *bool               `json:"success"`
+	Data    secureTransportInfo `json:"data"`
+	secureTransportInfo
+}
+
+func (r infoSecureTransportResponse) data() secureTransportInfo {
+	if r.Success != nil {
+		return r.Data
+	}
+	return r.secureTransportInfo
 }
 
 type infoRDBMSDatabaseResponse struct {

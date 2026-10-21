@@ -85,28 +85,31 @@ type BeetleOSRef struct {
 // cb-tumblebug provisions MySQL and MariaDB only, so those are the engines a
 // managed reference can carry.
 //
-// TLSMode and TLSCAPem are the only connection settings here that are not looked
-// up. cm-beetle reports where the instance is and who its admin is, but says
-// nothing about transport security, and a managed instance offers TLS whether or
-// not it demands it — so the choice belongs to the caller, exactly as it does on
-// an inline db connection. Without them a managed target could only ever be
-// reached in plaintext, and an instance with require_secure_transport=ON could
-// not be reached at all.
+// TLSMode and TLSCAPem decide transport security. By default ("auto") centipede
+// asks cm-beetle, which relays what cb-spider measured on the instance — whether
+// it offers TLS, whether its certificate names its endpoint, and the CA that
+// signed it — and connects with the mode that matches. An explicit mode skips
+// that lookup and is used exactly as given, as on an inline db connection.
 type BeetleDBRef struct {
 	NsID     string `json:"nsId"     validate:"required"`
 	RdbmsID  string `json:"rdbmsId"  validate:"required"`
 	Username string `json:"username,omitempty"`           // defaults to the looked-up AdminUsername
 	Password string `json:"password" validate:"required"` // AES-encrypted on store
 
-	// TLSMode selects transport security; the empty value is "disable". It means
-	// the same thing here as on DBConnConfig — see the table in transx-ex's
-	// dbmsx/driver/base/tls.go.
-	TLSMode string `json:"tlsMode,omitempty" validate:"omitempty,oneof=disable prefer require verify-ca verify-full"`
+	// TLSMode selects transport security; the empty value is "auto". "auto"
+	// takes the mode cm-beetle recommends for the instance: verify-full,
+	// verify-ca or disable, falling back to require when no CA was collected and
+	// to prefer when cm-beetle could not say. Any other value means the same
+	// thing here as on DBConnConfig — see the table in transx-ex's
+	// dbmsx/driver/base/tls.go — and is used as given; plaintext therefore needs
+	// "disable" spelled out.
+	TLSMode string `json:"tlsMode,omitempty" validate:"omitempty,oneof=auto disable prefer require verify-ca verify-full"`
 
-	// TLSCAPEM is the PEM root that verify-ca and verify-full check against.
-	// Empty means the system trust store, which carries only publicly trusted
-	// CAs — and managed RDBMS services commonly sign with their own, so those two
-	// modes usually need the CSP's root supplied here.
+	// TLSCAPEM is the PEM root that an explicit verify-ca or verify-full checks
+	// against. Empty means the system trust store, which carries only publicly
+	// trusted CAs — and managed RDBMS services commonly sign with their own, so
+	// those two modes usually need the CSP's root supplied here. "auto" ignores
+	// it and verifies against the CA cb-spider collected from the instance.
 	TLSCAPEM string `json:"tlsCAPem,omitempty"`
 }
 

@@ -206,8 +206,12 @@ func ResolveDBMSLocation(ref commonmodel.ConnectionRef, database, dbType string)
 		if err := validateManagedEngine(engine); err != nil {
 			return transxex.DBMSLocation{}, err
 		}
+		tls, err := resolveManagedTLS(*ref.BeetleDB, acc)
+		if err != nil {
+			return transxex.DBMSLocation{}, err
+		}
 		return DBConnConfigToDBMSLocation(
-			managedDBConnConfig(engine, acc, *ref.BeetleDB), database)
+			managedDBConnConfig(engine, acc, *ref.BeetleDB, tls), database)
 
 	case commonmodel.ConnectionSourceDB:
 		if ref.DB == nil {
@@ -239,14 +243,13 @@ func validateManagedEngine(engine string) error {
 }
 
 // managedDBConnConfig builds a DBConnConfig for a managed cloud RDB (beetleDb):
-// direct access, with the endpoint and admin user from cm-beetle and the
-// settings the lookup cannot supply — the password and the TLS choice — from the
-// ref.
+// direct access, with the endpoint and admin user from cm-beetle, the password
+// from the ref, and the TLS mode and CA resolveManagedTLS settled on.
 //
 // ProviderName is left empty on purpose. cm-beetle's RDBMS read does report the
 // CSP (connectionConfig.providerName), but the field decides nothing here
 // (transx-ex carries it into DBMSLocation.ProviderName but never reads it).
-func managedDBConnConfig(engine string, acc *beetle.DBConfig, ref commonmodel.BeetleDBRef) commonmodel.DBConnConfig {
+func managedDBConnConfig(engine string, acc *beetle.DBConfig, ref commonmodel.BeetleDBRef, tls tlsDecision) commonmodel.DBConnConfig {
 	return commonmodel.DBConnConfig{
 		DBMSType:   engine,
 		AccessType: "direct",
@@ -254,8 +257,8 @@ func managedDBConnConfig(engine string, acc *beetle.DBConfig, ref commonmodel.Be
 		Port:       acc.Port,
 		Username:   pick(ref.Username, acc.Username),
 		Password:   ref.Password,
-		TLSMode:    ref.TLSMode,
-		TLSCAPEM:   ref.TLSCAPEM,
+		TLSMode:    tls.Mode,
+		TLSCAPEM:   tls.CAPEM,
 	}
 }
 

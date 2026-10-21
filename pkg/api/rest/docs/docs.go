@@ -626,13 +626,14 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "tlsCAPem": {
-                    "description": "TLSCAPEM is the PEM root that verify-ca and verify-full check against.\nEmpty means the system trust store, which carries only publicly trusted\nCAs — and managed RDBMS services commonly sign with their own, so those two\nmodes usually need the CSP's root supplied here.",
+                    "description": "TLSCAPEM is the PEM root that an explicit verify-ca or verify-full checks\nagainst. Empty means the system trust store, which carries only publicly\ntrusted CAs — and managed RDBMS services commonly sign with their own, so\nthose two modes usually need the CSP's root supplied here. \"auto\" ignores\nit and verifies against the CA cb-spider collected from the instance.",
                     "type": "string"
                 },
                 "tlsMode": {
-                    "description": "TLSMode selects transport security; the empty value is \"disable\". It means\nthe same thing here as on DBConnConfig — see the table in transx-ex's\ndbmsx/driver/base/tls.go.",
+                    "description": "TLSMode selects transport security; the empty value is \"auto\". \"auto\"\ntakes the mode cm-beetle recommends for the instance: verify-full,\nverify-ca or disable, falling back to require when no CA was collected and\nto prefer when cm-beetle could not say. Any other value means the same\nthing here as on DBConnConfig — see the table in transx-ex's\ndbmsx/driver/base/tls.go — and is used as given; plaintext therefore needs\n\"disable\" spelled out.",
                     "type": "string",
                     "enum": [
+                        "auto",
                         "disable",
                         "prefer",
                         "require",
