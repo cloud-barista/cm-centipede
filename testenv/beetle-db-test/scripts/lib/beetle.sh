@@ -361,7 +361,8 @@ bt_wait() {
 # changing this function and nothing else.
 #
 #   Who needs it: the instance create call (adminUserPassword), every logical
-#   database call (X-Admin-User-Password), and centipede's target connection.
+#   database call (X-Admin-User-Name / X-Admin-User-Password), and centipede's
+#   target connection.
 db_password() { csp_env "$1" DB_PASSWORD; }
 
 # _assert_ncp_password PASS — NCP's rules, checked before anything is created.
@@ -1115,7 +1116,7 @@ recommend_rdbms() {
 #
 #   vNetId/subnetIds/securityGroupIds : beetle does not fill these, and creation
 #                                       fails when they are empty.
-#   adminUserPassword                 : left empty, beetle substitutes its own default.
+#   adminUserPassword                 : <CSP>_DB_PASSWORD; beetle has no default.
 #   adminUserName                     : <CSP>_DB_ADMIN_USERNAME.
 #   rdbmsName                         : the recommendation always says mig-rdbms-01,
 #                                       so every column would collide.
@@ -1320,8 +1321,9 @@ delete_rdbms() {
 #   make new ones (NCP answers Error 1044, Access denied for user 'dbadmin'@'%').
 #   So the instance's owner, cm-beetle, is asked instead.
 #
-#   The API takes a name and the admin password, and nothing else - a character
-#   set cannot be specified, so the logical database follows the instance
+#   The request carries a name in the body and the admin account in two
+#   headers, and nothing else - no character set is sent, so the logical
+#   database follows the instance
 #   defaults. Table character sets travel inside the dump's CREATE TABLE
 #   statements, and centipede reports a database-level difference as a warning.
 #
@@ -1342,17 +1344,27 @@ target_db_kind() {
 	esac
 }
 
+# bt_admin_headers CSP — the two headers every logical database call needs.
+#   cm-beetle answers 400 when either is missing. The user name is the one the
+#   instance was created with, or what cm-beetle reports when .env names none.
+bt_admin_headers() {
+	local user
+	user="$(csp_env "$1" DB_ADMIN_USERNAME)"
+	bt_header "X-Admin-User-Name: ${user:-$RDBMS_USER}"
+	bt_header "X-Admin-User-Password: $(db_password "$1")"
+}
+
 logical_db_list() {
 	local csp="$1" name="$2"
-	bt_header "X-Admin-User-Password: $(db_password "$csp")"
+	bt_admin_headers "$csp"
 	bt_get "$(_rdbms_path)/$(urlq "$name")/database" || return 1
 	bt_jq -r '.databases[]? // empty'
 }
 
 logical_db_create() {
 	local csp="$1" name="$2" db="$3" body raw
-	body="$(jq -n --arg db "$db" --arg pw "$(db_password "$csp")" \
-		'{databaseName:$db, adminUserPassword:$pw}')"
+	body="$(jq -n --arg db "$db" '{databaseName:$db}')"
+	bt_admin_headers "$csp"
 	if bt_post "$(_rdbms_path)/$(urlq "$name")/database" "$body"; then
 		return 0
 	fi
@@ -1364,7 +1376,7 @@ logical_db_create() {
 
 logical_db_drop() {
 	local csp="$1" name="$2" db="$3"
-	bt_header "X-Admin-User-Password: $(db_password "$csp")"
+	bt_admin_headers "$csp"
 	if bt_delete "$(_rdbms_path)/$(urlq "$name")/database/$(urlq "$db")"; then
 		return 0
 	fi
