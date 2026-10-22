@@ -288,11 +288,13 @@ provision_database_engine() {
     migrate POST "/migration/middleware/ns/${NS_PATH}/rdbms" "$body" \
         "${name} (a managed RDBMS takes 5-30 minutes)" "$RDBMS_TIMEOUT"
 
+    # The read has no adminUserName since cm-beetle v0.6.2; .env names the one
+    # the instance was created with.
     if bt_get "/migration/middleware/ns/${NS_PATH}/rdbms/$(urlq "$name")"; then
-        bt_payload | jq -r '
+        bt_payload | jq -r --arg u "$(csp_env "$CSP" DB_ADMIN_USERNAME)" '
             "  status           \(.status // "-")",
             "  endpoint         \(if (.endpoint // "") == "" then "(not assigned yet)" else .endpoint end)",
-            "  admin user       \(.adminUserName // "-")"'
+            "  admin user       \(.adminUserName // ($u | select(. != "") | "\(.)  (.env)") // "-")"'
     fi
 }
 
