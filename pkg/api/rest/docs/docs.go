@@ -612,7 +612,8 @@ const docTemplate = `{
             "required": [
                 "nsId",
                 "password",
-                "rdbmsId"
+                "rdbmsId",
+                "username"
             ],
             "properties": {
                 "nsId": {
@@ -642,7 +643,7 @@ const docTemplate = `{
                     ]
                 },
                 "username": {
-                    "description": "defaults to the looked-up AdminUsername",
+                    "description": "the instance admin; cm-beetle does not report it",
                     "type": "string"
                 }
             }

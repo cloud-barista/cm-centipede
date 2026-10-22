@@ -42,6 +42,9 @@ func validateConnectionRef(ref commonmodel.ConnectionRef) string {
 		if ref.BeetleDB.NsID == "" || ref.BeetleDB.RdbmsID == "" {
 			return "beetleDb.nsId, rdbmsId are required"
 		}
+		if ref.BeetleDB.Username == "" {
+			return "beetleDb.username is required (cm-beetle does not report the admin user name)"
+		}
 		if ref.BeetleDB.Password == "" {
 			return "beetleDb.password is required (managed RDB APIs do not return it)"
 		}

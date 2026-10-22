@@ -43,6 +43,8 @@ type OSConfig struct {
 
 // DBConfig is the normalised managed-DB access info. Password is not part of it:
 // the lookup never returns one, so the caller supplies it from the ref.
+// Username is empty from cm-beetle v0.6.2 on, whose RDBMS read dropped
+// adminUserName; the ref's own username is what callers use.
 type DBConfig struct {
 	DBType   string // mysql | mariadb — the engines cb-tumblebug provisions
 	Host     string
@@ -113,6 +115,8 @@ type osInfo struct {
 //
 // There is no port of its own: Endpoint carries "host:port", and no password
 // either, since the API returns one only when the instance is created.
+// AdminUserName is read for cm-beetle before v0.6.2 only; later versions omit it
+// (rdbmsmodel.RDBMSInfo), which is why BeetleDBRef requires a username.
 type rdbmsInfo struct {
 	Name          string `json:"name"`
 	Status        string `json:"status"`
@@ -305,8 +309,7 @@ func GetSecureTransport(ref commonmodel.BeetleDBRef, adminUser string) (*SecureT
 	}
 	admin := adminCreds{user: strings.TrimSpace(adminUser), password: ref.Password}
 	if admin.user == "" {
-		return nil, fmt.Errorf(
-			"beetle rdbms %q reports no admin user name; set username on the ref", ref.RdbmsID)
+		return nil, errNoAdminUser(ref)
 	}
 
 	var res infoSecureTransportResponse
@@ -400,8 +403,10 @@ func DropDatabase(ref commonmodel.BeetleDBRef, database string) error {
 }
 
 // adminCredsOf returns the admin account for ref's logical-database calls.
-// The user name defaults to the one cm-beetle reports, as the connection itself
-// does (managedDBConnConfig), so both always name the same account.
+// The user name is the ref's; only when it is empty does this fall back to the
+// one cm-beetle reports, as the connection itself does (managedDBConnConfig), so
+// both always name the same account. That fallback finds a name on cm-beetle
+// before v0.6.2 only.
 //
 // info is the instance when the caller has already read it; nil makes this read
 // it, and only when the ref names no user. The read goes to the instance
@@ -424,10 +429,17 @@ func adminCredsOf(ref commonmodel.BeetleDBRef, info *rdbmsInfo) (adminCreds, err
 		user = strings.TrimSpace(info.AdminUserName)
 	}
 	if user == "" {
-		return adminCreds{}, fmt.Errorf(
-			"beetle rdbms %q reports no admin user name; set username on the ref", ref.RdbmsID)
+		return adminCreds{}, errNoAdminUser(ref)
 	}
 	return adminCreds{user: user, password: ref.Password}, nil
+}
+
+// errNoAdminUser is the failure when neither ref nor cm-beetle names the admin.
+// The phrase "reports no admin user name" is matched by testenv/beetle-db-test.
+func errNoAdminUser(ref commonmodel.BeetleDBRef) error {
+	return fmt.Errorf(
+		"beetle rdbms %q reports no admin user name (cm-beetle v0.6.2+ does not return it); "+
+			"set beetleDb.username to the instance admin", ref.RdbmsID)
 }
 
 // rdbmsPath is the cm-beetle path of ref's managed instance.

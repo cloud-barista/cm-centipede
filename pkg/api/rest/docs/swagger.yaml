@@ -35,12 +35,13 @@ definitions:
         - verify-full
         type: string
       username:
-        description: defaults to the looked-up AdminUsername
+        description: the instance admin; cm-beetle does not report it
         type: string
     required:
     - nsId
     - password
     - rdbmsId
+    - username
     type: object
   github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleOSRef:
     properties:

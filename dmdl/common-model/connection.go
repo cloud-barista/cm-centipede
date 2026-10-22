@@ -72,15 +72,15 @@ type BeetleOSRef struct {
 	OsID string `json:"osId" validate:"required"`
 }
 
-// BeetleDBRef — cm-beetle managed RDBMS identifier (pure reference plus a
-// password). host/port/username/engine are looked up through cm-beetle; the
-// lookup never returns the password (it is supplied only at creation time), so
-// it is carried in the request and AES-encrypted on store. Access is always
-// resolved as direct.
+// BeetleDBRef — cm-beetle managed RDBMS identifier (a reference plus the admin
+// login). host/port/engine are looked up through cm-beetle. The lookup returns
+// neither the password nor, since cm-beetle v0.6.2, the admin user name — both
+// are supplied only at creation time — so both are carried in the request; the
+// password is AES-encrypted on store. Access is always resolved as direct.
 //
-// Password doubles as the admin password on cm-beetle's logical-database calls,
-// so a Username naming anyone but the instance admin still leaves database
-// creation and deletion to the admin credentials.
+// Username and Password are the instance admin's: cm-beetle's logical-database
+// calls send them as the admin credentials, and the migration connects with
+// them too.
 //
 // cb-tumblebug provisions MySQL and MariaDB only, so those are the engines a
 // managed reference can carry.
@@ -93,7 +93,7 @@ type BeetleOSRef struct {
 type BeetleDBRef struct {
 	NsID     string `json:"nsId"     validate:"required"`
 	RdbmsID  string `json:"rdbmsId"  validate:"required"`
-	Username string `json:"username,omitempty"`           // defaults to the looked-up AdminUsername
+	Username string `json:"username" validate:"required"` // the instance admin; cm-beetle does not report it
 	Password string `json:"password" validate:"required"` // AES-encrypted on store
 
 	// TLSMode selects transport security; the empty value is "auto". "auto"
