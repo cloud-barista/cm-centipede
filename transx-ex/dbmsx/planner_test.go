@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -190,7 +191,7 @@ func TestPlan_DBMSTransfer_DumpStep_IntermediateDestination(t *testing.T) {
 	if dumpStep.Destination.DBMSType != "local" {
 		t.Errorf("dump step Destination.DBMSType = %q, want %q", dumpStep.Destination.DBMSType, "local")
 	}
-	if !strings.Contains(dumpStep.Destination.Database, DefaultStagingPath) {
+	if !strings.Contains(dumpStep.Destination.Database, StagingPath("")) {
 		t.Errorf("dump step Destination.Database should contain staging path, got %q", dumpStep.Destination.Database)
 	}
 }
@@ -279,6 +280,19 @@ func TestPlan_StagingPath_IsUniquePerPlan(t *testing.T) {
 
 	if first == second {
 		t.Errorf("two plans of the same model share the staging file %q", first)
+	}
+}
+
+// A model's StagingDir replaces the default root: the dump lands in that root's
+// dbms subdirectory.
+func TestPlan_StagingPath_UsesModelStagingDir(t *testing.T) {
+	root := t.TempDir()
+	model := mysqlDirectModel()
+	model.StagingDir = root
+
+	_, staging := planStaging(t, model)
+	if got, want := filepath.Dir(staging), filepath.Join(root, "dbms"); got != want {
+		t.Errorf("staging file %q is in %q, want %q", staging, got, want)
 	}
 }
 

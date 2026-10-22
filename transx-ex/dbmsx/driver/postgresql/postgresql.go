@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -246,6 +247,11 @@ func (d *PostgreSQLDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation
 			return fmt.Errorf("dump data: %w", err)
 		}
 	}
+	if scope == base.ScopeSchemaOnly || scope == base.ScopeFull {
+		if err := d.dumpPostDataViaSQL(ctx, conn, sc, loc.Filter, dst); err != nil {
+			return fmt.Errorf("dump schema: %w", err)
+		}
+	}
 
 	_, err = io.WriteString(dst, sc.renameTail())
 	return err
@@ -276,9 +282,16 @@ func (d *PostgreSQLDriver) setDumpSearchPath(ctx context.Context, conn *pgx.Conn
 	return nil
 }
 
-// dumpSchemaViaSQL writes DDL in PostgreSQL dependency order:
-// Extensions → Types → Sequences → Tables(FK excluded) → Indexes → FK Constraints →
-// Views → Materialized Views → Functions/Procedures → Triggers → Rules.
+// dumpSchemaViaSQL writes the DDL that goes ahead of the rows, in PostgreSQL
+// dependency order:
+// Extensions → Types → Sequences → Tables(FK excluded) → Views →
+// Materialized Views (WITH NO DATA) → Functions/Procedures.
+// dumpPostDataViaSQL writes the rest once the rows are in.
+//
+// The split is pg_dump's, and for the same reason: a restore through psql runs
+// the file as it stands, so a FK in force before the COPY blocks rejects a child
+// table loaded ahead of its parent, and a trigger in force fires on every
+// restored row.
 //
 // The order is by object kind, not by schema, and that is what makes several
 // schemas safe to dump together: every table exists before the first foreign key
@@ -328,30 +341,6 @@ func (d *PostgreSQLDriver) dumpSchemaViaSQL(ctx context.Context, conn *pgx.Conn,
 		fmt.Fprintf(dst, "%s\n\n", createSQL)
 	}
 
-	// --- Indexes (non-primary) ---
-	indexes, err := d.listIndexDefs(ctx, conn, sc, filter)
-	if err != nil {
-		return base.Obj{Kind: filterpkg.ObjectKindIndex}.Fail(base.ActionList, err)
-	}
-	for _, idx := range indexes {
-		fmt.Fprintf(dst, "%s;\n", idx)
-	}
-	if len(indexes) > 0 {
-		fmt.Fprintln(dst)
-	}
-
-	// --- FK Constraints ---
-	fks, err := d.listFKConstraints(ctx, conn, sc, filter)
-	if err != nil {
-		return base.Obj{Kind: filterpkg.ObjectKindForeignKey}.Fail(base.ActionList, err)
-	}
-	for _, fk := range fks {
-		fmt.Fprintf(dst, "%s;\n", fk)
-	}
-	if len(fks) > 0 {
-		fmt.Fprintln(dst)
-	}
-
 	// --- Views ---
 	views, err := d.listViews(ctx, conn, sc, filter)
 	if err != nil {
@@ -388,6 +377,37 @@ func (d *PostgreSQLDriver) dumpSchemaViaSQL(ctx context.Context, conn *pgx.Conn,
 		fmt.Fprintf(dst, "%s\n\n", p)
 	}
 
+	return nil
+}
+
+// dumpPostDataViaSQL writes the DDL that follows the rows:
+// Indexes → FK Constraints → Triggers → Rules → REFRESH MATERIALIZED VIEW.
+// See dumpSchemaViaSQL for why these wait for the rows.
+func (d *PostgreSQLDriver) dumpPostDataViaSQL(ctx context.Context, conn *pgx.Conn, sc pgDumpScope, filter *filterpkg.DBMSFilterOption, dst io.Writer) error {
+	// --- Indexes (non-primary) ---
+	indexes, err := d.listIndexDefs(ctx, conn, sc, filter)
+	if err != nil {
+		return base.Obj{Kind: filterpkg.ObjectKindIndex}.Fail(base.ActionList, err)
+	}
+	for _, idx := range indexes {
+		fmt.Fprintf(dst, "%s;\n", idx)
+	}
+	if len(indexes) > 0 {
+		fmt.Fprintln(dst)
+	}
+
+	// --- FK Constraints ---
+	fks, err := d.listFKConstraints(ctx, conn, sc, filter)
+	if err != nil {
+		return base.Obj{Kind: filterpkg.ObjectKindForeignKey}.Fail(base.ActionList, err)
+	}
+	for _, fk := range fks {
+		fmt.Fprintf(dst, "%s;\n", fk)
+	}
+	if len(fks) > 0 {
+		fmt.Fprintln(dst)
+	}
+
 	// --- Triggers ---
 	triggers, err := d.listTriggers(ctx, conn, sc, filter)
 	if err != nil {
@@ -406,6 +426,18 @@ func (d *PostgreSQLDriver) dumpSchemaViaSQL(ctx context.Context, conn *pgx.Conn,
 		fmt.Fprintf(dst, "%s\n\n", rule)
 	}
 
+	// --- Materialized View data ---
+	// Created empty ahead of the rows; filled here, as pg_dump does it.
+	matviews, err := d.listMatViews(ctx, conn, sc, filter)
+	if err != nil {
+		return base.Obj{Kind: filterpkg.ObjectKindMaterializedView}.Fail(base.ActionList, err)
+	}
+	for _, mv := range matviews {
+		if ident := pgExtractMatViewIdent(mv); ident != "" {
+			fmt.Fprintf(dst, "REFRESH MATERIALIZED VIEW %s;\n\n", ident)
+		}
+	}
+
 	return nil
 }
 
@@ -417,6 +449,7 @@ func (d *PostgreSQLDriver) dumpDataViaSQL(ctx context.Context, conn *pgx.Conn, s
 	}
 
 	for i, table := range tables {
+		base.ReportDumpTable(ctx, i, len(tables), table.Name)
 		obj := base.Obj{
 			Kind: base.ObjectKindTable, Owner: table.Schema, Name: table.Name,
 			Index: i + 1, Total: len(tables),
@@ -460,6 +493,7 @@ func (d *PostgreSQLDriver) dumpDataViaSQL(ctx context.Context, conn *pgx.Conn, s
 		}
 		fmt.Fprintf(dst, "\\.\n\n")
 	}
+	base.ReportDumpTable(ctx, len(tables), len(tables), "")
 	return nil
 }
 
@@ -494,7 +528,7 @@ func (d *PostgreSQLDriver) dumpViaSSH(ctx context.Context, loc base.DBMSLocation
 			DBMSType:    base.DBMSTypePostgreSQL,
 			Source:      loc.Database,
 			Destination: outputPath,
-			Command:     cmd,
+			Command:     d.BuildDumpCmd(base.RedactedLoc(loc), scope),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -540,10 +574,11 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 	}
 	defer conn.Close(ctx)
 
-	content, err := os.ReadFile(inputPath)
+	f, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("read dump file: %w", err)
+		return fmt.Errorf("open dump file: %w", err)
 	}
+	defer f.Close()
 
 	// A dump of a single schema carries bare names, so where its objects land is
 	// decided here rather than in the file. That is what lets one schema be
@@ -582,48 +617,87 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 		return fmt.Errorf("set check_function_bodies: %w", err)
 	}
 
-	stmts := splitPGStatements(string(content))
 	var matViews []string
 	// postData holds the statements that must not be in force while the rows are
 	// loaded: FK constraints, which the COPY order across tables can violate, and
 	// triggers, which would fire on every restored row. Their order among
 	// themselves is preserved.
 	var postData []string
+	// postIndexes holds the CREATE INDEX statements met before the first COPY,
+	// built once the rows are in rather than maintained row by row while they
+	// load: an index on a random column costs a random page per row once it
+	// outgrows memory, where building it afterwards is one sort. They go ahead
+	// of postData, whose FK constraints may need one of them on the referenced
+	// columns. An index met after the first COPY is left where it is: that is
+	// pg_dump's post-data, which already follows the rows and is followed by
+	// statements naming the index (ALTER INDEX ... ATTACH PARTITION, COMMENT ON
+	// INDEX). It is still built with maintenance_work_mem raised, set before the
+	// first of them and reset once the restore is through (indexMem).
+	var postIndexes []string
+	copied := false
+	indexMemTried, indexMem := false, false
 	var lastNotifyTable string
 
-	for i, stmt := range stmts {
+	// The tables the dump carries rows for — one COPY block each — counted
+	// beside the restore; see MySQLDriver.restoreViaSQL.
+	progress := base.NewRestoreProgress(ctx, 0)
+	stopCount := progress.CountTotal(ctx, func(ctx context.Context) (int, int, error) {
+		each := func(r io.Reader, fn func(string) error) error {
+			return eachPGStatement(r, func(stmt string, _ io.Reader) error { return fn(stmt) })
+		}
+		return base.CountDump(ctx, inputPath, each, pgCopyBlockTable)
+	})
+	defer stopCount()
+
+	i := 0
+	err = eachPGStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string, rows io.Reader) error {
+		i++
 		// The splitter cuts on the delimiter, so a dump's comment block arrives
 		// attached to the statement below it. Drop the comments, keep the
 		// statement — skipping the whole entry loses real SQL (see
 		// base.StripLeadingComments).
 		stmt = base.StripLeadingComments(stmt)
 		if stmt == "" {
-			continue
+			return nil
 		}
 
-		// The same test the splitter used, so the two agree on what a COPY block
-		// is: pg_dump writes "FROM stdin;" in lower case while this driver's own
-		// dump writes it upper, and a case-sensitive test here recognises only
-		// the latter — the rows of the other then reach the server as SQL.
-		if firstLine, _, ok := strings.Cut(stmt, "\n"); ok && pgIsCopyFromStdin(firstLine) {
+		// The splitter recognised a COPY block (pgIsCopyFromStdin, which agrees
+		// with pg_dump's "FROM stdin;" and this driver's upper-case dump alike),
+		// and stmt is its header.
+		if rows != nil {
+			copied = true
 			// COPY takes its rows over the protocol's copy-in stream, not in the
 			// query text: running the header through Exec would leave the server
-			// waiting for data it was never sent.
-			header, data := pgSplitCopyBlock(stmt)
-			if _, err := conn.PgConn().CopyFrom(ctx, strings.NewReader(data), header); err != nil {
+			// waiting for data it was never sent. They stream from the dump as
+			// the server takes them, so a table of any size is never in memory,
+			// and the progress follows them as they go.
+			header := stmt
+			table := pgExtractCopyTable(header)
+			tag, err := conn.PgConn().CopyFrom(ctx, &pgCopyProgress{r: rows, p: progress, table: table}, header)
+			if err != nil {
 				// The header names the table; the rows below it would only
 				// bury it.
 				return base.RestoreStatementError(
-					base.DBMSTypePostgreSQL, loc.Database, header, i+1, len(stmts), err)
+					base.DBMSTypePostgreSQL, loc.Database, header, i, progress.Statements(), err)
 			}
+			progress.Statement(len(header), tag.RowsAffected(), table)
 		} else if pgIsPostDataStmt(stmt) {
 			postData = append(postData, stmt)
-			continue
+			return nil
+		} else if !copied && pgIsCreateIndexStmt(stmt) {
+			postIndexes = append(postIndexes, stmt)
+			return nil
 		} else {
-			if _, err := conn.Exec(ctx, stmt); err != nil {
-				return base.RestoreStatementError(
-					base.DBMSTypePostgreSQL, loc.Database, stmt, i+1, len(stmts), err)
+			if copied && !indexMemTried && pgIsCreateIndexStmt(stmt) {
+				indexMemTried = true
+				indexMem = d.raiseIndexBuildMem(ctx, conn, loc)
 			}
+			tag, err := conn.Exec(ctx, stmt)
+			if err != nil {
+				return base.RestoreStatementError(
+					base.DBMSTypePostgreSQL, loc.Database, stmt, i, progress.Statements(), err)
+			}
+			progress.Statement(len(stmt), tag.RowsAffected(), "")
 		}
 
 		if notify != nil {
@@ -641,6 +715,16 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 				matViews = append(matViews, mv)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	progress.Finish()
+
+	if err := d.buildPostIndexes(ctx, conn, loc, postIndexes, progress); err != nil {
+		return err
 	}
 
 	// The rows are in; the constraints and triggers they were held back for can go
@@ -651,11 +735,17 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 			return base.RestoreStatementError(
 				base.DBMSTypePostgreSQL, loc.Database, stmt, i+1, len(postData), err)
 		}
+		progress.Statement(len(stmt), 0, "")
 	}
 
 	if replicaRole {
 		if _, err := conn.Exec(ctx, "SET session_replication_role = DEFAULT"); err != nil {
 			return fmt.Errorf("reset session_replication_role: %w", err)
+		}
+	}
+	if indexMem {
+		if _, err := conn.Exec(ctx, "RESET maintenance_work_mem"); err != nil {
+			return fmt.Errorf("reset maintenance_work_mem: %w", err)
 		}
 	}
 
@@ -674,6 +764,60 @@ func (d *PostgreSQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocat
 	}
 
 	return nil
+}
+
+// pgIndexBuildMem is what each deferred index build may sort in. Large enough
+// that the biggest index of a large table sorts in a few passes, small enough to
+// leave a 4 GB instance its shared buffers. A session already allowed more keeps
+// what it has.
+const pgIndexBuildMem = "512MB"
+
+// buildPostIndexes creates the indexes restoreViaSQL held back until the rows
+// were in, with maintenance_work_mem raised for the builds and put back after.
+//
+// Raising it is a session setting any role may make, so a refusal is not
+// expected; should one come, the indexes are built with what the session has.
+func (d *PostgreSQLDriver) buildPostIndexes(ctx context.Context, conn *pgx.Conn, loc base.DBMSLocation, stmts []string, progress *base.RestoreProgress) error {
+	if len(stmts) == 0 {
+		return nil
+	}
+	raised := d.raiseIndexBuildMem(ctx, conn, loc)
+
+	for i, stmt := range stmts {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return base.RestoreStatementError(
+				base.DBMSTypePostgreSQL, loc.Database, stmt, i+1, len(stmts), err)
+		}
+		progress.Statement(len(stmt), 0, "")
+	}
+
+	if raised {
+		if _, err := conn.Exec(ctx, "RESET maintenance_work_mem"); err != nil {
+			return fmt.Errorf("reset maintenance_work_mem: %w", err)
+		}
+	}
+	return nil
+}
+
+// raiseIndexBuildMem raises maintenance_work_mem to pgIndexBuildMem for the
+// index builds to come, and reports whether it did, so the caller knows to
+// RESET it after them.
+func (d *PostgreSQLDriver) raiseIndexBuildMem(ctx context.Context, conn *pgx.Conn, loc base.DBMSLocation) bool {
+	var lower bool
+	err := conn.QueryRow(ctx,
+		"SELECT pg_size_bytes(current_setting('maintenance_work_mem')) < pg_size_bytes($1)",
+		pgIndexBuildMem).Scan(&lower)
+	if err == nil && lower {
+		if _, err = conn.Exec(ctx, "SET maintenance_work_mem = '"+pgIndexBuildMem+"'"); err == nil {
+			return true
+		}
+	}
+	if err != nil {
+		logger.Info("postgresql restore could not raise maintenance_work_mem; "+
+			"indexes will be built with the session's own",
+			"database", loc.Database, "err", err.Error())
+	}
+	return false
 }
 
 // setRestoreSearchPath creates and selects the destination schema when loc names
@@ -705,13 +849,15 @@ func (d *PostgreSQLDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocat
 	}
 	defer f.Close()
 
-	cmd := d.BuildRestoreCmd(loc)
-	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, f, nil); err != nil {
+	// The CLI on the far side runs the statements, so how much of the file has
+	// been sent is all there is to report.
+	cmd := d.BuildRestoreCmd(loc, nil)
+	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypePostgreSQL,
 			Destination: loc.Database,
-			Command:     cmd,
+			Command:     d.BuildRestoreCmd(base.RedactedLoc(loc), nil),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -735,14 +881,16 @@ func (d *PostgreSQLDriver) TestConnection(ctx context.Context, loc base.DBMSLoca
 	}
 
 	cfg := loc.SSHTunnel
-	cmd := d.buildPsqlCmd(cfg, loc.Database) + ` -c "SELECT 1"`
+	// The command is built again for the error with the password masked.
+	cmdFor := func(cfg *base.SSHTunnelConfig) string { return d.buildPsqlCmd(cfg, loc.Database) + ` -c "SELECT 1"` }
+	cmd := cmdFor(cfg)
 	var out bytes.Buffer
 	if err := base.ExecuteViaSSH(cfg.SSH, cmd, nil, &out); err != nil {
 		return &base.OperationError{
 			Operation: base.OperationConnect,
 			DBMSType:  base.DBMSTypePostgreSQL,
 			Source:    loc.Database,
-			Command:   cmd,
+			Command:   cmdFor(base.RedactedLoc(loc).SSHTunnel),
 			Output:    base.SSHStderr(err),
 			Err:       err,
 		}
@@ -767,7 +915,7 @@ func (d *PostgreSQLDriver) BuildDumpCmd(loc base.DBMSLocation, scope string) str
 }
 
 // BuildRestoreCmd returns the psql CLI command used by PipeExecutor (T13).
-func (d *PostgreSQLDriver) BuildRestoreCmd(loc base.DBMSLocation) string {
+func (d *PostgreSQLDriver) BuildRestoreCmd(loc base.DBMSLocation, _ *base.RestoreOption) string {
 	if !loc.IsSSHTunnel() {
 		return ""
 	}
@@ -2067,7 +2215,13 @@ const pgIndexQueryBody = `SELECT
 // loc.Database that actually holds a table by this name. A name present in
 // several of them is an error rather than an arbitrary pick; narrowing
 // loc.PgSchema resolves it.
+//
+// The row count is filled in only when loc.Metric.PostgreSQL.RowCountExact asks
+// for it: an exact COUNT(*) scans the table, which a caller after the structure
+// alone should not pay for. It is counted here rather than in describeTableVia*,
+// which Inspect's per-table loop also calls after counting the table itself.
 func (d *PostgreSQLDriver) DescribeTable(ctx context.Context, loc base.DBMSLocation, table string) (*base.TableInfo, error) {
+	exact := pgMetric(loc).rowCountExact
 	if loc.IsDirect() {
 		conn, err := d.openConn(ctx, loc)
 		if err != nil {
@@ -2079,7 +2233,15 @@ func (d *PostgreSQLDriver) DescribeTable(ctx context.Context, loc base.DBMSLocat
 		if err != nil {
 			return nil, err
 		}
-		return d.describeTableViaSQL(ctx, conn, schema, table)
+		info, err := d.describeTableViaSQL(ctx, conn, schema, table)
+		if err != nil || !exact {
+			return info, err
+		}
+		if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s",
+			pgQualifyIdent(schema, table))).Scan(&info.RowCount); err != nil {
+			return nil, fmt.Errorf("count rows in %s: %w", table, err)
+		}
+		return info, nil
 	}
 	exec, err := base.DialSSHExec(loc.SSHTunnel.SSH)
 	if err != nil {
@@ -2091,7 +2253,24 @@ func (d *PostgreSQLDriver) DescribeTable(ctx context.Context, loc base.DBMSLocat
 	if err != nil {
 		return nil, err
 	}
-	return d.describeTableViaSSH(ctx, exec, loc, schema, table)
+	info, err := d.describeTableViaSSH(ctx, exec, loc, schema, table)
+	if err != nil || !exact {
+		return info, err
+	}
+	countQ := fmt.Sprintf("SELECT COUNT(*) AS row_count FROM %s", pgQualifyIdent(schema, table))
+	res, err := d.pgQueryJSONViaSSH(exec, loc.SSHTunnel, loc.Database, countQ)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	if len(res) == 0 {
+		return nil, fmt.Errorf("count rows in %s: empty result", table)
+	}
+	n, err := strconv.ParseInt(res[0]["row_count"], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	info.RowCount = n
+	return info, nil
 }
 
 // pgTableSchemaQuery finds which of the covered schemas hold a table by this
@@ -2557,6 +2736,13 @@ func (d *PostgreSQLDriver) buildSSHDumpArgs(cfg *base.SSHTunnelConfig, loc base.
 
 	args = append(args, connStr)
 
+	// Roles are cluster-level and not part of a database dump, so a GRANT or an
+	// OWNER TO naming a source role fails on a target that lacks it (ERROR: role
+	// "readonly" does not exist), and psql's ON_ERROR_STOP aborts the restore.
+	// Leave both out, as the direct path's own DDL does: the restoring login owns
+	// what it creates.
+	args = append(args, "--no-owner", "--no-privileges")
+
 	switch scope {
 	case base.ScopeSchemaOnly:
 		args = append(args, "--schema-only")
@@ -2772,7 +2958,42 @@ func (d *PostgreSQLDriver) dumpTypes(ctx context.Context, conn *pgx.Conn, sc pgD
 		}
 		fmt.Fprintf(dst, "%s;\n\n", stmt)
 	}
-	return drows.Err()
+	if err := drows.Err(); err != nil {
+		return err
+	}
+
+	// --- Composite types ---
+	// Only standalone ones (relkind 'c'): every table has a row type as well,
+	// which CREATE TABLE makes by itself. They come after the enums and domains
+	// their attributes may use, and in oid order among themselves so one built
+	// on another follows it. format_type renders each attribute under the
+	// search_path the dump set, bare or qualified to match the file.
+	crows, err := conn.Query(ctx,
+		`SELECT n.nspname, t.typname,
+			COALESCE(string_agg(quote_ident(a.attname) || ' ' ||
+				pg_catalog.format_type(a.atttypid, a.atttypmod), ', ' ORDER BY a.attnum), '')
+		FROM pg_type t
+		JOIN pg_namespace n ON n.oid = t.typnamespace
+		JOIN pg_class c ON c.oid = t.typrelid AND c.relkind = 'c'
+		LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+		WHERE n.nspname IN `+pgSchemaLiteralList(sc.schemas)+` AND t.typtype = 'c'
+		GROUP BY t.oid, n.nspname, t.typname
+		ORDER BY t.oid`)
+	if err != nil {
+		return err
+	}
+	defer crows.Close()
+	for crows.Next() {
+		var schema, name, attrs string
+		if err := crows.Scan(&schema, &name, &attrs); err != nil {
+			return err
+		}
+		if pgObjectExcluded(filter, filterpkg.ObjectKindType, schema, name) {
+			continue
+		}
+		fmt.Fprintf(dst, "CREATE TYPE %s AS (%s);\n\n", sc.ident(schema, name), attrs)
+	}
+	return crows.Err()
 }
 
 func (d *PostgreSQLDriver) listSequences(ctx context.Context, conn *pgx.Conn, sc pgDumpScope, filter *filterpkg.DBMSFilterOption) ([]string, error) {
@@ -2835,6 +3056,7 @@ func (d *PostgreSQLDriver) buildCreateTable(ctx context.Context, conn *pgx.Conn,
 		`SELECT
 			c.column_name,
 			c.data_type,
+			c.udt_schema,
 			c.udt_name,
 			c.character_maximum_length,
 			c.numeric_precision,
@@ -2853,11 +3075,11 @@ func (d *PostgreSQLDriver) buildCreateTable(ctx context.Context, conn *pgx.Conn,
 
 	var colDefs []string
 	for rows.Next() {
-		var colName, dataType, udtName, isNullable, isIdentity string
+		var colName, dataType, udtSchema, udtName, isNullable, isIdentity string
 		var charMax, numPrec, numScale *int
 		var colDefault *string
 		var identGen *string
-		if err := rows.Scan(&colName, &dataType, &udtName, &charMax, &numPrec, &numScale,
+		if err := rows.Scan(&colName, &dataType, &udtSchema, &udtName, &charMax, &numPrec, &numScale,
 			&isNullable, &colDefault, &isIdentity, &identGen); err != nil {
 			return "", err
 		}
@@ -2866,6 +3088,12 @@ func (d *PostgreSQLDriver) buildCreateTable(ctx context.Context, conn *pgx.Conn,
 		}
 
 		typStr := pgBuildTypeName(dataType, udtName, charMax, numPrec, numScale)
+		// A qualified dump creates its enums and domains under their source
+		// schema, which the restore's search_path does not include, so a column
+		// of such a type has to name the schema too. Built-in types stay bare.
+		if sc.qualify && (dataType == "USER-DEFINED" || dataType == "ARRAY") && udtSchema != "pg_catalog" {
+			typStr = pgQualifyIdent(udtSchema, udtName)
+		}
 		def := pgQuoteIdent(colName) + " " + typStr
 		if isIdentity == "YES" && identGen != nil {
 			def += fmt.Sprintf(" GENERATED %s AS IDENTITY", *identGen)
@@ -3170,7 +3398,7 @@ func (d *PostgreSQLDriver) listMatViews(ctx context.Context, conn *pgx.Conn, sc 
 		if pgObjectExcluded(filter, filterpkg.ObjectKindMaterializedView, schema, name) {
 			continue
 		}
-		stmts = append(stmts, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s;", sc.ident(schema, name), strings.TrimRight(def, ";")))
+		stmts = append(stmts, fmt.Sprintf("CREATE MATERIALIZED VIEW %s AS\n%s\nWITH NO DATA;", sc.ident(schema, name), strings.TrimRight(strings.TrimSpace(def), ";")))
 	}
 	return stmts, rows.Err()
 }
@@ -3374,13 +3602,43 @@ func pgIsMetaCommand(line string) bool {
 // Handles dollar-quoting ($$...$$) used by function/procedure definitions.
 func splitPGStatements(script string) []string {
 	var stmts []string
+	_ = eachPGStatement(strings.NewReader(script), func(stmt string, rows io.Reader) error {
+		if rows != nil {
+			// A COPY block is given back whole, as the one statement it is: its
+			// header, its rows and the \. that ends them.
+			data, _ := io.ReadAll(rows)
+			stmt += string(data)
+			if rows.(*pgCopyRows).terminated {
+				stmt += `\.`
+			}
+			stmt = strings.TrimSpace(stmt)
+		}
+		stmts = append(stmts, stmt)
+		return nil
+	})
+	return stmts
+}
+
+// eachPGStatement reads a PostgreSQL SQL dump from r and calls fn with each of
+// its statements in turn, as splitPGStatements returns them — see
+// eachMySQLStatement on why a restore reads its dump this way. It stops at the
+// first error fn returns, or at a fault reading r.
+//
+// A COPY ... FROM STDIN block is the exception. It holds a table's rows, which
+// can be most of the dump, so it is not given as one string: stmt is the
+// block's header (with any comments above it) and rows reads the rows below,
+// up to and leaving out the \. that ends them. Rows fn leaves unread are
+// skipped. For every other statement rows is nil.
+func eachPGStatement(r io.Reader, fn func(stmt string, rows io.Reader) error) error {
 	var buf strings.Builder
-	sc := bufio.NewScanner(strings.NewReader(script))
-	sc.Buffer(make([]byte, 4<<20), 4<<20)
+	sc := bufio.NewScanner(r)
+	// One line is one row of a COPY block, and a row holding a large bytea runs
+	// past the old 4 MB — see splitMySQLStatements on why the limit is
+	// base.MaxStatementLine.
+	sc.Buffer(make([]byte, 4<<20), base.MaxStatementLine)
 
 	inDollarQuote := false
 	dollarTag := ""
-	inCopyData := false
 
 	for sc.Scan() {
 		line := sc.Text()
@@ -3394,7 +3652,7 @@ func splitPGStatements(script string) []string {
 		// keeping it would glue the meta-command to the statement below.
 		// COPY data (whose terminator is "\.") and dollar-quoted bodies are
 		// excluded — a backslash there is content.
-		if !inDollarQuote && !inCopyData && pgIsMetaCommand(strings.TrimSpace(line)) {
+		if !inDollarQuote && pgIsMetaCommand(strings.TrimSpace(line)) {
 			continue
 		}
 
@@ -3407,16 +3665,17 @@ func splitPGStatements(script string) []string {
 		// separated rows that follow, and the \. that ends them. Splitting on the
 		// header's semicolon would hand the server a COPY with no data, and it
 		// would wait for rows that never arrive.
-		if inCopyData {
-			if strings.TrimRight(line, "\r") == `\.` {
-				inCopyData = false
-				stmts = append(stmts, strings.TrimSpace(current))
-				buf.Reset()
-			}
-			continue
-		}
 		if !inDollarQuote && pgIsCopyFromStdin(line) {
-			inCopyData = true
+			buf.Reset()
+			rows := &pgCopyRows{sc: sc}
+			err := fn(strings.TrimLeftFunc(current, unicode.IsSpace), rows)
+			// What fn left unread is still the block's, not the next statement's.
+			if err == nil {
+				_, err = io.Copy(io.Discard, rows)
+			}
+			if err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -3446,8 +3705,10 @@ func splitPGStatements(script string) []string {
 					// Check if we have a complete statement ending with ;
 					trimmed := strings.TrimRight(strings.TrimSpace(current), "\n")
 					if strings.HasSuffix(trimmed, ";") {
-						stmts = append(stmts, strings.TrimSpace(current))
 						buf.Reset()
+						if err := fn(strings.TrimSpace(current), nil); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -3458,17 +3719,76 @@ func splitPGStatements(script string) []string {
 		trimmed := strings.TrimRight(strings.TrimSpace(current), "\n")
 		if strings.HasSuffix(trimmed, ";") && !inDollarQuote {
 			stmt := strings.TrimSpace(current)
-			if stmt != "" {
-				stmts = append(stmts, stmt)
-			}
 			buf.Reset()
+			if stmt != "" {
+				if err := fn(stmt, nil); err != nil {
+					return err
+				}
+			}
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
 	}
 
 	if s := strings.TrimSpace(buf.String()); s != "" {
-		stmts = append(stmts, s)
+		return fn(s, nil)
 	}
-	return stmts
+	return nil
+}
+
+// pgCopyRows reads the rows of one COPY block straight off the splitter's
+// scanner: each line with its newline, stopping at the \. that ends the block
+// or at the end of the dump. Read fills as much of p as there are rows for, so
+// a COPY sends large chunks rather than one message per row.
+type pgCopyRows struct {
+	sc         *bufio.Scanner
+	line       []byte // the part of the current row not yet read
+	nl         bool   // the current row's newline is still to be read
+	end        bool
+	terminated bool // the block ended at its \., not at the end of the dump
+}
+
+func (c *pgCopyRows) Read(p []byte) (int, error) {
+	n := 0
+	for n < len(p) {
+		if len(c.line) > 0 {
+			k := copy(p[n:], c.line)
+			c.line = c.line[k:]
+			n += k
+			continue
+		}
+		if c.nl {
+			p[n] = '\n'
+			n++
+			c.nl = false
+			continue
+		}
+		if c.end {
+			break
+		}
+		// The row before has been copied out whole, so the scanner's buffer is
+		// free to be reused for the next.
+		if !c.sc.Scan() {
+			c.end = true
+			if err := c.sc.Err(); err != nil {
+				// Not an end of the rows: a COPY taking it for one would
+				// commit the table cut short.
+				return n, err
+			}
+			break
+		}
+		line := c.sc.Bytes()
+		if string(bytes.TrimRight(line, "\r")) == `\.` {
+			c.end, c.terminated = true, true
+			break
+		}
+		c.line, c.nl = line, true
+	}
+	if n == 0 && c.end {
+		return 0, io.EOF
+	}
+	return n, nil
 }
 
 var pgDollarTagRe = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)?\$`)
@@ -3504,6 +3824,15 @@ func pgIsPostDataStmt(stmt string) bool {
 	return strings.HasPrefix(head, "ALTER TABLE") &&
 		strings.Contains(head, "ADD CONSTRAINT") &&
 		strings.Contains(head, "FOREIGN KEY")
+}
+
+// pgIsCreateIndexStmt reports whether a statement creates an index: CREATE
+// [UNIQUE] INDEX, CONCURRENTLY or not. An index behind a PRIMARY KEY or UNIQUE
+// constraint is created by its ALTER TABLE or CREATE TABLE instead, and is not
+// one of these.
+func pgIsCreateIndexStmt(stmt string) bool {
+	head := strings.ToUpper(strings.TrimSpace(stmt))
+	return strings.HasPrefix(head, "CREATE INDEX") || strings.HasPrefix(head, "CREATE UNIQUE INDEX")
 }
 
 // pgIsCopyFromStdin reports whether line opens a COPY ... FROM STDIN data block.
@@ -3587,6 +3916,35 @@ func pgExtractQualified(re *regexp.Regexp, stmt string) string {
 }
 
 func pgExtractCreateTable(stmt string) string { return pgExtractQualified(pgCreateTableRe, stmt) }
+
+// pgCopyBlockTable names the table a COPY … FROM stdin block loads, or "" for
+// any other statement. Only the header line is read: the rows below it can run
+// to megabytes, and pgCopyTableRe is not anchored. The header alone, as
+// eachPGStatement gives a block, names its table as well.
+func pgCopyBlockTable(stmt string) string {
+	firstLine, _, _ := strings.Cut(stmt, "\n")
+	if !pgIsCopyFromStdin(firstLine) {
+		return ""
+	}
+	return pgExtractCopyTable(firstLine)
+}
+
+// pgCopyProgress passes a COPY block's rows on to the server, recording each
+// read as restored bytes of table. A table's COPY is one statement, and one
+// holding most of the dump otherwise moved the progress only once it was done.
+type pgCopyProgress struct {
+	r     io.Reader
+	p     *base.RestoreProgress
+	table string
+}
+
+func (c *pgCopyProgress) Read(b []byte) (int, error) {
+	n, err := c.r.Read(b)
+	if n > 0 {
+		c.p.Statement(n, 0, c.table)
+	}
+	return n, err
+}
 
 func pgExtractCopyTable(stmt string) string { return pgExtractQualified(pgCopyTableRe, stmt) }
 

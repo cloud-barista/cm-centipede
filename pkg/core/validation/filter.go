@@ -31,9 +31,6 @@ import (
 type migrationFilter struct {
 	// files judges a file or object against the whole pipeline.
 	files *transxex.PathFilterOption
-	// sized records that a size rule is present, so a caller that would have to
-	// pay for file sizes only pays when they change an outcome.
-	sized bool
 }
 
 // newMigrationFilter builds the verdict helper for one folder's or bucket's
@@ -48,21 +45,7 @@ func newMigrationFilter(rules []commonmodel.PathFilterRule) (*migrationFilter, e
 		return nil, err
 	}
 
-	f := &migrationFilter{files: files}
-	for _, r := range rules {
-		if r.Type == commonmodel.PathRuleSize {
-			f.sized = true
-			break
-		}
-	}
-	return f, nil
-}
-
-// needsSize reports whether a size rule is in play. Without one the caller can
-// skip collecting file sizes, which on the filesystem side is a second command
-// on a remote host.
-func (f *migrationFilter) needsSize() bool {
-	return f != nil && f.sized
+	return &migrationFilter{files: files}, nil
 }
 
 // excludesObject reports whether the filter dropped this object. relKey is the

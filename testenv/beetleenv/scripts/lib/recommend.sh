@@ -172,8 +172,9 @@ assert_engine_supported() {
 #   on what belongs to the source: _DB_SRC_MEMORY_MB is sent as GiB, and
 #   _DB_PUBLIC_ACCESS and _DB_BACKUP_RETENTION_DAYS are target preferences rather
 #   than properties of the source. A preference is a request, not an instruction:
-#   NCP answers publicAccess:true with a warning and false, which is why
-#   inject_rdbms_target has the last word on both.
+#   backupRetentionDays:0 comes back as 7, which is why inject_rdbms_target has
+#   the last word on both. ncpDBACGToAllowAllInbound goes in on NCP only - beetle
+#   rejects it anywhere else.
 #
 #   engineVersion empty means beetle picks the newest version the CSP supports.
 #   No innerDatabases: beetleenv creates the instance and nothing inside it.
@@ -196,7 +197,8 @@ recommend_rdbms() {
         --argjson memory_mb "$(int_env "$csp" DB_SRC_MEMORY_MB 4096)" \
         --argjson storage "$(int_env "$csp" DB_SRC_STORAGE_GB 100)" \
         --argjson port "$port" \
-        --argjson public "$(bool_env "$csp" DB_PUBLIC_ACCESS true)" \
+        --argjson public "$(db_public_access "$csp")" \
+        --argjson acg "$(db_acg_open "$csp")" \
         --argjson backup "$(int_env "$csp" DB_BACKUP_RETENTION_DAYS 0)" \
         '
         # MB to GiB, rounded up and never below 1: memory.totalSize is an
@@ -222,11 +224,11 @@ recommend_rdbms() {
               rootDisk: { type: "SSD", totalSize: $storage }
             }
           } ],
-          targetPreferences: {
+          targetPreferences: ({
             publicAccess:        $public,
             backupRetentionDays: $backup,
             highAvailability:    false
-          }
+          } + (if $csp == "ncp" then { ncpDBACGToAllowAllInbound: $acg } else {} end))
         }')"
 
     if ! bt_post "/recommendation/middleware/rdbms?desiredCsp=$(urlq "$csp")&desiredRegion=$(urlq "$region")" "$body"; then
@@ -266,12 +268,15 @@ recommend_rdbms() {
 #   note in provision.sh for why the name is set here rather than with nameSeed.
 #
 #   publicAccess: sent as a target preference too, but a recommendation is free to
-#   overrule one - NCP answers true with a warning and publicAccess:false, because
-#   its Cloud DB has no public endpoint until a public domain is issued. That is a
-#   statement about the endpoint the instance is created with, not about what may
-#   be asked for: the domain is a console action with no API behind it
-#   (./scripts/ncp-db-domain.sh), and the request has to carry the flag it was
-#   given for the console step to have anything to reflect. So .env decides here.
+#   overrule one, so .env decides here. On NCP the only value that can be sent is
+#   false - cb-spider refuses a create with true, NCP having no API to issue a
+#   public domain - and validate_db_access stops a true before it gets this far.
+#   The public domain is a console step (./scripts/ncp-db-domain.sh).
+#
+#   ncpDBACGToAllowAllInbound (NCP only): same reason - this body is what reaches
+#   the CSP. With it true cb-spider waits for the instance to run and adds
+#   TCP 0.0.0.0/0 -> DB port to the ACG NCP made for it. securityGroupIds does not
+#   do that job on NCP: Cloud DB ignores it and runs behind that ACG instead.
 #
 #   backupRetentionDays: sent as a preference too, and there the default of 0 is
 #   indistinguishable from an unset field - beetle reads the Go zero value as
@@ -289,7 +294,9 @@ inject_rdbms_target() {
         --arg pass "$password" \
         --arg user "$(csp_env "$csp" DB_ADMIN_USERNAME)" \
         --arg name "$name" \
-        --argjson public "$(bool_env "$csp" DB_PUBLIC_ACCESS true)" \
+        --argjson public "$(db_public_access "$csp")" \
+        --argjson acg "$(db_acg_open "$csp")" \
+        --arg csp "$(csp_lower "$csp")" \
         --argjson backup "$(int_env "$csp" DB_BACKUP_RETENTION_DAYS 0)" \
         '
         .targetRDBMSInstances = [ .targetRDBMSInstances[] | (
@@ -300,6 +307,8 @@ inject_rdbms_target() {
             | .adminUserPassword = $pass
             | (if $user == "" then . else .adminUserName = $user end)
             | .publicAccess = $public
+            | (if $csp == "ncp" then .ncpDBACGToAllowAllInbound = $acg
+               else del(.ncpDBACGToAllowAllInbound) end)
             | .backupRetentionDays = $backup
           ) ]'
 }

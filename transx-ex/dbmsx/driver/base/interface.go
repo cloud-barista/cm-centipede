@@ -15,7 +15,10 @@ type DBDriver interface {
 	Restore(ctx context.Context, loc DBMSLocation, inputPath string, notify func(table string)) error
 	TestConnection(ctx context.Context, loc DBMSLocation) error
 	BuildDumpCmd(loc DBMSLocation, scope string) string
-	BuildRestoreCmd(loc DBMSLocation) string
+	// BuildRestoreCmd returns the CLI command that restores a dump read from
+	// stdin into loc. opt says what is known about the source the dump came
+	// from, and may be nil when nothing is beyond the dump itself.
+	BuildRestoreCmd(loc DBMSLocation, opt *RestoreOption) string
 	CheckTargetEmpty(ctx context.Context, loc DBMSLocation) error
 
 	// ListDatabases returns the names of the user databases on loc's server,

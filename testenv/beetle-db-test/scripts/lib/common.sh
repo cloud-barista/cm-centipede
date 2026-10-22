@@ -167,19 +167,27 @@ load_env_file() {
 # ---------------------------------------------------------------------------
 # Target TLS — TARGET_TLS_MODE
 # ---------------------------------------------------------------------------
-# The same `tlsMode` values transx-ex's DirectConfig.TLSMode takes. Everywhere
+# The `tlsMode` values beetleDb.tlsMode takes: transx-ex's DirectConfig.TLSMode
+# five, plus auto. Everywhere
 # the matrix connects to the target itself (creating and dropping cell databases,
 # the creation probe, the PostgreSQL privilege query) uses the same value, so a
 # column cannot migrate successfully and then fail its own preparation.
 #
+#   auto         centipede picks the mode from what cm-beetle reports (the default)
 #   disable      plaintext
-#   prefer       TLS if the server offers it, plaintext otherwise (the default)
+#   prefer       TLS if the server offers it, plaintext otherwise
 #   require      TLS enforced, certificate not verified
 #   verify-ca    chain verified
 #   verify-full  chain + hostname verified
 #
-# ⚠ verify-ca / verify-full use the system trust store only. RDS and NCP sign
-#   with their own CAs, so verification fails without their bundle —
+#   auto is a beetleDb value only - transx-ex never sees it. centipede asks
+#   cm-beetle's secure-transport API, which relays what cb-spider measured on the
+#   instance, and connects with verify-full, verify-ca or disable accordingly,
+#   verifying against the CA cb-spider collected. The mode it settled on is in
+#   centipede's server log, not in anything this folder reads back.
+#
+# ⚠ An explicit verify-ca / verify-full uses the system trust store only. RDS and
+#   NCP sign with their own CAs, so verification fails without their bundle —
 #   assert_tls_mode in db-matrix.sh warns about it.
 #
 # It lives here because several places connect to the target and all of them have
@@ -187,9 +195,10 @@ load_env_file() {
 # db-matrix.sh's pre-flight output and result JSON.
 #
 # ⚠ It does NOT govern creating the target database. That goes through cm-beetle
-#   to cb-spider's SQL fallback, which chooses its own transport - see
+#   to cb-spider's SQL fallback, which chooses its own transport (tls=preferred
+#   from cb-spider v0.13.10, plaintext except for IBM before it) - see
 #   explain_insecure_transport in beetle.sh.
-TLS_MODES="disable prefer require verify-ca verify-full"
+TLS_MODES="auto disable prefer require verify-ca verify-full"
 
 # MONGODB_PREFER_FALLBACK — what stands in for prefer on MongoDB.
 #
@@ -201,7 +210,7 @@ TLS_MODES="disable prefer require verify-ca verify-full"
 MONGODB_PREFER_FALLBACK="disable"
 
 # target_tls_mode [ENGINE] — the mode this connection actually uses. An empty
-#   setting means disable, as it does in transx-ex.
+#   setting means auto, as it does on a beetleDb reference.
 #
 #   Given an ENGINE, a value that engine cannot use is substituted - today that is
 #   MongoDB's prefer alone, which drops to MONGODB_PREFER_FALLBACK. Called without
@@ -209,7 +218,7 @@ MONGODB_PREFER_FALLBACK="disable"
 #   and the run-wide condition in the result JSON show what the user set.
 target_tls_mode() {
 	local mode
-	mode="$(lower "${TARGET_TLS_MODE:-disable}")"
+	mode="$(lower "${TARGET_TLS_MODE:-auto}")"
 	if [ "$(lower "${1:-}")" = "mongodb" ] && [ "$mode" = "prefer" ]; then
 		printf '%s' "$MONGODB_PREFER_FALLBACK"
 		return 0

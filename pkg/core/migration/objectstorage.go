@@ -378,10 +378,19 @@ func ResolveObjectStorageLoc(ref commonmodel.ConnectionRef, bucketPath string, f
 // ascending Order. Up to defaultObjectConcurrency buckets are transferred
 // concurrently. Emits a ProgressEvent per bucket. Returns ctx.Err() on
 // cancellation; per-bucket transfer errors are reported via ProgressEvent only.
-func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStorageModel, progressCh chan<- ProgressEvent) error {
+// stagingDir is the local staging root a relay or cross-storage transfer uses
+// (see ResolveStagingDir); empty leaves it to transx-ex's default.
+func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStorageModel, stagingDir string, progressCh chan<- ProgressEvent) error {
 	dstType := m.DstType
 	if dstType == "" {
 		dstType = commonmodel.StorageTypeObjectStorage
+	}
+	// Normalise the transfer strategy; empty defaults to direct. Guards
+	// migrations created directly (bypassing the plan layer) or before the
+	// field existed.
+	strategy := m.Strategy
+	if strategy == "" {
+		strategy = commonmodel.StrategyDirect
 	}
 
 	buckets := make([]targetmodel.ObjectMigrationInfo, len(m.Buckets))
@@ -443,6 +452,8 @@ func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStor
 			movedBytes, transferErr := runStorageTransfer(ctx, transxex.StorageMigrationModel{
 				Source:      srcLoc,
 				Destination: dstLoc,
+				Strategy:    strategy,
+				StagingDir:  stagingDir,
 			}, bucket.SrcPath, progressCh)
 
 			resultCh <- result{

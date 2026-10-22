@@ -14,8 +14,8 @@ import "context"
 // Bytes and Files are cumulative WITHIN the reporting step, never across the
 // pipeline: a relay moves the same data twice — source to staging, staging to
 // destination — and each step counts from zero, so a consumer that adds the steps
-// together reports double what was migrated. A high-water mark over the steps is
-// what storagex keeps.
+// together reports double what was migrated. storagex restarts its counts at
+// each step and reports which step they belong to.
 //
 // Step says which step the observation came from and Steps how many there are,
 // for a consumer that wants to tell the legs apart — staging from sending — rather
@@ -23,12 +23,28 @@ import "context"
 //
 // A negative Bytes or Files means "unknown" and an empty Item "no news": a
 // reporter fills in what it knows and leaves the rest alone.
+//
+// Rows, Units and UnitsTotal are what a database transfer adds: rows written so
+// far, and tables (or collections) finished out of how many. Zero means "not
+// reported" for all three — no file transfer sets them, and a consumer reading
+// a database step treats an absent count as unknown rather than none.
+//
+// Phase says what the step is doing when that is more than the step itself -
+// a restore holding indexes back until the rows are in, then building them. A
+// reporter that has phases sends its current one in every update, so unlike
+// Item an empty Phase means "none now", not "no news".
 type Update struct {
 	Step  int
 	Steps int
 	Bytes int64
 	Files int64
 	Item  string
+
+	Rows       int64
+	Units      int
+	UnitsTotal int
+
+	Phase string
 }
 
 // Reporter receives observations from inside a transfer.

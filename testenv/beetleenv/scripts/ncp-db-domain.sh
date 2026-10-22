@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# ncp-db-domain.sh — reflect and verify the NCP managed-DB public domains
+# ncp-db-domain.sh — reflect and verify the NCP managed-DB public domains and ACGs
 # ------------------------------------------------------------------------------
 #   ./scripts/ncp-db-domain.sh [csp] [--wait]
 #
@@ -11,12 +11,16 @@
 #     NCP console > Database > Cloud DB for <engine> > select the DB server
 #       > DB Management > Public domain > request
 #
-#   Nothing beetleenv sends can do it. BEETLEENV_NCP_DB_PUBLIC_ACCESS=true is a
-#   request carried into the create call; whether a public domain exists is a
-#   separate fact that only the console decides. So the workflow is: create here,
-#   issue there, then come back and check.
+#   Nothing beetleenv sends can do it - cb-spider even refuses a create with
+#   publicAccess=true on NCP, which is why BEETLEENV_NCP_DB_PUBLIC_ACCESS must be
+#   false. So the workflow is: create here, issue there, then come back and check.
 #
 #   A public domain has to be re-issued whenever the instance is re-created.
+#
+#   The domain alone is not enough. NCP puts the instance behind an ACG of its
+#   own with no inbound rule; BEETLEENV_NCP_DB_ACG_ALLOW_ALL_INBOUND=true has
+#   cb-spider add TCP 0.0.0.0/0 -> DB port to it. cb-spider treats a failure there
+#   as a warning and the create as a success, so this script checks the rule too.
 #
 # WHAT "SYNC" MEANS HERE
 #   Nothing local is stored, so there is no state file to refresh. What goes
@@ -40,6 +44,10 @@
 #   cb-tumblebug copies that field verbatim on refresh, so publicAccess is an
 #   observation of what the CSP has, not an echo of what was asked for.
 #
+#   ncpDBACGToAllowAllInbound is the same kind of observation: cb-spider
+#   recomputes NCPAutoOpenACG from the tag it left on the rule it added, so false
+#   means the rule is not on the ACG.
+#
 # NCP ONLY, ON PURPOSE
 #   The csp argument exists so the body has nothing NCP-specific in it, but the
 #   name does not generalise: no other CSP beetleenv supports puts a managed DB's
@@ -60,18 +68,19 @@ usage() {
 Usage: ./scripts/ncp-db-domain.sh [csp] [--wait]
 
 Refresh cb-tumblebug's record of each managed DB from the CSP, then report which
-engines have a public domain and which still need one issued in the console.
+engines are reachable from outside - a public domain and an ACG inbound rule -
+and which still need a console step.
 
 Arguments:
   csp        defaults to ncp; the only CSP this applies to today
 
 Options:
-  --wait     keep checking until every engine has a public domain, instead of
+  --wait     keep checking until every engine is reachable, instead of
              reporting once. For leaving running while you work through the
              console.
 
-Exit status is 1 while any engine is still without a public domain, so this can
-gate a script that needs one.
+Exit status is 1 while any engine still lacks a public domain or the ACG rule,
+so this can gate a script that needs the endpoint to be reachable.
 
 Examples:
   ./scripts/ncp-db-domain.sh
@@ -121,9 +130,10 @@ engines_of() {
 }
 
 # check_all — one refresh pass. Prints a line per engine and returns the number
-#   still without a public domain, so the caller decides what to do about it.
+#   still without a public domain or the ACG rule, so the caller decides what to
+#   do about it.
 check_all() {
-    local engine name missing=0 endpoint public status
+    local engine name missing=0 endpoint public acg status
 
     for engine in $(engines_of); do
         engine="$(csp_lower "$engine")"
@@ -140,10 +150,19 @@ check_all() {
 
         endpoint="$(bt_data '.endpoint')"
         public="$(bt_data '.publicAccess')"
+        # The field is NCP's alone; elsewhere there is no such rule to look for.
+        acg=true
+        [ "$CSP" = "ncp" ] && acg="$(bt_data '.ncpDBACGToAllowAllInbound // false')"
         status="$(bt_data '.status')"
 
-        if [ "$public" = "true" ]; then
+        if [ "$public" = "true" ] && [ "$acg" = "true" ]; then
             printf '  %-9s %-8s %s\n' "OK" "$engine" "${endpoint:-(none)}"
+        elif [ "$public" = "true" ]; then
+            # A public domain behind a closed ACG times out rather than refusing,
+            # which is the hardest failure to read from cm-centipede's side.
+            printf '  %-9s %-8s %s\n' "NO-ACG" "$engine" \
+                "public domain ${endpoint:-(none)}, but no ACG inbound rule from cb-spider"
+            missing=$((missing + 1))
         else
             printf '  %-9s %-8s %s\n' "MISSING" "$engine" \
                 "still on the private domain${endpoint:+ (${endpoint})}"
@@ -170,9 +189,18 @@ console_hint() {
         printf '  On %s, check how that CSP exposes a managed DB before following it.\n' "$CSP"
         printf '\n'
     fi
-    printf '  Issue one per engine, in the NCP console:\n'
+    printf '  MISSING - issue a public domain per engine, in the NCP console:\n'
     printf '    Database > Cloud DB for <engine> > select the DB server\n'
     printf '      > DB Management > Public domain > request\n'
+    printf '\n'
+    printf '  NO-ACG - add the inbound rule, in the NCP console:\n'
+    printf '    Server > ACG > the ACG of the DB server > Inbound > TCP <db port>\n'
+    if [ "$(db_acg_open "$CSP")" = "true" ]; then
+        printf '    (BEETLEENV_NCP_DB_ACG_ALLOW_ALL_INBOUND=true was asked for, so cb-spider\n'
+        printf '     failed to add it, or the instance was created before the setting existed.)\n'
+    else
+        printf '    (BEETLEENV_NCP_DB_ACG_ALLOW_ALL_INBOUND is false, so nothing adds it for you.)\n'
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -186,12 +214,12 @@ if [ "$WAIT" -eq 0 ]; then
 
     printf '\n'
     if [ "$missing" -eq 0 ]; then
-        log_ok "every managed DB on ${CSP} has a public domain."
+        log_ok "every managed DB on ${CSP} has a public domain and an ACG inbound rule."
         printf '  Connection info:  ./scripts/conn-info.sh %s --reveal\n\n' "$CSP"
         exit 0
     fi
 
-    log_warn "${missing} engine(s) have no public domain."
+    log_warn "${missing} engine(s) are not reachable yet (no public domain or no ACG rule)."
     console_hint
     printf '    Then run this again, or ./scripts/ncp-db-domain.sh %s --wait\n\n' "$CSP"
     exit 1
@@ -204,7 +232,7 @@ missing=0
 check_all || missing=$?
 if [ "$missing" -eq 0 ]; then
     printf '\n'
-    log_ok "every managed DB on ${CSP} has a public domain."
+    log_ok "every managed DB on ${CSP} has a public domain and an ACG inbound rule."
     printf '\n'
     exit 0
 fi
@@ -221,7 +249,7 @@ while [ "$waited" -lt "$DOMAIN_TIMEOUT" ]; do
     check_output="$(check_all)" || missing=$?
     if [ "$missing" -eq 0 ]; then
         printf '\n%s\n\n' "$check_output"
-        log_ok "every managed DB on ${CSP} has a public domain."
+        log_ok "every managed DB on ${CSP} has a public domain and an ACG inbound rule."
         printf '  Connection info:  ./scripts/conn-info.sh %s --reveal\n\n' "$CSP"
         exit 0
     fi
@@ -229,6 +257,6 @@ while [ "$waited" -lt "$DOMAIN_TIMEOUT" ]; do
 done
 
 printf '\n'
-log_error "gave up after ${DOMAIN_TIMEOUT}s with ${missing} engine(s) still missing a public domain."
+log_error "gave up after ${DOMAIN_TIMEOUT}s with ${missing} engine(s) still missing a public domain or the ACG rule."
 printf '  Nothing was changed. Run again once the console request is through.\n\n'
 exit 1

@@ -26,4 +26,10 @@ type MigrationObjectStorageModel struct {
 	DstType string                `json:"dstType,omitempty" validate:"omitempty,oneof=filesystem objectstorage"`
 	Buckets []ObjectMigrationInfo `json:"buckets,omitempty"`
 	Errors  []string              `json:"errors,omitempty"`
+
+	// Strategy is the transx transfer strategy (auto/direct/relay). It only affects
+	// S3→S3 transfers — direct streams each object, relay stages them locally —
+	// and objectstorage→filesystem cross-storage always relays. Set by the plan
+	// layer; empty runs as direct.
+	Strategy string `json:"strategy,omitempty" validate:"omitempty,oneof=auto direct relay"`
 }

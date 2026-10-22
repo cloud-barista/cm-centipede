@@ -11,17 +11,23 @@ definitions:
         type: string
       tlsCAPem:
         description: |-
-          TLSCAPEM is the PEM root that verify-ca and verify-full check against.
-          Empty means the system trust store, which carries only publicly trusted
-          CAs — and managed RDBMS services commonly sign with their own, so those two
-          modes usually need the CSP's root supplied here.
+          TLSCAPEM is the PEM root that an explicit verify-ca or verify-full checks
+          against. Empty means the system trust store, which carries only publicly
+          trusted CAs — and managed RDBMS services commonly sign with their own, so
+          those two modes usually need the CSP's root supplied here. "auto" ignores
+          it and verifies against the CA cb-spider collected from the instance.
         type: string
       tlsMode:
         description: |-
-          TLSMode selects transport security; the empty value is "disable". It means
-          the same thing here as on DBConnConfig — see the table in transx-ex's
-          dbmsx/driver/base/tls.go.
+          TLSMode selects transport security; the empty value is "auto". "auto"
+          takes the mode cm-beetle recommends for the instance: verify-full,
+          verify-ca or disable, falling back to require when no CA was collected and
+          to prefer when cm-beetle could not say. Any other value means the same
+          thing here as on DBConnConfig — see the table in transx-ex's
+          dbmsx/driver/base/tls.go — and is used as given; plaintext therefore needs
+          "disable" spelled out.
         enum:
+        - auto
         - disable
         - prefer
         - require
@@ -29,12 +35,13 @@ definitions:
         - verify-full
         type: string
       username:
-        description: defaults to the looked-up AdminUsername
+        description: the instance admin; cm-beetle does not report it
         type: string
     required:
     - nsId
     - password
     - rdbmsId
+    - username
     type: object
   github_com_cloud-barista_cm-centipede_dmdl_common-model.BeetleOSRef:
     properties:
@@ -863,6 +870,17 @@ definitions:
         type: string
       srcConnection:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
+      strategy:
+        description: |-
+          Strategy is the transx transfer strategy (auto/direct/relay). It only affects
+          S3→S3 transfers — direct streams each object, relay stages them locally —
+          and objectstorage→filesystem cross-storage always relays. Set by the plan
+          layer; empty runs as direct.
+        enum:
+        - auto
+        - direct
+        - relay
+        type: string
     required:
     - dstConnection
     - srcConnection
@@ -1040,6 +1058,16 @@ definitions:
         type: string
       plan:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel'
+      stagingDir:
+        description: |-
+          StagingDir is the local directory, on the cm-centipede host, that
+          transfers stage data under when they cannot go straight from source to
+          destination: a filesystem or object storage relay, a cross-storage
+          transfer, a DBMS dump. Must be an absolute path; it is created if missing.
+          Empty uses centipede.migration.stagingDir from the configuration, and when
+          that is empty too, $TMPDIR/transxex-staging or /tmp/transxex-staging.
+        example: /data/centipede-staging
+        type: string
     required:
     - name
     - plan
@@ -1080,12 +1108,49 @@ definitions:
           column the date filters compare against: without the index every list call
           is a full scan plus a sort.
         type: string
+      currentBytesTotal:
+        type: integer
       currentObject:
         description: |-
           CurrentObject is the file, object or table being moved right now — one level
           below ItemPath, which names the folder, bucket or database. Empty when
           nothing is in flight.
         type: string
+      currentRows:
+        type: integer
+      currentStep:
+        description: |-
+          CurrentStep is the step of the item's transfer that CurrentObject and the
+          in-flight part of TransferredBytes belong to, and CurrentSteps how many it
+          has: a relay's 1/2 stages through local storage, its 2/2 sends to the
+          destination, and each counts its bytes from zero. Zero when nothing is in
+          flight or the transfer has no steps to report (DBMS).
+        type: integer
+      currentStepDetail:
+        description: |-
+          CurrentStepDetail is what CurrentStep is doing beyond its name, where
+          the transfer says: a restore's "indexes deferred: 2 tables" while it
+          writes rows with those tables' indexes held back, then "rebuilding
+          indexes". Empty otherwise.
+        type: string
+      currentStepName:
+        description: |-
+          CurrentStepName names CurrentStep when the transfer has a word for it: a
+          database's "dumping" and "restoring". Empty for a file transfer.
+        type: string
+      currentSteps:
+        type: integer
+      currentUnits:
+        description: |-
+          CurrentUnits counts the tables (or collections) of the item in flight
+          that its current step has finished, out of CurrentUnitsTotal;
+          CurrentRows the rows it has written; CurrentBytesTotal what the in-flight
+          part of TransferredBytes is counting towards — the dump a restore reads.
+          Databases only, and zero wherever the step cannot tell: a restore through
+          a CLI over SSH counts bytes alone.
+        type: integer
+      currentUnitsTotal:
+        type: integer
       dbmsOnFailure:
         description: |-
           DBMSOnFailure is carried on the record rather than only on the request
@@ -1104,6 +1169,12 @@ definitions:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel'
       processedItems:
         type: integer
+      stagingDir:
+        description: |-
+          StagingDir is the staging root the request named, kept as given for the
+          same reason as DBMSOnFailure. Empty means the server's configured default,
+          resolved when the migration runs.
+        type: string
       startedAt:
         type: string
       status:
@@ -1121,6 +1192,17 @@ definitions:
           $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem'
         type: array
       validationMessage:
+        type: string
+      validationMode:
+        description: |-
+          ValidationMode is how filesystem items were compared — "quick" (size and
+          modification time) or "checksum" (size and SHA256). Object storage,
+          databases and cross-storage items are compared one way whatever it says.
+        type: string
+      validationStartedAt:
+        description: |-
+          ValidationStartedAt is when the latest validation started, so a running
+          one can show how long it has been going.
         type: string
       validationStatus:
         type: string
@@ -1206,8 +1288,24 @@ definitions:
         type: string
       createdAt:
         type: string
+      currentBytesTotal:
+        type: integer
       currentObject:
         type: string
+      currentRows:
+        type: integer
+      currentStep:
+        type: integer
+      currentStepDetail:
+        type: string
+      currentStepName:
+        type: string
+      currentSteps:
+        type: integer
+      currentUnits:
+        type: integer
+      currentUnitsTotal:
+        type: integer
       dbmsOnFailure:
         type: string
       description:
@@ -1222,6 +1320,8 @@ definitions:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary'
       processedItems:
         type: integer
+      stagingDir:
+        type: string
       startedAt:
         type: string
       status:
@@ -1240,6 +1340,10 @@ definitions:
         type: array
       validationMessage:
         type: string
+      validationMode:
+        type: string
+      validationStartedAt:
+        type: string
       validationStatus:
         type: string
     type: object
@@ -1254,9 +1358,9 @@ definitions:
       fileSystemStrategy:
         description: |-
           FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)
-          tasks. Empty is normalised to "relay" (safer default: avoids agent-forward
-          setup requirements). It has no effect on object-storage or DBMS tasks, where
-          relay is always used / not applicable.
+          tasks. Empty is normalised to "direct" (agent-forward: the source host
+          sends straight to the destination, with nothing staged here). Object
+          storage tasks take ObjectStorageStrategy instead; DBMS tasks have none.
         enum:
         - auto
         - direct
@@ -1264,6 +1368,18 @@ definitions:
         type: string
       objectStorageFilter:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ObjectStorageFilter'
+      objectStorageStrategy:
+        description: |-
+          ObjectStorageStrategy is the transfer strategy applied to object storage
+          (S3→S3) tasks. Empty is normalised to "direct": each object streams from
+          source to destination, with nothing staged here. "relay" downloads to
+          local staging first, then uploads. It has no effect on objectstorage→
+          filesystem cross-storage, which always relays.
+        enum:
+        - auto
+        - direct
+        - relay
+        type: string
       srcConnection:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
     required:
@@ -1272,6 +1388,13 @@ definitions:
     type: object
   github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary:
     properties:
+      crossStorage:
+        description: |-
+          CrossStorage counts the entries above that land on the other storage
+          type: a file system into object storage, or object storage onto a file
+          system. Validation compares those by path and size only, so a screen
+          offering a validation mode needs to know without reading the plan.
+        type: integer
       databases:
         type: integer
       fileSystems:
@@ -1294,6 +1417,20 @@ definitions:
   github_com_cloud-barista_cm-centipede_pkg_api_rest_model.SimpleMessageResponse:
     properties:
       message:
+        type: string
+    type: object
+  github_com_cloud-barista_cm-centipede_pkg_api_rest_model.StartValidationRequest:
+    properties:
+      mode:
+        description: |-
+          Mode is how filesystem items are compared: "quick" (size and
+          modification time, seconds; the default) or "checksum" (size and SHA256
+          of every migrated file). Object storage, databases and cross-storage
+          items (compared by path and size) are compared one way whatever it says.
+        enum:
+        - quick
+        - checksum
+        example: quick
         type: string
     type: object
   github_com_cloud-barista_cm-centipede_pkg_api_rest_model.TargetPlanReq:
@@ -1339,7 +1476,16 @@ definitions:
         items:
           $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem'
         type: array
+      mode:
+        description: '"quick" | "checksum": how filesystem items were compared'
+        type: string
+      startedAt:
+        type: string
       validationMessage:
+        description: |-
+          ValidationMessage is the result's summary once the validation has
+          finished, and while it runs, where it has got to — refreshed every few
+          seconds.
         type: string
       validationStatus:
         description: '"passed" | "failed" | "not_run" | "running"'
@@ -1633,15 +1779,22 @@ paths:
       tags:
       - validation
     post:
-      description: Validates that the destination data matches the source after a
-        completed migration. Returns 400 if migration is not completed, 409 if validation
-        is already running.
+      consumes:
+      - application/json
+      description: |-
+        Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.
+        The optional body's mode decides how filesystem items are compared: "quick" (default) compares size and modification time only, "checksum" hashes every migrated file on both hosts. Object storage, databases and cross-storage items (path and size) are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.
       parameters:
       - description: Migration ID
         in: path
         name: migrationId
         required: true
         type: string
+      - description: Validation options
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.StartValidationRequest'
       produces:
       - application/json
       responses:

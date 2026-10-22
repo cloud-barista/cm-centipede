@@ -7,11 +7,15 @@ import (
 	base "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/driver/base"
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // =============================================================================
@@ -79,7 +83,7 @@ func TestBuildMongoDumpCmd_WithExcludedCollection(t *testing.T) {
 
 func TestBuildMongoRestoreCmd_ContainsMongorestore(t *testing.T) {
 	drv := NewMongoDBDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelMongo())
+	cmd := drv.BuildRestoreCmd(sshTunnelMongo(), nil)
 	if !strings.HasPrefix(cmd, "mongorestore") {
 		t.Errorf("BuildRestoreCmd should start with 'mongorestore': %s", cmd)
 	}
@@ -90,7 +94,7 @@ func TestBuildMongoRestoreCmd_ContainsMongorestore(t *testing.T) {
 
 func TestBuildMongoRestoreCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 	drv := NewMongoDBDriver()
-	if cmd := drv.BuildRestoreCmd(directMongo()); cmd != "" {
+	if cmd := drv.BuildRestoreCmd(directMongo(), nil); cmd != "" {
 		t.Errorf("BuildRestoreCmd for direct mode should be empty, got %q", cmd)
 	}
 }
@@ -990,5 +994,169 @@ func TestBuildMongoURI_AlwaysDirectConnection(t *testing.T) {
 	withAuth := buildMongoURI("u", "p", "h", 27017, "d", "admin")
 	if !strings.Contains(withAuth, "authSource=admin") {
 		t.Errorf("authSource lost: %q", withAuth)
+	}
+}
+
+// =============================================================================
+// Restore round trips (MongoDB server required)
+// =============================================================================
+//
+// These put a dump back through Restore and compare what lands with what was
+// dumped. The fixture alone is a couple of documents per collection; rt_bulk
+// adds enough for the restore to insert in several batches and for the indexes
+// it builds after the documents to have something to sort.
+
+// rtDocs is not a multiple of the restore's insert batch, so the documents end
+// on a part batch that only the final flush sends.
+const rtDocs = 234567
+
+func rtClient(t *testing.T, loc base.DBMSLocation) *mongo.Client {
+	t.Helper()
+	client, err := NewMongoDBDriver().openClient(loc)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { client.Disconnect(context.Background()) })
+	return client
+}
+
+// rtSnapshot describes a database as far as a restore must reproduce it: each
+// collection's or view's options, and each collection's documents (by count and
+// dbHash) and indexes.
+func rtSnapshot(t *testing.T, db *mongo.Database) map[string]string {
+	t.Helper()
+	ctx := context.Background()
+	specs, err := db.ListCollectionSpecifications(ctx, bson.D{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, s := range specs {
+		if strings.HasPrefix(s.Name, "system.") {
+			continue
+		}
+		// The restore applies a validator with collMod, which writes the
+		// validation level and action out even at their defaults; a source
+		// created with the validator inline leaves them unstated.
+		var opts bson.D
+		if err := bson.Unmarshal(s.Options, &opts); err != nil {
+			t.Fatal(err)
+		}
+		kept := bson.D{}
+		for _, e := range opts {
+			if (e.Key == "validationLevel" && e.Value == "strict") || (e.Key == "validationAction" && e.Value == "error") {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		out["options "+s.Name] = fmt.Sprintf("%s %v", s.Type, kept)
+		if s.Type != "collection" {
+			continue
+		}
+		coll := db.Collection(s.Name)
+		count, err := coll.CountDocuments(ctx, bson.D{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var hash struct {
+			Collections map[string]string `bson:"collections"`
+		}
+		if err := db.RunCommand(ctx, bson.D{{Key: "dbHash", Value: 1}, {Key: "collections", Value: bson.A{s.Name}}}).Decode(&hash); err != nil {
+			t.Fatal(err)
+		}
+		out["docs "+s.Name] = fmt.Sprintf("count=%d hash=%s", count, hash.Collections[s.Name])
+		cur, err := coll.Indexes().List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var idx []bson.M
+		if err := cur.All(ctx, &idx); err != nil {
+			t.Fatal(err)
+		}
+		var idxSpecs []string
+		for _, ix := range idx {
+			idxSpecs = append(idxSpecs, fmt.Sprintf("%v %v unique=%v", ix["name"], ix["key"], ix["unique"]))
+		}
+		sort.Strings(idxSpecs)
+		out["indexes "+s.Name] = strings.Join(idxSpecs, "; ")
+	}
+	return out
+}
+
+// TestMongoDBDumpRestore_Full round-trips the driver's own full dump - the
+// collections with their validators, the view, the documents and the indexes -
+// into an empty database, then restores its documents once more onto the
+// documents already there.
+func TestMongoDBDumpRestore_Full(t *testing.T) {
+	env := mongoTestSetup(t)
+	drv := NewMongoDBDriver()
+	ctx := context.Background()
+
+	src := env.loc
+	src.Database = env.srcDB
+	client := rtClient(t, src)
+	srcDB := client.Database(src.Database)
+	bulk := srcDB.Collection("rt_bulk")
+	bulk.Drop(ctx)
+	t.Cleanup(func() { bulk.Drop(context.Background()) })
+	docs := make([]any, 0, 10000)
+	for i := 1; i <= rtDocs; i++ {
+		docs = append(docs, bson.D{
+			{Key: "_id", Value: i},
+			{Key: "n", Value: (i * 7919) % 100000},
+			{Key: "v", Value: fmt.Sprintf("%x", uint64(i)*2654435761)},
+			{Key: "ts", Value: time.Unix(int64(1700000000+i*37), 0).UTC()},
+		})
+		if len(docs) == cap(docs) || i == rtDocs {
+			if _, err := bulk.InsertMany(ctx, docs); err != nil {
+				t.Fatalf("fill rt_bulk: %v", err)
+			}
+			docs = docs[:0]
+		}
+	}
+	if _, err := bulk.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "n", Value: 1}}, Options: options.Index().SetName("rt_n")},
+		{Keys: bson.D{{Key: "v", Value: 1}}, Options: options.Index().SetName("rt_v").SetUnique(true)},
+	}); err != nil {
+		t.Fatalf("index rt_bulk: %v", err)
+	}
+
+	dst := src
+	dst.Database = "testdb_rt"
+	dstDB := client.Database(dst.Database)
+	dstDB.Drop(ctx)
+	t.Cleanup(func() { dstDB.Drop(context.Background()) })
+
+	dir := t.TempDir()
+	if err := drv.Dump(ctx, src, base.ScopeFull, dir+"/full.json", nil, nil); err != nil {
+		t.Fatalf("Dump full: %v", err)
+	}
+	if err := drv.Restore(ctx, dst, dir+"/full.json", nil); err != nil {
+		t.Fatalf("Restore full: %v", err)
+	}
+	want, got := rtSnapshot(t, srcDB), rtSnapshot(t, dstDB)
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("testdb_rt: %s = %q, source has %q", k, got[k], w)
+		}
+	}
+	for k := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("testdb_rt: %s is not in the source", k)
+		}
+	}
+
+	if err := drv.Dump(ctx, src, base.ScopeDataOnly, dir+"/data.json", nil, nil); err != nil {
+		t.Fatalf("Dump data-only: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- drv.Restore(ctx, dst, dir+"/data.json", nil) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "duplicate key") {
+			t.Errorf("restore onto documents already there = %v, want a duplicate key error", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("restore onto documents already there did not return")
 	}
 }

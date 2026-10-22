@@ -8,6 +8,7 @@
 #   3. Inject the SSH public key into every container (root, centipede)
 #      + source containers also get the private key (relay: source -> target)
 #   4. Collect the source MinIO bucket info (live object counts)
+#      + the DB server versions (asked of each running server)
 #   5. Print the connection info for every container
 #
 # Usage:
@@ -193,6 +194,34 @@ for row in "${SOURCE_BUCKETS[@]}"; do
 done
 BUCKET_LINES="${BUCKET_LINES%$'\n'}"
 
+# ── 4b. Collect DB server versions ────────────────────────────────────────────
+# Asked of each running server rather than taken from .env, so the patch release
+# the image actually installed is shown. Only the leading version number is kept
+# ("10.6.21-MariaDB-ubu2204" -> "10.6.21"); a failed lookup shows "?".
+echo ">>> Reading DB server versions..."
+declare -A DB_VER
+for engine in mariadb mysql postgresql mongodb; do
+    for role in source target; do
+        name="centipede-testenv-${engine}-${role}"
+        case "$engine" in
+            mariadb|mysql)
+                ver=$(docker exec -e MYSQL_PWD="$SHARED_PW" "$name" \
+                          mysql -u root -N -B -e 'SELECT VERSION()' 2>/dev/null) || ver="" ;;
+            postgresql)
+                ver=$(docker exec "$name" \
+                          sudo -u postgres psql -At -c 'SHOW server_version' 2>/dev/null) || ver="" ;;
+            mongodb)
+                ver=$(docker exec "$name" \
+                          mongosh admin -u root -p "$SHARED_PW" --authenticationDatabase admin \
+                          --quiet --eval 'db.version()' 2>/dev/null) || ver="" ;;
+        esac
+        ver="${ver%%[- ]*}"
+        ver="${ver//[$'\r\n']/}"
+        [ -z "$ver" ] && ver="?"
+        DB_VER["${engine}-${role}"]="$(printf '%-8s' "$ver")"
+    done
+done
+
 # ── 5. Print connection info ──────────────────────────────────────────────────
 cat <<EOF
 
@@ -222,20 +251,20 @@ ${BUCKET_LINES}
     target buckets   same 6 buckets, all empty
 
   ┌─ MariaDB ───────────────────────────────────────────────────────────────
-    mariadb-source     SSH localhost:32230->22   DB  localhost:33306->3306    (shop_db, hr_db)
-    mariadb-target     SSH localhost:32231->22   DB  localhost:33307->3306    (empty shop_empty_db, hr_empty_db)
+    mariadb-source     SSH localhost:32230->22   DB  localhost:33306->3306    ver ${DB_VER[mariadb-source]}  (shop_db, hr_db)
+    mariadb-target     SSH localhost:32231->22   DB  localhost:33307->3306    ver ${DB_VER[mariadb-target]}  (empty shop_empty_db, hr_empty_db)
 
   ┌─ MySQL ─────────────────────────────────────────────────────────────────
-    mysql-source       SSH localhost:32240->22   DB  localhost:33406->3306    (shop_db, hr_db)
-    mysql-target       SSH localhost:32241->22   DB  localhost:33407->3306    (empty shop_empty_db, hr_empty_db)
+    mysql-source       SSH localhost:32240->22   DB  localhost:33406->3306    ver ${DB_VER[mysql-source]}  (shop_db, hr_db)
+    mysql-target       SSH localhost:32241->22   DB  localhost:33407->3306    ver ${DB_VER[mysql-target]}  (empty shop_empty_db, hr_empty_db)
 
   ┌─ PostgreSQL ────────────────────────────────────────────────────────────
-    postgresql-source  SSH localhost:32250->22   DB  localhost:35432->5432    (shop_db, hr_db)
-    postgresql-target  SSH localhost:32251->22   DB  localhost:35433->5432    (empty shop_empty_db, hr_empty_db)
+    postgresql-source  SSH localhost:32250->22   DB  localhost:35432->5432    ver ${DB_VER[postgresql-source]}  (shop_db, hr_db)
+    postgresql-target  SSH localhost:32251->22   DB  localhost:35433->5432    ver ${DB_VER[postgresql-target]}  (empty shop_empty_db, hr_empty_db)
 
   ┌─ MongoDB ───────────────────────────────────────────────────────────────
-    mongodb-source     SSH localhost:32260->22   DB  localhost:37017->27017   (shop_db, hr_db)
-    mongodb-target     SSH localhost:32261->22   DB  localhost:37018->27017   (empty shop_empty_db, hr_empty_db)
+    mongodb-source     SSH localhost:32260->22   DB  localhost:37017->27017   ver ${DB_VER[mongodb-source]}  (shop_db, hr_db)
+    mongodb-target     SSH localhost:32261->22   DB  localhost:37018->27017   ver ${DB_VER[mongodb-target]}  (empty shop_empty_db, hr_empty_db)
 
   Shut down: ./dockerenv-down.sh
 

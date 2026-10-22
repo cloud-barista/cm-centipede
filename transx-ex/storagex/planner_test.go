@@ -53,7 +53,7 @@ func s3Loc(path string) DataLocation {
 func stagingDirs(t *testing.T) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
-	entries, err := os.ReadDir(DefaultStagingPath)
+	entries, err := os.ReadDir(StagingPath(""))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out
@@ -76,13 +76,13 @@ func stagingDirs(t *testing.T) map[string]bool {
 func TestNewStagingLocationIsUniquePerCall(t *testing.T) {
 	before := stagingDirs(t)
 
-	first, cleanFirst, err := newStagingLocation()
+	first, cleanFirst, err := newStagingLocation("")
 	if err != nil {
 		t.Fatalf("newStagingLocation: %v", err)
 	}
 	defer cleanFirst()
 
-	second, cleanSecond, err := newStagingLocation()
+	second, cleanSecond, err := newStagingLocation("")
 	if err != nil {
 		t.Fatalf("newStagingLocation: %v", err)
 	}
@@ -93,11 +93,11 @@ func TestNewStagingLocationIsUniquePerCall(t *testing.T) {
 	}
 
 	for _, loc := range []DataLocation{first, second} {
-		if got := filepath.Dir(loc.Path); got != DefaultStagingPath {
-			t.Errorf("staging directory %q sits in %q, want it under %q", loc.Path, got, DefaultStagingPath)
+		if got := filepath.Dir(loc.Path); got != StagingPath("") {
+			t.Errorf("staging directory %q sits in %q, want it under %q", loc.Path, got, StagingPath(""))
 		}
-		if loc.Path == DefaultStagingPath {
-			t.Errorf("staging directory is the shared root %q itself", DefaultStagingPath)
+		if loc.Path == StagingPath("") {
+			t.Errorf("staging directory is the shared root %q itself", StagingPath(""))
 		}
 		if !loc.IsLocal() {
 			t.Errorf("staging location %q is not a local filesystem location", loc.Path)
@@ -127,7 +127,7 @@ func TestNewStagingLocationIsUniquePerCall(t *testing.T) {
 }
 
 func TestNewStagingLocationCleanupRemovesDirectory(t *testing.T) {
-	loc, cleanup, err := newStagingLocation()
+	loc, cleanup, err := newStagingLocation("")
 	if err != nil {
 		t.Fatalf("newStagingLocation: %v", err)
 	}
@@ -145,8 +145,8 @@ func TestNewStagingLocationCleanupRemovesDirectory(t *testing.T) {
 	}
 	// The shared root is not the cleanup's to remove — a concurrent relay may be
 	// using it.
-	if _, err := os.Stat(DefaultStagingPath); err != nil {
-		t.Errorf("cleanup removed the staging root %q: %v", DefaultStagingPath, err)
+	if _, err := os.Stat(StagingPath("")); err != nil {
+		t.Errorf("cleanup removed the staging root %q: %v", StagingPath(""), err)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestRelayPipelinesStageInTheirOwnDirectory(t *testing.T) {
 	}{
 		{
 			// The regression this file exists for: this pipeline used to stage
-			// through DefaultStagingPath itself.
+			// through StagingPath("") itself.
 			name: "filesystem relay (ssh to ssh)",
 			model: DataMigrationModel{
 				Source:      sshLoc("/testdata"),
@@ -177,6 +177,7 @@ func TestRelayPipelinesStageInTheirOwnDirectory(t *testing.T) {
 			model: DataMigrationModel{
 				Source:      s3Loc("src-bucket/"),
 				Destination: s3Loc("dst-bucket/"),
+				Strategy:    StrategyRelay,
 			},
 			stagingStep: 0,
 		},
@@ -211,11 +212,11 @@ func TestRelayPipelinesStageInTheirOwnDirectory(t *testing.T) {
 			defer pipe.Cleanup()
 
 			staging := pipe.Steps[tc.stagingStep].Destination.Path
-			if staging == DefaultStagingPath {
-				t.Fatalf("staged through the shared root %q; leftovers from another transfer would be copied onward", DefaultStagingPath)
+			if staging == StagingPath("") {
+				t.Fatalf("staged through the shared root %q; leftovers from another transfer would be copied onward", StagingPath(""))
 			}
-			if filepath.Dir(staging) != DefaultStagingPath {
-				t.Errorf("staging %q is not under %q", staging, DefaultStagingPath)
+			if filepath.Dir(staging) != StagingPath("") {
+				t.Errorf("staging %q is not under %q", staging, StagingPath(""))
 			}
 			// The second step reads back what the first one wrote.
 			if got := pipe.Steps[tc.stagingStep+1].Source.Path; got != staging {
@@ -226,6 +227,50 @@ func TestRelayPipelinesStageInTheirOwnDirectory(t *testing.T) {
 			}
 			seen[staging] = tc.name
 		})
+	}
+}
+
+// A staging root the caller names replaces the default: the relay stages in the
+// root's storage subdirectory, and cleanup removes only the relay's own
+// directory, never the root the caller handed over.
+func TestNewStagingLocationUsesRequestedRoot(t *testing.T) {
+	root := t.TempDir()
+
+	loc, cleanup, err := newStagingLocation(root)
+	if err != nil {
+		t.Fatalf("newStagingLocation(%q): %v", root, err)
+	}
+	if got, want := filepath.Dir(loc.Path), filepath.Join(root, "storage"); got != want {
+		t.Errorf("staging directory %q sits in %q, want it under %q", loc.Path, got, want)
+	}
+
+	cleanup()
+
+	if _, err := os.Stat(loc.Path); !os.IsNotExist(err) {
+		t.Errorf("staging directory %q still exists after cleanup (stat error: %v)", loc.Path, err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("cleanup removed the requested root %q: %v", root, err)
+	}
+}
+
+func TestRelayPipelineStagesUnderModelStagingDir(t *testing.T) {
+	root := t.TempDir()
+
+	pipe, err := Plan(DataMigrationModel{
+		Source:      s3Loc("src-bucket/"),
+		Destination: s3Loc("dst-bucket/"),
+		Strategy:    StrategyRelay,
+		StagingDir:  root,
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	defer pipe.Cleanup()
+
+	staging := pipe.Steps[0].Destination.Path
+	if got, want := filepath.Dir(staging), filepath.Join(root, "storage"); got != want {
+		t.Errorf("staging %q is not under %q", staging, want)
 	}
 }
 

@@ -75,7 +75,21 @@ func httpClientFor(p S3Provider) *http.Client {
 			return c
 		}
 	}
-	return http.DefaultClient
+	return presignedClient
+}
+
+// presignedClient is the default client for presigned transfers. It is
+// http.DefaultClient but for the idle connections it keeps per host: the
+// default two, under s3Concurrency transfers to one endpoint, would have most
+// of them open a new TLS connection for every object.
+var presignedClient = &http.Client{Transport: newPresignedTransport(http.DefaultTransport.(*http.Transport))}
+
+// newPresignedTransport returns a copy of base that keeps an idle connection
+// for every transfer that can run at once.
+func newPresignedTransport(base *http.Transport) *http.Transport {
+	t := base.Clone()
+	t.MaxIdleConnsPerHost = s3Concurrency
+	return t
 }
 
 // CloseS3Provider releases what p holds open — the SSH connection of a

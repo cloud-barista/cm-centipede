@@ -349,8 +349,9 @@ curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/plans/tar
             "beetleDb": {
               "nsId": "cpbt01",
               "rdbmsId": "cpbt-aws-db-mysql",
+              "username": "dbadmin",
               "password": "<the instance master password>",
-              "tlsMode": "prefer"
+              "tlsMode": "auto"
             }
           },
           "dbmsFilter": {
@@ -380,11 +381,10 @@ to the same place.
 arrives inside `source` as honeybee collected it, carrying a `honeybee` reference
 that cm-centipede resolves back into the NCP host and the account it was given in
 step 4. The destination is `beetleDb`: an instance that already exists, whose
-host, port and admin account cm-centipede reads from cm-beetle. The password is
-the exception — cm-beetle takes one when the instance is created and **never
-hands it back**, so it travels here. `username` is deliberately absent: empty
-means "the admin as cm-beetle reports it", and naming it as well only creates a
-way for the two to disagree.
+host and port cm-centipede reads from cm-beetle. The admin login is the
+exception — cm-beetle takes it when the instance is created and **never hands it
+back** (its RDBMS read has had no `adminUserName` since v0.6.2), so both travel
+here, and `username` is required (`DB_USER` in `.env`).
 
 **cm-centipede creates the target database itself**, using that same password. A
 managed instance's master account is granted rights on the databases the service
@@ -394,10 +394,15 @@ through cm-beetle. That call takes a name and a password and nothing else, so
 — which is why a character-set difference is a warning in step 6 rather than a
 failure.
 
-**`tlsMode`** is `prefer` on both ends here. The other values are `disable`,
-`require`, `verify-ca` and `verify-full`; the last two use the system trust store
-only, and RDS signs with its own CA, so they need a bundle this example has no
-way to supply.
+**`tlsMode`** is `auto` here, which is also what leaving it out means.
+cm-centipede asks cm-beetle how the instance does TLS — cm-beetle relays what
+cb-spider measured — and connects to match: for RDS that is `verify-full`,
+checked against the CA cb-spider collected from the instance. The source end
+stays on `prefer`, since `auto` exists on a `beetleDb` reference only. The other
+values are `disable`, `prefer`, `require`, `verify-ca` and `verify-full`, used
+exactly as given. An explicit `verify-ca` or `verify-full` checks against
+`tlsCAPem`, or the system trust store when it is empty — and RDS signs with its
+own CA, so that needs its bundle in `tlsCAPem`. `auto` ignores `tlsCAPem`.
 
 **`dbmsFilter` selects and then subtracts.** `srcName` names the database to
 migrate — the only one on this server, but a server holding several would be
@@ -645,6 +650,7 @@ set in the shell wins over the file. It stops before its first call while
 | `SRC_DB` | `testdb` | `TF_VAR_ncp_db_name` |
 | `NS_ID` | `cpbt01` | from `conn-info.sh aws --ids` |
 | `RDBMS_ID` | `cpbt-aws-db-mysql` | " |
+| `DB_USER` | `dbadmin` | the RDS instance's master user — `BEETLEENV_AWS_DB_ADMIN_USERNAME` |
 | `DB_PASSWORD` | `ChangeMe` | the RDS instance's master password |
 | `DST_DB` | `testdb` | what to call the database on the target |
 

@@ -28,11 +28,12 @@
 #   public endpoint, and EC2 self-hosting is out of scope.
 #
 # ⚠ Transport security: RDS sets require_secure_transport=ON for MariaDB 11.8+.
-#   Creating a logical database goes through cb-spider's SQL fallback, which
-#   connects in plaintext to everything but IBM hosts, so such a column cannot be
-#   prepared at all and is SKIPped with the reason. There is no parameter-group
-#   API in this stack to turn it off, and TARGET_TLS_MODE does not apply — it
-#   governs the migration, not that connection.
+#   Creating a logical database goes through cb-spider's SQL fallback. Before
+#   cb-spider v0.13.10 it connects in plaintext to everything but IBM hosts, so
+#   such a column cannot be prepared at all and is SKIPped with the reason; from
+#   v0.13.10 it connects with tls=preferred and the column can run. There is no
+#   parameter-group API in this stack to turn it off, and TARGET_TLS_MODE does not
+#   apply — it governs the migration, not that connection.
 #
 # ⚠ Requires:
 #   - cm-beetle, cb-tumblebug and cb-spider running, with the aws-<region>

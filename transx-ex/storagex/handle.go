@@ -29,7 +29,12 @@ type MigrationProgress struct {
 	BytesTransferred int64           `json:"bytesTransferred"`
 	FilesTransferred int             `json:"filesTransferred"`
 	CurrentFile      string          `json:"currentFile"`
-	ErrMessage       string          `json:"errMessage,omitempty"`
+	// Step is the pipeline step the counts above belong to, and Steps how many
+	// the pipeline has: 1/2 is a relay's staging leg, 2/2 its sending leg. Zero
+	// until the first observation.
+	Step       int    `json:"step,omitempty"`
+	Steps      int    `json:"steps,omitempty"`
+	ErrMessage string `json:"errMessage,omitempty"`
 }
 
 // The accessors below satisfy core.Progress, which is how core.Handle keeps
@@ -58,23 +63,29 @@ func newMigrationHandle(ctx context.Context, cancel context.CancelFunc) *Migrati
 // observe folds one observation from inside the transfer into the progress a
 // caller polls.
 //
-// The counts are a HIGH-WATER MARK, which is neither of the two obvious rules. A
-// relay moves the same data twice — source to staging, then staging to
-// destination — and each step counts from zero, so adding the steps reports
-// double what was migrated, while taking only the last leaves the whole staging
-// half reading zero. On a default filesystem transfer that half is most of the
-// wait, and a screen that shows nothing through it is the reason this is not
-// "last step wins".
+// The counts are PER STEP. A relay moves the same data twice — source to
+// staging, then staging to destination — and each step counts from zero, so
+// adding the steps reports double what was migrated. A high-water mark over the
+// steps avoided that, but froze the figure at the staging total for the whole
+// sending leg, while CurrentFile went on moving: a finished-looking count over a
+// transfer still half to go. So a new step starts the counts again from zero,
+// and Step/Steps say which leg they describe.
 //
-// The mark never decreases and never exceeds what one leg moved, so it is a true
-// statement throughout: that many bytes have been moved. Its one imprecision is
-// a relay whose second leg moves less than its first, which is a failed transfer
-// either way.
+// Within a step the counts are a high-water mark, so they never go backwards
+// except at a step boundary. The figure a finished transfer leaves is the last
+// step's, which for a relay is what reached the destination.
 //
 // An unknown figure arrives as -1 and loses the comparison, which is what keeps
-// it from being read as zero.
+// it from being read as zero. Its one imprecision: a last step that reports
+// nothing but unknowns leaves 0 rather than -1.
 func (h *MigrationHandle) observe(u core.Update) {
 	h.Update(func(p *MigrationProgress) {
+		if u.Step != p.Step {
+			p.Step = u.Step
+			p.BytesTransferred = 0
+			p.FilesTransferred = 0
+		}
+		p.Steps = u.Steps
 		if u.Item != "" {
 			p.CurrentFile = u.Item
 		}

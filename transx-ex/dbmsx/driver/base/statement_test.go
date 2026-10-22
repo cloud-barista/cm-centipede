@@ -2,6 +2,7 @@ package base
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
@@ -356,6 +357,69 @@ func TestStripLeadingComments_LeavesInnerCommentsAlone(t *testing.T) {
 	for in, want := range cases {
 		if got := StripLeadingComments(in); got != want {
 			t.Errorf("StripLeadingComments(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// parseDeferrableIndex reads SHOW CREATE TABLE lines. Getting one wrong is an
+// index dropped and put back different, or not put back, so each shape the
+// servers print is pinned here.
+func TestParseDeferrableIndex(t *testing.T) {
+	cases := []struct {
+		line     string
+		ok       bool
+		name     string
+		fulltext bool
+		cols     []string
+	}{
+		{"  KEY `k_a` (`a`),", true, "k_a", false, []string{"a"}},
+		{"  KEY `k_ab` (`a`,`b`) COMMENT 'x, (y)',", true, "k_ab", false, []string{"a", "b"}},
+		{"  KEY `k_prefix` (`b`(10)),", true, "k_prefix", false, []string{"b"}},
+		{"  KEY `k_mixed` (`a`(5),`d` DESC,`e`)", true, "k_mixed", false, []string{"a", "d", "e"}},
+		{"  KEY `k_inv` (`a`,`d`) /*!80000 INVISIBLE */,", true, "k_inv", false, []string{"a", "d"}},
+		{"  KEY `k_ign` (`a`) IGNORED,", true, "k_ign", false, []string{"a"}},
+		{"  KEY `odd``name` (`we``ird`),", true, "odd`name", false, []string{"we`ird"}},
+		{"  FULLTEXT KEY `ft_c` (`c`) /*!50100 WITH PARSER `ngram` */ ,", true, "ft_c", true, []string{"c"}},
+		{"  KEY `k_func` (((`d` + 1))),", false, "", false, nil},
+		{"  PRIMARY KEY (`id`),", false, "", false, nil},
+		{"  UNIQUE KEY `uq_v` (`v`),", false, "", false, nil},
+		{"  SPATIAL KEY `sp` (`g`),", false, "", false, nil},
+		{"  CONSTRAINT `fk` FOREIGN KEY (`a`) REFERENCES `p` (`id`)", false, "", false, nil},
+		{"  `a` int DEFAULT NULL,", false, "", false, nil},
+	}
+	for _, c := range cases {
+		ix, ok := parseDeferrableIndex(c.line)
+		if ok != c.ok {
+			t.Errorf("%q: ok = %v, want %v", c.line, ok, c.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if ix.name != c.name || ix.fulltext != c.fulltext || strings.Join(ix.cols, ",") != strings.Join(c.cols, ",") {
+			t.Errorf("%q: got name=%q fulltext=%v cols=%v, want %q %v %v", c.line, ix.name, ix.fulltext, ix.cols, c.name, c.fulltext, c.cols)
+		}
+		if want := strings.TrimSuffix(strings.TrimSpace(c.line), ","); ix.def != want {
+			t.Errorf("%q: def = %q, want the line as printed", c.line, ix.def)
+		}
+	}
+}
+
+func TestDeferrableIndexServesForeignKey(t *testing.T) {
+	ix := deferrableIndex{cols: []string{"a", "b"}}
+	for _, c := range []struct {
+		fks  [][]string
+		want bool
+	}{
+		{nil, false},
+		{[][]string{{"a"}}, true},
+		{[][]string{{"A", "b"}}, true},
+		{[][]string{{"b"}}, false},
+		{[][]string{{"a", "b", "c"}}, false},
+		{[][]string{{"x"}, {"a"}}, true},
+	} {
+		if got := ix.servesForeignKey(c.fks); got != c.want {
+			t.Errorf("servesForeignKey(%v) = %v, want %v", c.fks, got, c.want)
 		}
 	}
 }

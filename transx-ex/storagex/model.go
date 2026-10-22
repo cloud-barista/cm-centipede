@@ -49,14 +49,21 @@ const (
 // Transfer Strategies
 // ============================================================================
 
+// What tells the two apart is whether the data is staged on local disk on its
+// way. Direct stages nothing: SSH → SSH runs rsync on the source host with the
+// agent forwarded, and object storage → object storage streams each object
+// through memory. Relay copies everything into a local staging directory first,
+// then sends it on. Cross-storage with an SSH side always relays.
 const (
-	// StrategyAuto automatically selects the best transfer method.
+	// StrategyAuto automatically selects the best transfer method: direct
+	// where the pair has one.
 	StrategyAuto = "auto"
 
-	// StrategyDirect forces direct transfer (e.g., SSH agent forwarding).
+	// StrategyDirect forces direct transfer: SSH agent forwarding between two
+	// hosts, streaming between two object stores.
 	StrategyDirect = "direct"
 
-	// StrategyRelay forces relay via local machine.
+	// StrategyRelay forces relay via local staging.
 	StrategyRelay = "relay"
 )
 
@@ -74,18 +81,20 @@ const (
 	StepUploadToS3      = "upload-to-s3"
 	StepRsyncFromServer = "rsync-from-server"
 	StepRsyncToServer   = "rsync-to-server"
+	StepStreamS3ToS3    = "stream-s3-to-s3"
 )
 
 // ============================================================================
 // Staging Configuration
 // ============================================================================
 
-const (
-	// DefaultStagingPath is the default local staging directory for relay
-	// transfers. It is the storage subdirectory of the module-wide staging
-	// root, so a filesystem relay and a database dump never share a directory.
-	DefaultStagingPath = core.StorageStagingPath
-)
+// StagingPath returns the local staging directory for relay transfers. It is
+// the storage subdirectory of the module-wide staging root, so a filesystem
+// relay and a database dump never share a directory. dir is the staging root
+// the caller asked for; empty selects the default (see core.StagingRoot).
+func StagingPath(dir string) string {
+	return core.StorageStagingPath(dir)
+}
 
 // ============================================================================
 // Filter Options
@@ -172,6 +181,12 @@ type DataMigrationModel struct {
 	// "direct": Force direct transfer (e.g., SSH agent forwarding).
 	// "relay": Force relay via local machine.
 	Strategy string `json:"strategy,omitempty" default:"auto" validate:"omitempty,oneof=auto direct relay"`
+
+	// StagingDir is the local staging root a relay stages data under; the
+	// transfer uses its storage subdirectory. Empty selects the default,
+	// $TMPDIR/transxex-staging or /tmp/transxex-staging. It has no effect on a
+	// transfer that stages nothing.
+	StagingDir string `json:"stagingDir,omitempty"`
 
 	// EncryptionKeyID indicates that sensitive fields are encrypted.
 	// Empty string means plaintext, non-empty means encrypted with the specified key.

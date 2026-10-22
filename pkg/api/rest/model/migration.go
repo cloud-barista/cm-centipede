@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 	targetmodel "github.com/cloud-barista/cm-centipede/dmdl/target-model"
 )
 
@@ -29,6 +30,11 @@ type Migration struct {
 	// has to outlive the call that set it. Empty means DBMSOnFailureCleanup.
 	DBMSOnFailure string `gorm:"column:dbms_on_failure" json:"dbmsOnFailure,omitempty"`
 
+	// StagingDir is the staging root the request named, kept as given for the
+	// same reason as DBMSOnFailure. Empty means the server's configured default,
+	// resolved when the migration runs.
+	StagingDir string `gorm:"column:staging_dir" json:"stagingDir,omitempty"`
+
 	Status        string `gorm:"column:status"         json:"status"`
 	StatusMessage string `gorm:"column:status_message" json:"statusMessage,omitempty"`
 
@@ -42,9 +48,43 @@ type Migration struct {
 	// nothing is in flight.
 	CurrentObject string `gorm:"column:current_object" json:"currentObject,omitempty"`
 
+	// CurrentStep is the step of the item's transfer that CurrentObject and the
+	// in-flight part of TransferredBytes belong to, and CurrentSteps how many it
+	// has: a relay's 1/2 stages through local storage, its 2/2 sends to the
+	// destination, and each counts its bytes from zero. Zero when nothing is in
+	// flight or the transfer has no steps to report (DBMS).
+	CurrentStep  int `gorm:"column:current_step"  json:"currentStep,omitempty"`
+	CurrentSteps int `gorm:"column:current_steps" json:"currentSteps,omitempty"`
+
+	// CurrentStepName names CurrentStep when the transfer has a word for it: a
+	// database's "dumping" and "restoring". Empty for a file transfer.
+	CurrentStepName string `gorm:"column:current_step_name" json:"currentStepName,omitempty"`
+	// CurrentStepDetail is what CurrentStep is doing beyond its name, where
+	// the transfer says: a restore's "indexes deferred: 2 tables" while it
+	// writes rows with those tables' indexes held back, then "rebuilding
+	// indexes". Empty otherwise.
+	CurrentStepDetail string `gorm:"column:current_step_detail" json:"currentStepDetail,omitempty"`
+	// CurrentUnits counts the tables (or collections) of the item in flight
+	// that its current step has finished, out of CurrentUnitsTotal;
+	// CurrentRows the rows it has written; CurrentBytesTotal what the in-flight
+	// part of TransferredBytes is counting towards — the dump a restore reads.
+	// Databases only, and zero wherever the step cannot tell: a restore through
+	// a CLI over SSH counts bytes alone.
+	CurrentUnits      int   `gorm:"column:current_units"       json:"currentUnits,omitempty"`
+	CurrentUnitsTotal int   `gorm:"column:current_units_total" json:"currentUnitsTotal,omitempty"`
+	CurrentRows       int64 `gorm:"column:current_rows"        json:"currentRows,omitempty"`
+	CurrentBytesTotal int64 `gorm:"column:current_bytes_total" json:"currentBytesTotal,omitempty"`
+
 	ValidationStatus  string                 `gorm:"column:validation_status"              json:"validationStatus,omitempty"`
 	ValidationMessage string                 `gorm:"column:validation_message"             json:"validationMessage,omitempty"`
 	ValidationDetails []ValidationDetailItem `gorm:"column:validation_details;serializer:json" json:"validationDetails,omitempty"`
+	// ValidationMode is how filesystem items were compared — "quick" (size and
+	// modification time) or "checksum" (size and SHA256). Object storage,
+	// databases and cross-storage items are compared one way whatever it says.
+	ValidationMode string `gorm:"column:validation_mode" json:"validationMode,omitempty"`
+	// ValidationStartedAt is when the latest validation started, so a running
+	// one can show how long it has been going.
+	ValidationStartedAt *time.Time `gorm:"column:validation_started_at" json:"validationStartedAt,omitempty"`
 
 	StartedAt   *time.Time `gorm:"column:started_at"         json:"startedAt,omitempty"`
 	CompletedAt *time.Time `gorm:"column:completed_at"       json:"completedAt,omitempty"`
@@ -150,6 +190,14 @@ type CreateMigrationReq struct {
 	//
 	// Cancellation is not a failure and always cleans up, whatever this says.
 	DBMSOnFailure string `json:"dbmsOnFailure,omitempty" validate:"omitempty,oneof=cleanup keep"`
+
+	// StagingDir is the local directory, on the cm-centipede host, that
+	// transfers stage data under when they cannot go straight from source to
+	// destination: a filesystem or object storage relay, a cross-storage
+	// transfer, a DBMS dump. Must be an absolute path; it is created if missing.
+	// Empty uses centipede.migration.stagingDir from the configuration, and when
+	// that is empty too, $TMPDIR/transxex-staging or /tmp/transxex-staging.
+	StagingDir string `json:"stagingDir,omitempty" example:"/data/centipede-staging"`
 }
 
 // RetryReq is the optional request body for POST /centipede/migration/{id}/retry.
@@ -177,6 +225,11 @@ type PlanSummary struct {
 	FileSystems    int `json:"fileSystems"`
 	ObjectStorages int `json:"objectStorages"`
 	Databases      int `json:"databases"`
+	// CrossStorage counts the entries above that land on the other storage
+	// type: a file system into object storage, or object storage onto a file
+	// system. Validation compares those by path and size only, so a screen
+	// offering a validation mode needs to know without reading the plan.
+	CrossStorage int `json:"crossStorage"`
 }
 
 // MigrationSummary is the list projection of Migration: every field of the
@@ -195,6 +248,7 @@ type MigrationSummary struct {
 	PlanSummary PlanSummary `json:"planSummary"`
 
 	DBMSOnFailure string `json:"dbmsOnFailure,omitempty"`
+	StagingDir    string `json:"stagingDir,omitempty"`
 
 	Status        string `json:"status"`
 	StatusMessage string `json:"statusMessage,omitempty"`
@@ -204,10 +258,22 @@ type MigrationSummary struct {
 	FailedItems      int64  `json:"failedItems"`
 	TransferredBytes int64  `json:"transferredBytes"`
 	CurrentObject    string `json:"currentObject,omitempty"`
+	CurrentStep      int    `json:"currentStep,omitempty"`
+	CurrentSteps     int    `json:"currentSteps,omitempty"`
+
+	CurrentStepName   string `json:"currentStepName,omitempty"`
+	CurrentStepDetail string `json:"currentStepDetail,omitempty"`
+	CurrentUnits      int    `json:"currentUnits,omitempty"`
+	CurrentUnitsTotal int    `json:"currentUnitsTotal,omitempty"`
+	CurrentRows       int64  `json:"currentRows,omitempty"`
+	CurrentBytesTotal int64  `json:"currentBytesTotal,omitempty"`
 
 	ValidationStatus  string                 `json:"validationStatus,omitempty"`
 	ValidationMessage string                 `json:"validationMessage,omitempty"`
 	ValidationDetails []ValidationDetailItem `json:"validationDetails,omitempty"`
+	ValidationMode    string                 `json:"validationMode,omitempty"`
+
+	ValidationStartedAt *time.Time `json:"validationStartedAt,omitempty"`
 
 	StartedAt   *time.Time `json:"startedAt,omitempty"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
@@ -230,8 +296,10 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 			FileSystems:    len(p.FileSystems),
 			ObjectStorages: len(p.ObjectStorages),
 			Databases:      len(p.Databases),
+			CrossStorage:   countCrossStorage(p),
 		},
 		DBMSOnFailure:     m.DBMSOnFailure,
+		StagingDir:        m.StagingDir,
 		Status:            m.Status,
 		StatusMessage:     m.StatusMessage,
 		TotalItems:        m.TotalItems,
@@ -239,14 +307,43 @@ func NewMigrationSummary(m *Migration) MigrationSummary {
 		FailedItems:       m.FailedItems,
 		TransferredBytes:  m.TransferredBytes,
 		CurrentObject:     m.CurrentObject,
+		CurrentStep:       m.CurrentStep,
+		CurrentSteps:      m.CurrentSteps,
 		ValidationStatus:  m.ValidationStatus,
 		ValidationMessage: m.ValidationMessage,
 		ValidationDetails: m.ValidationDetails,
+		ValidationMode:    m.ValidationMode,
 		StartedAt:         m.StartedAt,
 		CompletedAt:       m.CompletedAt,
 		CreatedAt:         m.CreatedAt,
 		UpdatedAt:         m.UpdatedAt,
+
+		ValidationStartedAt: m.ValidationStartedAt,
+
+		CurrentStepName:   m.CurrentStepName,
+		CurrentStepDetail: m.CurrentStepDetail,
+		CurrentUnits:      m.CurrentUnits,
+		CurrentUnitsTotal: m.CurrentUnitsTotal,
+		CurrentRows:       m.CurrentRows,
+		CurrentBytesTotal: m.CurrentBytesTotal,
 	}
+}
+
+// countCrossStorage counts the plan entries that land on the other storage
+// type. DstType is stored in the clear, as the unit counts are.
+func countCrossStorage(p *targetmodel.TargetDataMigrationProperty) int {
+	n := 0
+	for _, fs := range p.FileSystems {
+		if fs.DstType == commonmodel.StorageTypeObjectStorage {
+			n++
+		}
+	}
+	for _, os := range p.ObjectStorages {
+		if os.DstType == commonmodel.StorageTypeFilesystem {
+			n++
+		}
+	}
+	return n
 }
 
 // ── Migration list filter ────────────────────────────────────────────────────
@@ -394,7 +491,22 @@ type ValidationDetailItem struct {
 
 // ValidationResultResponse is returned by GET /centipede/migration/{id}/validation.
 type ValidationResultResponse struct {
-	ValidationStatus  string                 `json:"validationStatus"` // "passed" | "failed" | "not_run" | "running"
+	ValidationStatus string `json:"validationStatus"` // "passed" | "failed" | "not_run" | "running"
+	// ValidationMessage is the result's summary once the validation has
+	// finished, and while it runs, where it has got to — refreshed every few
+	// seconds.
 	ValidationMessage string                 `json:"validationMessage,omitempty"`
 	Details           []ValidationDetailItem `json:"details,omitempty"` // list of failed items
+	Mode              string                 `json:"mode,omitempty"`    // "quick" | "checksum": how filesystem items were compared
+	StartedAt         *time.Time             `json:"startedAt,omitempty"`
+}
+
+// StartValidationRequest is the optional body of POST
+// /centipede/migration/{id}/validation.
+type StartValidationRequest struct {
+	// Mode is how filesystem items are compared: "quick" (size and
+	// modification time, seconds; the default) or "checksum" (size and SHA256
+	// of every migrated file). Object storage, databases and cross-storage
+	// items (compared by path and size) are compared one way whatever it says.
+	Mode string `json:"mode,omitempty" enums:"quick,checksum" example:"quick"`
 }

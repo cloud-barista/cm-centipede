@@ -70,10 +70,14 @@ const (
 // Staging Constants
 // =============================================================================
 
-// DefaultStagingPath is the local directory used to store intermediate dump
+// StagingPath returns the local directory used to store intermediate dump
 // files. It is the DBMS subdirectory of the module-wide staging root, so a
-// database dump and a filesystem relay never share a directory.
-const DefaultStagingPath = core.DBMSStagingPath
+// database dump and a filesystem relay never share a directory. dir is the
+// staging root the caller asked for; empty selects the default (see
+// core.StagingRoot).
+func StagingPath(dir string) string {
+	return core.DBMSStagingPath(dir)
+}
 
 // =============================================================================
 // TargetGrant
@@ -119,6 +123,26 @@ func PgSchemaRenameOpt(opt *DumpOption) map[string]string {
 	return opt.PgSchemaRename
 }
 
+// RestoreOption carries what a restore needs to know about the source its dump
+// was taken from. A nil option means nothing is known beyond the dump itself,
+// which is the case for a restore from a file.
+type RestoreOption struct {
+	// SourceDatabase is the database the dump was taken from. MongoDB only: its
+	// archive names every collection by it, so a restore into a database of
+	// another name has to map one to the other. The other engines' dumps carry
+	// no database name and ignore it.
+	SourceDatabase string
+}
+
+// SourceDatabaseOpt returns opt's source database, or "". It tolerates a nil
+// option like PgSchemaRenameOpt.
+func SourceDatabaseOpt(opt *RestoreOption) string {
+	if opt == nil {
+		return ""
+	}
+	return opt.SourceDatabase
+}
+
 // =============================================================================
 // DBMS Location
 // =============================================================================
@@ -149,8 +173,9 @@ type DBMSLocation struct {
 	Direct       *DirectConfig            `json:"direct,omitempty"`
 	SSHTunnel    *SSHTunnelConfig         `json:"sshTunnel,omitempty"`
 	Filter       *filter.DBMSFilterOption `json:"filter,omitempty"`
-	// Metric selects which information Inspect extracts. Inspect only; ignored
-	// by dumps and migrations.
+	// Metric selects which information Inspect extracts. DescribeTable reads
+	// RowCountExact from it as well, to fill in an exact row count; dumps and
+	// migrations ignore it.
 	Metric *MetricOption `json:"metric,omitempty"`
 }
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	base "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/driver/base"
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
@@ -84,10 +85,14 @@ func (d *MariaDBDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation, s
 	}
 	defer f.Close()
 
-	dst := io.Writer(f)
+	out := io.Writer(f)
 	if w != nil {
-		dst = io.MultiWriter(f, w)
+		out = io.MultiWriter(f, w)
 	}
+	// Buffered: the dump is written a value at a time, and unbuffered every row
+	// was a write to the file and a call into the counting writer.
+	bw := bufio.NewWriterSize(out, 1<<20)
+	dst := io.Writer(bw)
 
 	// Every dump states the encoding its literals are written in, as
 	// mariadb-dump does. The restore path opens its own utf8mb4 connection and
@@ -98,6 +103,17 @@ func (d *MariaDBDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation, s
 		return fmt.Errorf("write dump header: %w", err)
 	}
 
+	if err := d.dumpScopeViaSQL(ctx, db, loc, scope, dst); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("write dump file: %w", err)
+	}
+	return nil
+}
+
+// dumpScopeViaSQL writes what scope asks for to dst.
+func (d *MariaDBDriver) dumpScopeViaSQL(ctx context.Context, db *sql.DB, loc base.DBMSLocation, scope string, dst io.Writer) error {
 	if scope == base.ScopeSchemaOnly {
 		if err := d.dumpSchemaViaSQL(ctx, db, loc.Database, loc.Filter, dst); err != nil {
 			return fmt.Errorf("dump schema: %w", err)
@@ -306,13 +322,66 @@ func (d *MariaDBDriver) dumpTriggersAndEventsViaSQL(ctx context.Context, db *sql
 }
 
 // dumpDataViaSQL writes INSERT statements for all rows in each table.
+// mariadbInsertBatchBytes is how long one multi-row INSERT the SQL dump writes
+// may grow before it is closed and the next begins — see mysqlInsertBatchBytes,
+// whose reasons are the same here.
+const mariadbInsertBatchBytes = 1 << 20
+
+// mariadbInsertBatch accumulates one table's rows into multi-row INSERT
+// statements of at most mariadbInsertBatchBytes, one statement per line. A
+// single row longer than that still goes out, alone.
+type mariadbInsertBatch struct {
+	dst    io.Writer
+	prefix string
+	values strings.Builder
+}
+
+func newMariaDBInsertBatch(dst io.Writer, prefix string) *mariadbInsertBatch {
+	return &mariadbInsertBatch{dst: dst, prefix: prefix}
+}
+
+// add appends one row's "(…)" tuple, closing the current statement first when
+// the tuple would take it past the limit.
+func (b *mariadbInsertBatch) add(tuple string) {
+	if b.values.Len() > 0 && len(b.prefix)+b.values.Len()+1+len(tuple)+2 > mariadbInsertBatchBytes {
+		b.flush()
+	}
+	if b.values.Len() > 0 {
+		b.values.WriteByte(',')
+	}
+	b.values.WriteString(tuple)
+}
+
+// flush writes the statement built so far, if any. Write errors surface when
+// the dump's buffered writer is flushed.
+func (b *mariadbInsertBatch) flush() {
+	if b.values.Len() == 0 {
+		return
+	}
+	io.WriteString(b.dst, b.prefix)          //nolint:errcheck
+	io.WriteString(b.dst, b.values.String()) //nolint:errcheck
+	io.WriteString(b.dst, ";\n")             //nolint:errcheck
+	b.values.Reset()
+}
+
+// mariadbDataPrologue and mariadbDataEpilogue wrap the rows of a dump in
+// NO_AUTO_VALUE_ON_ZERO, so a 0 in an AUTO_INCREMENT column comes back as 0 —
+// see mysqlDataPrologue on why only around the rows.
+const (
+	mariadbDataPrologue = "SET @OLD_SQL_MODE = @@SESSION.sql_mode, SESSION sql_mode = " +
+		"IF(@@SESSION.sql_mode = '', 'NO_AUTO_VALUE_ON_ZERO', CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO'));\n\n"
+	mariadbDataEpilogue = "SET SESSION sql_mode = @OLD_SQL_MODE;\n\n"
+)
+
 func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database string, filter *filterpkg.DBMSFilterOption, dst io.Writer) error {
 	tables, err := d.listTables(ctx, db, database, filter)
 	if err != nil {
 		return base.Obj{Kind: base.ObjectKindTable, Owner: database}.Fail(base.ActionList, err)
 	}
+	io.WriteString(dst, mariadbDataPrologue) //nolint:errcheck
 
 	for i, table := range tables {
+		base.ReportDumpTable(ctx, i, len(tables), table)
 		obj := base.Obj{
 			Kind: base.ObjectKindTable, Owner: database, Name: table,
 			Index: i + 1, Total: len(tables),
@@ -348,6 +417,7 @@ func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database
 		// alike, which one stopped the scan is the part that is hard to find.
 		rowNum := 0
 		rowObj := base.Obj{Kind: base.ObjectKindTable, Owner: database, Name: table, Unit: "row"}
+		batch := newMariaDBInsertBatch(dst, fmt.Sprintf("INSERT INTO `%s`%s VALUES ", table, colClause))
 		for rows.Next() {
 			rowNum++
 			vals := make([]interface{}, len(cols))
@@ -364,8 +434,9 @@ func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database
 			for i, v := range vals {
 				parts[i] = mariadbFormatValue(v)
 			}
-			fmt.Fprintf(dst, "INSERT INTO `%s`%s VALUES (%s);\n", table, colClause, strings.Join(parts, ", "))
+			batch.add("(" + strings.Join(parts, ", ") + ")")
 		}
+		batch.flush()
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			rowObj.Index = rowNum
@@ -373,6 +444,8 @@ func (d *MariaDBDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database
 		}
 		fmt.Fprintln(dst)
 	}
+	io.WriteString(dst, mariadbDataEpilogue) //nolint:errcheck
+	base.ReportDumpTable(ctx, len(tables), len(tables), "")
 	return nil
 }
 
@@ -402,7 +475,7 @@ func (d *MariaDBDriver) dumpViaSSH(ctx context.Context, loc base.DBMSLocation, s
 			DBMSType:    base.DBMSTypeMariaDB,
 			Source:      loc.Database,
 			Destination: outputPath,
-			Command:     cmd,
+			Command:     d.BuildDumpCmd(base.RedactedLoc(loc), scope),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -430,10 +503,11 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 	}
 	defer db.Close()
 
-	content, err := os.ReadFile(inputPath)
+	f, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("read dump file: %w", err)
+		return fmt.Errorf("open dump file: %w", err)
 	}
+	defer f.Close()
 
 	// FOREIGN_KEY_CHECKS is a session variable, so every statement of the restore
 	// must run on the same connection. Pin one out of the pool instead of using
@@ -447,36 +521,160 @@ func (d *MariaDBDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
 		return fmt.Errorf("disable FK checks: %w", err)
 	}
+	// Commit in batches rather than per statement — see MySQLDriver.restoreViaSQL.
+	if _, err := conn.ExecContext(ctx, "SET autocommit=0, unique_checks=0"); err != nil {
+		return fmt.Errorf("disable autocommit: %w", err)
+	}
+	commits := base.NewCommitBatcher(func() error {
+		_, err := conn.ExecContext(ctx, "COMMIT")
+		return err
+	})
 
-	stmts := splitMariaDBStatements(string(content))
-	var lastNotifyTable string
-	for i, stmt := range stmts {
+	// The tables the dump carries rows for, counted beside the restore — see
+	// MySQLDriver.restoreViaSQL.
+	progress := base.NewRestoreProgress(ctx, 0)
+	stopCount := progress.CountTotal(ctx, func(ctx context.Context) (int, int, error) {
+		return base.CountDump(ctx, inputPath, eachMariaDBStatement, extractMariaDBInsertTable)
+	})
+	defer stopCount()
+
+	// The INSERTs go out over writers of their own, several at once — see
+	// MySQLDriver.restoreViaSQL.
+	writers, err := base.NewRowWriters(ctx, db, base.RestoreWriters,
+		func(n int, rows int64) { progress.Statement(n, rows, "") },
+		func(stmt string, index int, err error) error {
+			return base.RestoreStatementError(
+				base.DBMSTypeMariaDB, loc.Database, stmt, index, progress.Statements(), err)
+		})
+	if err != nil {
+		logger.Info("mariadb restore writes rows on one connection", "database", loc.Database, "err", err.Error())
+		writers = nil
+	} else {
+		defer writers.Close(false) //nolint:errcheck
+	}
+
+	// Large tables have their secondary indexes deferred — see
+	// MySQLDriver.restoreViaSQL.
+	deferred := base.NewIndexDeferrer(ctx, db, conn, loc.Database, nil, progress)
+	barrier := func() error {
+		if writers != nil {
+			if err := writers.Barrier(); err != nil {
+				return err
+			}
+		}
+		return commits.Flush()
+	}
+
+	var lastNotifyTable, lastTable string
+	i := 0
+	err = eachMariaDBStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string) error {
+		i++
 		// The splitter cuts on the delimiter, so a dump's comment block arrives
 		// attached to the statement below it. Drop the comments, keep the
 		// statement — skipping the whole entry loses real SQL (see
 		// base.StripLeadingComments).
 		stmt = base.StripLeadingComments(stmt)
 		if stmt == "" {
-			continue
+			return nil
 		}
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			return base.RestoreStatementError(
-				base.DBMSTypeMariaDB, loc.Database, stmt, i+1, len(stmts), err)
-		}
+		table := extractMariaDBInsertTable(stmt)
 		if notify != nil {
-			if tbl := extractMariaDBInsertTable(stmt); tbl != "" && tbl != lastNotifyTable {
-				lastNotifyTable = tbl
-				notify(tbl)
+			if table != "" && table != lastNotifyTable {
+				lastNotifyTable = table
+				notify(table)
 			} else if tbl := extractMariaDBCreateTable(stmt); tbl != "" {
 				notify(tbl)
 			}
 		}
+		if table != "" {
+			if err := deferred.Insert(ctx, table, len(stmt), barrier); err != nil {
+				return err
+			}
+		}
+
+		if writers != nil {
+			if table != "" {
+				if err := commits.Flush(); err != nil {
+					return fmt.Errorf("commit restored rows: %w", err)
+				}
+				if table != lastTable {
+					lastTable = table
+					progress.Statement(0, 0, table)
+				}
+				return writers.Insert(stmt, i, table)
+			}
+			if base.IsMySQLTableLockStmt(stmt) {
+				return nil
+			}
+			if err := writers.Barrier(); err != nil {
+				return err
+			}
+		}
+
+		res, err := conn.ExecContext(ctx, stmt)
+		if err != nil && deferred.Pending() && mariadbMissingKeyForFK(err) {
+			// A foreign key on columns whose index was deferred — see
+			// MySQLDriver.restoreViaSQL.
+			if err := deferred.Rebuild(ctx); err != nil {
+				return err
+			}
+			res, err = conn.ExecContext(ctx, stmt)
+		}
+		if err != nil {
+			return base.RestoreStatementError(
+				base.DBMSTypeMariaDB, loc.Database, stmt, i, progress.Statements(), err)
+		}
+		if err := commits.Done(len(stmt)); err != nil {
+			return fmt.Errorf("commit restored rows: %w", err)
+		}
+		if writers != nil && base.IsMySQLSessionStmt(stmt) {
+			if err := writers.Session(stmt); err != nil {
+				return err
+			}
+		}
+		rows, _ := res.RowsAffected()
+		progress.Statement(len(stmt), rows, table)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if writers != nil {
+		if err := writers.Close(true); err != nil {
+			return err
+		}
 	}
 
+	if err := commits.Flush(); err != nil {
+		return fmt.Errorf("commit restored rows: %w", err)
+	}
+	progress.Finish()
+	if err := deferred.Rebuild(ctx); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "SET unique_checks=1, autocommit=1"); err != nil {
+		return fmt.Errorf("re-enable autocommit: %w", err)
+	}
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
 		return fmt.Errorf("re-enable FK checks: %w", err)
 	}
 	return nil
+}
+
+// mariadbMissingKeyForFK reports whether err is a foreign key refused for want
+// of an index on the columns it refers to — see mysqlMissingKeyForFK.
+func mariadbMissingKeyForFK(err error) bool {
+	var me *mysqldrv.MySQLError
+	if !errors.As(err, &me) {
+		return false
+	}
+	switch me.Number {
+	case 1822, 1215:
+		return true
+	case 1005:
+		return strings.Contains(me.Message, "150")
+	}
+	return false
 }
 
 func (d *MariaDBDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation, inputPath string, notify func(string)) error {
@@ -486,13 +684,15 @@ func (d *MariaDBDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation
 	}
 	defer f.Close()
 
-	cmd := d.BuildRestoreCmd(loc)
-	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, f, nil); err != nil {
+	// The CLI on the far side runs the statements, so how much of the file has
+	// been sent is all there is to report.
+	cmd := d.BuildRestoreCmd(loc, nil)
+	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypeMariaDB,
 			Destination: loc.Database,
-			Command:     cmd,
+			Command:     d.BuildRestoreCmd(base.RedactedLoc(loc), nil),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -516,14 +716,16 @@ func (d *MariaDBDriver) TestConnection(ctx context.Context, loc base.DBMSLocatio
 	}
 
 	cfg := loc.SSHTunnel
-	cmd := d.buildMariaDBCmd(cfg, loc.Database) + ` -e "SELECT 1"`
+	// The command is built again for the error with the password masked.
+	cmdFor := func(cfg *base.SSHTunnelConfig) string { return d.buildMariaDBCmd(cfg, loc.Database) + ` -e "SELECT 1"` }
+	cmd := cmdFor(cfg)
 	var out bytes.Buffer
 	if err := base.ExecuteViaSSH(cfg.SSH, cmd, nil, &out); err != nil {
 		return &base.OperationError{
 			Operation: base.OperationConnect,
 			DBMSType:  base.DBMSTypeMariaDB,
 			Source:    loc.Database,
-			Command:   cmd,
+			Command:   cmdFor(base.RedactedLoc(loc).SSHTunnel),
 			Output:    base.SSHStderr(err),
 			Err:       err,
 		}
@@ -550,7 +752,7 @@ func (d *MariaDBDriver) BuildDumpCmd(loc base.DBMSLocation, scope string) string
 
 // BuildRestoreCmd returns the mariadb CLI command used by PipeExecutor (T13)
 // to restore on the remote SSH host.
-func (d *MariaDBDriver) BuildRestoreCmd(loc base.DBMSLocation) string {
+func (d *MariaDBDriver) BuildRestoreCmd(loc base.DBMSLocation, _ *base.RestoreOption) string {
 	if !loc.IsSSHTunnel() {
 		return ""
 	}
@@ -1585,21 +1787,51 @@ func (d *MariaDBDriver) queryNames(ctx context.Context, db *sql.DB, query string
 // =============================================================================
 
 // DescribeTable returns column and index metadata for a single table.
+//
+// The row count is filled in only when loc.Metric.MariaDB.RowCountExact asks for
+// it: an exact COUNT(*) scans the table, which a caller after the structure alone
+// should not pay for. It is counted here rather than in describeTableVia*, which
+// Inspect's per-table loop also calls after counting the table itself.
 func (d *MariaDBDriver) DescribeTable(ctx context.Context, loc base.DBMSLocation, table string) (*base.TableInfo, error) {
+	countQ := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s",
+		mariadbQuoteIdent(loc.Database), mariadbQuoteIdent(table))
 	if loc.IsDirect() {
 		db, err := d.openDB(loc)
 		if err != nil {
 			return nil, err
 		}
 		defer db.Close()
-		return d.describeTableViaSQL(ctx, db, loc.Database, table)
+		info, err := d.describeTableViaSQL(ctx, db, loc.Database, table)
+		if err != nil || !mariadbMetric(loc).rowCountExact {
+			return info, err
+		}
+		if err := db.QueryRowContext(ctx, countQ).Scan(&info.RowCount); err != nil {
+			return nil, fmt.Errorf("count rows in %s: %w", table, err)
+		}
+		return info, nil
 	}
 	exec, err := base.DialSSHExec(loc.SSHTunnel.SSH)
 	if err != nil {
 		return nil, err
 	}
 	defer exec.Close()
-	return d.describeTableViaSSH(ctx, exec, loc, table)
+	info, err := d.describeTableViaSSH(ctx, exec, loc, table)
+	if err != nil || !mariadbMetric(loc).rowCountExact {
+		return info, err
+	}
+	res, err := d.mariadbQueryViaSSH(exec, loc.SSHTunnel, "", countQ)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	if len(res) == 0 || len(res[0]) == 0 {
+		return nil, fmt.Errorf("count rows in %s: empty result", table)
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(res[0][0]), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	info.RowCount = n
+	return info, nil
 }
 
 func (d *MariaDBDriver) describeTableViaSQL(ctx context.Context, db *sql.DB, database, table string) (*base.TableInfo, error) {
@@ -2224,45 +2456,65 @@ func (d *MariaDBDriver) listColumns(ctx context.Context, db *sql.DB, database, t
 // correctly handling DELIMITER changes used by stored routines and triggers.
 func splitMariaDBStatements(script string) []string {
 	var stmts []string
+	_ = eachMariaDBStatement(strings.NewReader(script), func(stmt string) error {
+		stmts = append(stmts, stmt)
+		return nil
+	})
+	return stmts
+}
+
+// eachMariaDBStatement reads a MariaDB SQL script from r and calls fn with each
+// of its statements in turn, as splitMariaDBStatements returns them — see
+// eachMySQLStatement on why a restore reads its dump this way.
+func eachMariaDBStatement(r io.Reader, fn func(stmt string) error) error {
 	delim := ";"
 	var buf strings.Builder
 
-	sc := bufio.NewScanner(strings.NewReader(script))
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	sc := bufio.NewScanner(r)
+	// One line is one statement — see splitMySQLStatements on why the limit is
+	// base.MaxStatementLine and not the old 1 MB.
+	sc.Buffer(make([]byte, 1<<20), base.MaxStatementLine)
 
 	for sc.Scan() {
-		line := sc.Text()
-		upper := strings.ToUpper(strings.TrimSpace(line))
+		line := sc.Bytes()
 
-		if strings.HasPrefix(upper, "DELIMITER") {
+		// Only the head of the line is compared — see eachMySQLStatement.
+		if t := bytes.TrimSpace(line); len(t) >= 9 && bytes.EqualFold(t[:9], []byte("DELIMITER")) {
 			if s := strings.TrimSpace(buf.String()); s != "" {
-				stmts = append(stmts, s)
+				if err := fn(s); err != nil {
+					return err
+				}
 			}
 			buf.Reset()
-			parts := strings.Fields(line)
+			parts := strings.Fields(string(line))
 			if len(parts) >= 2 {
 				delim = parts[1]
 			}
 			continue
 		}
 
-		buf.WriteString(line)
-		buf.WriteString("\n")
+		buf.Write(line)
+		buf.WriteByte('\n')
 
 		current := strings.TrimRight(buf.String(), " \t\r\n")
 		if strings.HasSuffix(current, delim) {
 			stmt := strings.TrimSpace(current[:len(current)-len(delim)])
-			if stmt != "" {
-				stmts = append(stmts, stmt)
-			}
 			buf.Reset()
+			if stmt != "" {
+				if err := fn(stmt); err != nil {
+					return err
+				}
+			}
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
 	}
 
 	if s := strings.TrimSpace(buf.String()); s != "" {
-		stmts = append(stmts, s)
+		return fn(s)
 	}
-	return stmts
+	return nil
 }
 
 var (

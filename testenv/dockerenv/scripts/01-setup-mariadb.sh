@@ -22,8 +22,13 @@ echo "[MariaDB] MariaDB is ready."
 # ── Set the root password + grant access ──────────────────────────────────────
 # Unquoted heredoc, so the password is substituted; backslashes are doubled to
 # survive it. DOCKERENV_PASSWORD carries no quote, backslash or $ (validated).
+#
+# root@localhost keeps unix_socket beside the password. A bare IDENTIFIED BY
+# would replace both with the password alone, and the passwordless socket login
+# below would then fail with 1045 the next time the container starts and this
+# script runs again.
 mysql --default-character-set=utf8mb4 -u root <<SQL
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${DOCKERENV_PASSWORD}';
+ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('${DOCKERENV_PASSWORD}') OR unix_socket;
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1');
 DROP DATABASE IF EXISTS test;

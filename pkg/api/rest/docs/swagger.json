@@ -466,7 +466,10 @@
                 }
             },
             "post": {
-                "description": "Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed, 409 if validation is already running.",
+                "description": "Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.\nThe optional body's mode decides how filesystem items are compared: \"quick\" (default) compares size and modification time only, \"checksum\" hashes every migrated file on both hosts. Object storage, databases and cross-storage items (path and size) are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -481,6 +484,14 @@
                         "name": "migrationId",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "Validation options",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.StartValidationRequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -595,7 +606,8 @@
             "required": [
                 "nsId",
                 "password",
-                "rdbmsId"
+                "rdbmsId",
+                "username"
             ],
             "properties": {
                 "nsId": {
@@ -609,13 +621,14 @@
                     "type": "string"
                 },
                 "tlsCAPem": {
-                    "description": "TLSCAPEM is the PEM root that verify-ca and verify-full check against.\nEmpty means the system trust store, which carries only publicly trusted\nCAs — and managed RDBMS services commonly sign with their own, so those two\nmodes usually need the CSP's root supplied here.",
+                    "description": "TLSCAPEM is the PEM root that an explicit verify-ca or verify-full checks\nagainst. Empty means the system trust store, which carries only publicly\ntrusted CAs — and managed RDBMS services commonly sign with their own, so\nthose two modes usually need the CSP's root supplied here. \"auto\" ignores\nit and verifies against the CA cb-spider collected from the instance.",
                     "type": "string"
                 },
                 "tlsMode": {
-                    "description": "TLSMode selects transport security; the empty value is \"disable\". It means\nthe same thing here as on DBConnConfig — see the table in transx-ex's\ndbmsx/driver/base/tls.go.",
+                    "description": "TLSMode selects transport security; the empty value is \"auto\". \"auto\"\ntakes the mode cm-beetle recommends for the instance: verify-full,\nverify-ca or disable, falling back to require when no CA was collected and\nto prefer when cm-beetle could not say. Any other value means the same\nthing here as on DBConnConfig — see the table in transx-ex's\ndbmsx/driver/base/tls.go — and is used as given; plaintext therefore needs\n\"disable\" spelled out.",
                     "type": "string",
                     "enum": [
+                        "auto",
                         "disable",
                         "prefer",
                         "require",
@@ -624,7 +637,7 @@
                     ]
                 },
                 "username": {
-                    "description": "defaults to the looked-up AdminUsername",
+                    "description": "the instance admin; cm-beetle does not report it",
                     "type": "string"
                 }
             }
@@ -1675,6 +1688,15 @@
                 },
                 "srcConnection": {
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
+                },
+                "strategy": {
+                    "description": "Strategy is the transx transfer strategy (auto/direct/relay). It only affects\nS3→S3 transfers — direct streams each object, relay stages them locally —\nand objectstorage→filesystem cross-storage always relays. Set by the plan\nlayer; empty runs as direct.",
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "direct",
+                        "relay"
+                    ]
                 }
             }
         },
@@ -1930,6 +1952,11 @@
                 },
                 "plan": {
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_target-model.TargetDataMigrationModel"
+                },
+                "stagingDir": {
+                    "description": "StagingDir is the local directory, on the cm-centipede host, that\ntransfers stage data under when they cannot go straight from source to\ndestination: a filesystem or object storage relay, a cross-storage\ntransfer, a DBMS dump. Must be an absolute path; it is created if missing.\nEmpty uses centipede.migration.stagingDir from the configuration, and when\nthat is empty too, $TMPDIR/transxex-staging or /tmp/transxex-staging.",
+                    "type": "string",
+                    "example": "/data/centipede-staging"
                 }
             }
         },
@@ -1987,9 +2014,37 @@
                     "description": "CreatedAt is indexed because it is both the list ordering key and the only\ncolumn the date filters compare against: without the index every list call\nis a full scan plus a sort.",
                     "type": "string"
                 },
+                "currentBytesTotal": {
+                    "type": "integer"
+                },
                 "currentObject": {
                     "description": "CurrentObject is the file, object or table being moved right now — one level\nbelow ItemPath, which names the folder, bucket or database. Empty when\nnothing is in flight.",
                     "type": "string"
+                },
+                "currentRows": {
+                    "type": "integer"
+                },
+                "currentStep": {
+                    "description": "CurrentStep is the step of the item's transfer that CurrentObject and the\nin-flight part of TransferredBytes belong to, and CurrentSteps how many it\nhas: a relay's 1/2 stages through local storage, its 2/2 sends to the\ndestination, and each counts its bytes from zero. Zero when nothing is in\nflight or the transfer has no steps to report (DBMS).",
+                    "type": "integer"
+                },
+                "currentStepDetail": {
+                    "description": "CurrentStepDetail is what CurrentStep is doing beyond its name, where\nthe transfer says: a restore's \"indexes deferred: 2 tables\" while it\nwrites rows with those tables' indexes held back, then \"rebuilding\nindexes\". Empty otherwise.",
+                    "type": "string"
+                },
+                "currentStepName": {
+                    "description": "CurrentStepName names CurrentStep when the transfer has a word for it: a\ndatabase's \"dumping\" and \"restoring\". Empty for a file transfer.",
+                    "type": "string"
+                },
+                "currentSteps": {
+                    "type": "integer"
+                },
+                "currentUnits": {
+                    "description": "CurrentUnits counts the tables (or collections) of the item in flight\nthat its current step has finished, out of CurrentUnitsTotal;\nCurrentRows the rows it has written; CurrentBytesTotal what the in-flight\npart of TransferredBytes is counting towards — the dump a restore reads.\nDatabases only, and zero wherever the step cannot tell: a restore through\na CLI over SSH counts bytes alone.",
+                    "type": "integer"
+                },
+                "currentUnitsTotal": {
+                    "type": "integer"
                 },
                 "dbmsOnFailure": {
                     "description": "DBMSOnFailure is carried on the record rather than only on the request\nbecause execution is asynchronous and a retry re-reads the row: the policy\nhas to outlive the call that set it. Empty means DBMSOnFailureCleanup.",
@@ -2012,6 +2067,10 @@
                 },
                 "processedItems": {
                     "type": "integer"
+                },
+                "stagingDir": {
+                    "description": "StagingDir is the staging root the request named, kept as given for the\nsame reason as DBMSOnFailure. Empty means the server's configured default,\nresolved when the migration runs.",
+                    "type": "string"
                 },
                 "startedAt": {
                     "type": "string"
@@ -2038,6 +2097,14 @@
                     }
                 },
                 "validationMessage": {
+                    "type": "string"
+                },
+                "validationMode": {
+                    "description": "ValidationMode is how filesystem items were compared — \"quick\" (size and\nmodification time) or \"checksum\" (size and SHA256). Object storage,\ndatabases and cross-storage items are compared one way whatever it says.",
+                    "type": "string"
+                },
+                "validationStartedAt": {
+                    "description": "ValidationStartedAt is when the latest validation started, so a running\none can show how long it has been going.",
                     "type": "string"
                 },
                 "validationStatus": {
@@ -2106,8 +2173,32 @@
                 "createdAt": {
                     "type": "string"
                 },
+                "currentBytesTotal": {
+                    "type": "integer"
+                },
                 "currentObject": {
                     "type": "string"
+                },
+                "currentRows": {
+                    "type": "integer"
+                },
+                "currentStep": {
+                    "type": "integer"
+                },
+                "currentStepDetail": {
+                    "type": "string"
+                },
+                "currentStepName": {
+                    "type": "string"
+                },
+                "currentSteps": {
+                    "type": "integer"
+                },
+                "currentUnits": {
+                    "type": "integer"
+                },
+                "currentUnitsTotal": {
+                    "type": "integer"
                 },
                 "dbmsOnFailure": {
                     "type": "string"
@@ -2129,6 +2220,9 @@
                 },
                 "processedItems": {
                     "type": "integer"
+                },
+                "stagingDir": {
+                    "type": "string"
                 },
                 "startedAt": {
                     "type": "string"
@@ -2157,6 +2251,12 @@
                 "validationMessage": {
                     "type": "string"
                 },
+                "validationMode": {
+                    "type": "string"
+                },
+                "validationStartedAt": {
+                    "type": "string"
+                },
                 "validationStatus": {
                     "type": "string"
                 }
@@ -2179,7 +2279,7 @@
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.FileSystemFilter"
                 },
                 "fileSystemStrategy": {
-                    "description": "FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)\ntasks. Empty is normalised to \"relay\" (safer default: avoids agent-forward\nsetup requirements). It has no effect on object-storage or DBMS tasks, where\nrelay is always used / not applicable.",
+                    "description": "FileSystemStrategy is the transfer strategy applied to filesystem (SSH→SSH)\ntasks. Empty is normalised to \"direct\" (agent-forward: the source host\nsends straight to the destination, with nothing staged here). Object\nstorage tasks take ObjectStorageStrategy instead; DBMS tasks have none.",
                     "type": "string",
                     "enum": [
                         "auto",
@@ -2190,6 +2290,15 @@
                 "objectStorageFilter": {
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ObjectStorageFilter"
                 },
+                "objectStorageStrategy": {
+                    "description": "ObjectStorageStrategy is the transfer strategy applied to object storage\n(S3→S3) tasks. Empty is normalised to \"direct\": each object streams from\nsource to destination, with nothing staged here. \"relay\" downloads to\nlocal staging first, then uploads. It has no effect on objectstorage→\nfilesystem cross-storage, which always relays.",
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "direct",
+                        "relay"
+                    ]
+                },
                 "srcConnection": {
                     "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef"
                 }
@@ -2198,6 +2307,10 @@
         "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.PlanSummary": {
             "type": "object",
             "properties": {
+                "crossStorage": {
+                    "description": "CrossStorage counts the entries above that land on the other storage\ntype: a file system into object storage, or object storage onto a file\nsystem. Validation compares those by path and size only, so a screen\noffering a validation mode needs to know without reading the plan.",
+                    "type": "integer"
+                },
                 "databases": {
                     "type": "integer"
                 },
@@ -2233,6 +2346,20 @@
             "properties": {
                 "message": {
                     "type": "string"
+                }
+            }
+        },
+        "github_com_cloud-barista_cm-centipede_pkg_api_rest_model.StartValidationRequest": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "description": "Mode is how filesystem items are compared: \"quick\" (size and\nmodification time, seconds; the default) or \"checksum\" (size and SHA256\nof every migrated file). Object storage, databases and cross-storage\nitems (compared by path and size) are compared one way whatever it says.",
+                    "type": "string",
+                    "enum": [
+                        "quick",
+                        "checksum"
+                    ],
+                    "example": "quick"
                 }
             }
         },
@@ -2285,7 +2412,15 @@
                         "$ref": "#/definitions/github_com_cloud-barista_cm-centipede_pkg_api_rest_model.ValidationDetailItem"
                     }
                 },
+                "mode": {
+                    "description": "\"quick\" | \"checksum\": how filesystem items were compared",
+                    "type": "string"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
                 "validationMessage": {
+                    "description": "ValidationMessage is the result's summary once the validation has\nfinished, and while it runs, where it has got to — refreshed every few\nseconds.",
                     "type": "string"
                 },
                 "validationStatus": {

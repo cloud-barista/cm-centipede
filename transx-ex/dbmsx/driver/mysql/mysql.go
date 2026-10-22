@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	base "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/driver/base"
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
@@ -83,10 +84,14 @@ func (d *MySQLDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation, sco
 	}
 	defer f.Close()
 
-	dst := io.Writer(f)
+	out := io.Writer(f)
 	if w != nil {
-		dst = io.MultiWriter(f, w)
+		out = io.MultiWriter(f, w)
 	}
+	// Buffered: the dump is written a value at a time, and unbuffered every row
+	// was a write to the file and a call into the counting writer.
+	bw := bufio.NewWriterSize(out, 1<<20)
+	dst := io.Writer(bw)
 
 	// Every dump states the encoding its literals are written in, as mysqldump
 	// does. The restore path opens its own utf8mb4 connection and does not need
@@ -96,6 +101,17 @@ func (d *MySQLDriver) dumpViaSQL(ctx context.Context, loc base.DBMSLocation, sco
 		return fmt.Errorf("write dump header: %w", err)
 	}
 
+	if err := d.dumpScopeViaSQL(ctx, db, loc, scope, dst); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("write dump file: %w", err)
+	}
+	return nil
+}
+
+// dumpScopeViaSQL writes what scope asks for to dst.
+func (d *MySQLDriver) dumpScopeViaSQL(ctx context.Context, db *sql.DB, loc base.DBMSLocation, scope string, dst io.Writer) error {
 	if scope == base.ScopeSchemaOnly {
 		if err := d.dumpSchemaViaSQL(ctx, db, loc.Database, loc.Filter, dst); err != nil {
 			return fmt.Errorf("dump schema: %w", err)
@@ -307,13 +323,78 @@ func (d *MySQLDriver) dumpTriggersAndEventsViaSQL(ctx context.Context, db *sql.D
 }
 
 // dumpDataViaSQL writes INSERT statements for all rows in each table.
+// mysqlInsertBatchBytes is how long one multi-row INSERT the SQL dump writes may
+// grow before it is closed and the next begins.
+//
+// A row per INSERT made the restore one round trip and one commit per row — a
+// 500 MB table took hours over a WAN. Batched, it takes as many statements as
+// megabytes. Past 1 MB the round trips saved are seconds, while the risk grows:
+// a statement must fit the target's max_allowed_packet (4 MB on MySQL 5.7,
+// smaller on some managed services), and the dump is written before the target
+// is known. mysqldump batches to about the same size.
+const mysqlInsertBatchBytes = 1 << 20
+
+// mysqlInsertBatch accumulates one table's rows into multi-row INSERT
+// statements of at most mysqlInsertBatchBytes, one statement per line. A single
+// row longer than that still goes out, alone.
+type mysqlInsertBatch struct {
+	dst    io.Writer
+	prefix string
+	values strings.Builder
+}
+
+func newMySQLInsertBatch(dst io.Writer, prefix string) *mysqlInsertBatch {
+	return &mysqlInsertBatch{dst: dst, prefix: prefix}
+}
+
+// add appends one row's "(…)" tuple, closing the current statement first when
+// the tuple would take it past the limit.
+func (b *mysqlInsertBatch) add(tuple string) {
+	if b.values.Len() > 0 && len(b.prefix)+b.values.Len()+1+len(tuple)+2 > mysqlInsertBatchBytes {
+		b.flush()
+	}
+	if b.values.Len() > 0 {
+		b.values.WriteByte(',')
+	}
+	b.values.WriteString(tuple)
+}
+
+// flush writes the statement built so far, if any. Write errors surface when
+// the dump's buffered writer is flushed.
+func (b *mysqlInsertBatch) flush() {
+	if b.values.Len() == 0 {
+		return
+	}
+	io.WriteString(b.dst, b.prefix)          //nolint:errcheck
+	io.WriteString(b.dst, b.values.String()) //nolint:errcheck
+	io.WriteString(b.dst, ";\n")             //nolint:errcheck
+	b.values.Reset()
+}
+
+// mysqlDataPrologue and mysqlDataEpilogue wrap the rows of a dump in
+// NO_AUTO_VALUE_ON_ZERO. Without it a 0 written into an AUTO_INCREMENT column
+// is taken as "the next value", and the row comes back under another id.
+//
+// The mode is added to the session's own rather than set outright, and only
+// around the rows: a view, routine or trigger keeps the sql_mode it was
+// created under, so the schema above and the triggers below are created in the
+// session's mode untouched. mysqldump sets it for the whole file instead, and
+// sets each object's mode back by hand.
+const (
+	mysqlDataPrologue = "SET @OLD_SQL_MODE = @@SESSION.sql_mode, SESSION sql_mode = " +
+		"IF(@@SESSION.sql_mode = '', 'NO_AUTO_VALUE_ON_ZERO', CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO'));\n\n"
+	mysqlDataEpilogue = "SET SESSION sql_mode = @OLD_SQL_MODE;\n\n"
+)
+
 func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database string, filter *filterpkg.DBMSFilterOption, dst io.Writer) error {
 	tables, err := d.listTables(ctx, db, database, filter)
 	if err != nil {
 		return base.Obj{Kind: base.ObjectKindTable, Owner: database}.Fail(base.ActionList, err)
 	}
+	io.WriteString(dst, mysqlDataPrologue) //nolint:errcheck
 
 	for i, table := range tables {
+		base.ReportDumpTable(ctx, i, len(tables), table)
 		obj := base.Obj{
 			Kind: base.ObjectKindTable, Owner: database, Name: table,
 			Index: i + 1, Total: len(tables),
@@ -349,6 +430,7 @@ func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database s
 		// alike, which one stopped the scan is the part that is hard to find.
 		rowNum := 0
 		rowObj := base.Obj{Kind: base.ObjectKindTable, Owner: database, Name: table, Unit: "row"}
+		batch := newMySQLInsertBatch(dst, fmt.Sprintf("INSERT INTO `%s`%s VALUES ", table, colClause))
 		for rows.Next() {
 			rowNum++
 			vals := make([]interface{}, len(cols))
@@ -365,8 +447,9 @@ func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database s
 			for i, v := range vals {
 				parts[i] = mysqlFormatValue(v)
 			}
-			fmt.Fprintf(dst, "INSERT INTO `%s`%s VALUES (%s);\n", table, colClause, strings.Join(parts, ", "))
+			batch.add("(" + strings.Join(parts, ", ") + ")")
 		}
+		batch.flush()
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			rowObj.Index = rowNum
@@ -374,6 +457,8 @@ func (d *MySQLDriver) dumpDataViaSQL(ctx context.Context, db *sql.DB, database s
 		}
 		fmt.Fprintln(dst)
 	}
+	io.WriteString(dst, mysqlDataEpilogue) //nolint:errcheck
+	base.ReportDumpTable(ctx, len(tables), len(tables), "")
 	return nil
 }
 
@@ -403,7 +488,7 @@ func (d *MySQLDriver) dumpViaSSH(ctx context.Context, loc base.DBMSLocation, sco
 			DBMSType:    base.DBMSTypeMySQL,
 			Source:      loc.Database,
 			Destination: outputPath,
-			Command:     cmd,
+			Command:     d.BuildDumpCmd(base.RedactedLoc(loc), scope),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -431,10 +516,11 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 	}
 	defer db.Close()
 
-	content, err := os.ReadFile(inputPath)
+	f, err := os.Open(inputPath)
 	if err != nil {
-		return fmt.Errorf("read dump file: %w", err)
+		return fmt.Errorf("open dump file: %w", err)
 	}
+	defer f.Close()
 
 	// FOREIGN_KEY_CHECKS is a session variable, so every statement of the restore
 	// must run on the same connection. Pin one out of the pool instead of using
@@ -448,36 +534,280 @@ func (d *MySQLDriver) restoreViaSQL(ctx context.Context, loc base.DBMSLocation, 
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
 		return fmt.Errorf("disable FK checks: %w", err)
 	}
+	if _, err := conn.ExecContext(ctx, mysqlAllowNonStandardFK); err != nil {
+		// Then a source's foreign key on a non-unique key fails the restore
+		// where it is created, with 6125 naming it; until then nothing is lost.
+		logger.Info("mysql restore could not allow foreign keys on non-unique keys",
+			"database", loc.Database, "err", err.Error())
+	}
+	// Commit in batches rather than per statement: with autocommit on, every
+	// INSERT was a commit — a log flush on the target — and over a WAN that,
+	// with the round trip, was the whole cost of a restore. A failure leaves
+	// the uncommitted batch out, which the caller's rollback treats like any
+	// other partial restore. DDL commits implicitly, as it always did.
+	if _, err := conn.ExecContext(ctx, "SET autocommit=0, unique_checks=0"); err != nil {
+		return fmt.Errorf("disable autocommit: %w", err)
+	}
+	commits := base.NewCommitBatcher(func() error {
+		_, err := conn.ExecContext(ctx, "COMMIT")
+		return err
+	})
 
-	stmts := splitMySQLStatements(string(content))
-	var lastNotifyTable string
-	for i, stmt := range stmts {
+	// The tables the dump carries rows for, counted beside the restore so the
+	// progress can say how many are left without holding up the first statement.
+	progress := base.NewRestoreProgress(ctx, 0)
+	stopCount := progress.CountTotal(ctx, func(ctx context.Context) (int, int, error) {
+		return base.CountDump(ctx, inputPath, eachMySQLStatement, extractMySQLInsertTable)
+	})
+	defer stopCount()
+
+	// The INSERTs go out over writers of their own, several at once; everything
+	// else stays on conn, in order (see base.RowWriters). Without the extra
+	// connections - a max_user_connections too low for them - the restore runs
+	// on conn alone, as it always did.
+	writers, err := base.NewRowWriters(ctx, db, base.RestoreWriters,
+		func(n int, rows int64) { progress.Statement(n, rows, "") },
+		func(stmt string, index int, err error) error {
+			return base.RestoreStatementError(
+				base.DBMSTypeMySQL, loc.Database, stmt, index, progress.Statements(), err)
+		})
+	if err != nil {
+		logger.Info("mysql restore writes rows on one connection", "database", loc.Database, "err", err.Error())
+		writers = nil
+	} else {
+		defer writers.Close(false) //nolint:errcheck
+	}
+
+	// The secondary indexes of a table whose rows pass a threshold are dropped
+	// as they do and rebuilt once the dump has run (see base.IndexDeferrer).
+	// Dropping one needs no row in flight and nothing open on conn.
+	// The rebuild ALTERs a table other tables' foreign keys may refer to, and
+	// 8.4 checks those keys again: its connections need the restore's leave
+	// for keys on non-unique columns too.
+	deferred := base.NewIndexDeferrer(ctx, db, conn, loc.Database, []string{mysqlAllowNonStandardFK}, progress)
+	barrier := func() error {
+		if writers != nil {
+			if err := writers.Barrier(); err != nil {
+				return err
+			}
+		}
+		return commits.Flush()
+	}
+
+	var lastNotifyTable, lastTable string
+	i := 0
+	err = eachMySQLStatement(bufio.NewReaderSize(f, 1<<20), func(stmt string) error {
+		i++
 		// The splitter cuts on the delimiter, so a dump's comment block arrives
 		// attached to the statement below it. Drop the comments, keep the
 		// statement — skipping the whole entry loses real SQL (see
 		// base.StripLeadingComments).
 		stmt = base.StripLeadingComments(stmt)
 		if stmt == "" {
-			continue
+			return nil
 		}
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			return base.RestoreStatementError(
-				base.DBMSTypeMySQL, loc.Database, stmt, i+1, len(stmts), err)
-		}
+		table := extractMySQLInsertTable(stmt)
 		if notify != nil {
-			if tbl := extractMySQLInsertTable(stmt); tbl != "" && tbl != lastNotifyTable {
-				lastNotifyTable = tbl
-				notify(tbl)
+			if table != "" && table != lastNotifyTable {
+				lastNotifyTable = table
+				notify(table)
 			} else if tbl := extractMySQLCreateTable(stmt); tbl != "" {
 				notify(tbl)
 			}
 		}
+		if table != "" {
+			if err := deferred.Insert(ctx, table, len(stmt), barrier); err != nil {
+				return err
+			}
+		}
+
+		if writers != nil {
+			if table != "" {
+				// What conn has open is committed first: a writer's rows may go
+				// into a table conn's transaction holds a lock on.
+				if err := commits.Flush(); err != nil {
+					return fmt.Errorf("commit restored rows: %w", err)
+				}
+				// The table is named once, as its first rows are queued: the
+				// writers finish the statements of two tables side by side,
+				// and naming each would move the progress back and forth.
+				if table != lastTable {
+					lastTable = table
+					progress.Statement(0, 0, table)
+				}
+				return writers.Insert(stmt, i, table)
+			}
+			if base.IsMySQLTableLockStmt(stmt) {
+				return nil
+			}
+			if err := writers.Barrier(); err != nil {
+				return err
+			}
+		}
+
+		res, err := conn.ExecContext(ctx, stmt)
+		if err != nil && deferred.Pending() && mysqlMissingKeyForFK(err) {
+			// A table restored after its parent - mysqldump's order - has a
+			// foreign key on columns whose index the parent's rows have had
+			// deferred. The deferred indexes go back first, and the statement is
+			// run again; the writers are idle, behind the barrier above.
+			if err := deferred.Rebuild(ctx); err != nil {
+				return err
+			}
+			res, err = conn.ExecContext(ctx, stmt)
+		}
+		if err != nil {
+			return base.RestoreStatementError(
+				base.DBMSTypeMySQL, loc.Database, stmt, i, progress.Statements(), err)
+		}
+		if err := commits.Done(len(stmt)); err != nil {
+			return fmt.Errorf("commit restored rows: %w", err)
+		}
+		if table == "" && strings.Contains(stmt, "FOREIGN KEY") {
+			mysqlLogDeprecatedFKs(ctx, conn, loc.Database)
+		}
+		if writers != nil && base.IsMySQLSessionStmt(stmt) {
+			if err := writers.Session(stmt); err != nil {
+				return err
+			}
+		}
+		rows, _ := res.RowsAffected()
+		progress.Statement(len(stmt), rows, table)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if writers != nil {
+		if err := writers.Close(true); err != nil {
+			return err
+		}
 	}
 
+	if err := commits.Flush(); err != nil {
+		return fmt.Errorf("commit restored rows: %w", err)
+	}
+	progress.Finish()
+	if err := deferred.Rebuild(ctx); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "SET unique_checks=1, autocommit=1"); err != nil {
+		return fmt.Errorf("re-enable autocommit: %w", err)
+	}
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
 		return fmt.Errorf("re-enable FK checks: %w", err)
 	}
 	return nil
+}
+
+// mysqlAllowNonStandardFK lets a restore create a foreign key that refers to a
+// non-unique key, or to part of one. MySQL accepted those until 8.4, which
+// refuses them by default (restrict_fk_on_non_standard_key, error 6125) even
+// with FOREIGN_KEY_CHECKS off, so a database migrated from an earlier server
+// would fail on its first such key. Turned off, 8.4 creates the key as the
+// source has it, with a deprecation warning (6124) that mysqlLogDeprecatedFKs
+// passes on. The version comment keeps it from servers before 8.4, which have
+// no such variable; any account may set it for its own session.
+const mysqlAllowNonStandardFK = "/*!80400 SET SESSION restrict_fk_on_non_standard_key=OFF */"
+
+// mysqlDeprecatedFKWarning is the warning MySQL 8.4 gives a foreign key it
+// accepts under mysqlAllowNonStandardFK.
+const mysqlDeprecatedFKWarning = 6124
+
+// mysqlLogDeprecatedFKs logs the deprecation warnings the statement conn just
+// ran left behind. The key has been created; the warning is for the operator,
+// since a later MySQL release is to refuse such a key outright.
+func mysqlLogDeprecatedFKs(ctx context.Context, conn *sql.Conn, database string) {
+	rows, err := conn.QueryContext(ctx, "SHOW WARNINGS")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var level, message string
+		var code int
+		if rows.Scan(&level, &code, &message) == nil && code == mysqlDeprecatedFKWarning {
+			logger.Warn("restored a foreign key that MySQL 8.4 deprecates", "database", database, "message", message)
+		}
+	}
+}
+
+// NonStandardForeignKeys lists, as table.constraint, the foreign keys of loc's
+// database that refer to a non-unique key or to part of a unique one - those
+// MySQL 8.4 deprecates and, by default, refuses to create (see
+// mysqlAllowNonStandardFK). A key refers to a standard key when some PRIMARY or
+// UNIQUE index of the referenced table has exactly its columns, in its order.
+func (d *MySQLDriver) NonStandardForeignKeys(ctx context.Context, loc base.DBMSLocation) ([]string, error) {
+	query := mysqlNonStandardFKQuery(loc.Database)
+	if loc.IsDirect() {
+		db, err := d.openDB(loc)
+		if err != nil {
+			return nil, err
+		}
+		defer db.Close()
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var names []string
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				return nil, err
+			}
+			names = append(names, n)
+		}
+		return names, rows.Err()
+	}
+	exec, err := base.DialSSHExec(loc.SSHTunnel.SSH)
+	if err != nil {
+		return nil, err
+	}
+	defer exec.Close()
+	return d.listNamesViaSSH(exec, loc.SSHTunnel, query)
+}
+
+// mysqlNonStandardFKQuery is NonStandardForeignKeys' one query, so the direct
+// and SSH paths agree. Columns are compared in order: MySQL takes a foreign key
+// only onto an index that begins with its columns in its order, so a unique key
+// is the one it refers to only when the two lists are the same.
+func mysqlNonStandardFKQuery(database string) string {
+	db := mysqlEscape(database)
+	return `SELECT CONCAT(f.TABLE_NAME, '.', f.CONSTRAINT_NAME) AS name
+		FROM (SELECT TABLE_NAME, CONSTRAINT_NAME, REFERENCED_TABLE_SCHEMA AS rs, REFERENCED_TABLE_NAME AS rt,
+		             GROUP_CONCAT(REFERENCED_COLUMN_NAME ORDER BY ORDINAL_POSITION) AS cols
+		      FROM   information_schema.KEY_COLUMN_USAGE
+		      WHERE  TABLE_SCHEMA = '` + db + `' AND REFERENCED_TABLE_NAME IS NOT NULL
+		      GROUP  BY TABLE_NAME, CONSTRAINT_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME) f
+		WHERE NOT EXISTS (
+		      SELECT 1
+		      FROM  (SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME,
+		                    GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS cols
+		             FROM   information_schema.STATISTICS
+		             WHERE  NON_UNIQUE = 0 AND TABLE_SCHEMA IN (
+		                    SELECT REFERENCED_TABLE_SCHEMA FROM information_schema.KEY_COLUMN_USAGE
+		                    WHERE  TABLE_SCHEMA = '` + db + `' AND REFERENCED_TABLE_NAME IS NOT NULL)
+		             GROUP  BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME) u
+		      WHERE u.TABLE_SCHEMA = f.rs AND u.TABLE_NAME = f.rt AND u.cols = f.cols)
+		ORDER BY 1`
+}
+
+// mysqlMissingKeyForFK reports whether err is a foreign key refused for want
+// of an index on the columns it refers to: 1822 (MySQL), or 1005 with errno
+// 150 and 1215, the forms older servers and MariaDB give it.
+func mysqlMissingKeyForFK(err error) bool {
+	var me *mysqldrv.MySQLError
+	if !errors.As(err, &me) {
+		return false
+	}
+	switch me.Number {
+	case 1822, 1215:
+		return true
+	case 1005:
+		return strings.Contains(me.Message, "150")
+	}
+	return false
 }
 
 func (d *MySQLDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation, inputPath string, notify func(string)) error {
@@ -487,13 +817,15 @@ func (d *MySQLDriver) restoreViaSSH(ctx context.Context, loc base.DBMSLocation, 
 	}
 	defer f.Close()
 
-	cmd := d.BuildRestoreCmd(loc)
-	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, f, nil); err != nil {
+	// The CLI on the far side runs the statements, so how much of the file has
+	// been sent is all there is to report.
+	cmd := d.BuildRestoreCmd(loc, nil)
+	if err := base.ExecuteViaSSH(loc.SSHTunnel.SSH, cmd, base.NewReportingReader(ctx, f), nil); err != nil {
 		return &base.OperationError{
 			Operation:   base.OperationRestore,
 			DBMSType:    base.DBMSTypeMySQL,
 			Destination: loc.Database,
-			Command:     cmd,
+			Command:     d.BuildRestoreCmd(base.RedactedLoc(loc), nil),
 			Output:      base.SSHStderr(err),
 			Err:         err,
 		}
@@ -517,14 +849,16 @@ func (d *MySQLDriver) TestConnection(ctx context.Context, loc base.DBMSLocation)
 	}
 
 	cfg := loc.SSHTunnel
-	cmd := d.buildMySQLCmd(cfg, loc.Database) + ` -e "SELECT 1"`
+	// The command is built again for the error with the password masked.
+	cmdFor := func(cfg *base.SSHTunnelConfig) string { return d.buildMySQLCmd(cfg, loc.Database) + ` -e "SELECT 1"` }
+	cmd := cmdFor(cfg)
 	var out bytes.Buffer
 	if err := base.ExecuteViaSSH(cfg.SSH, cmd, nil, &out); err != nil {
 		return &base.OperationError{
 			Operation: base.OperationConnect,
 			DBMSType:  base.DBMSTypeMySQL,
 			Source:    loc.Database,
-			Command:   cmd,
+			Command:   cmdFor(base.RedactedLoc(loc).SSHTunnel),
 			Output:    base.SSHStderr(err),
 			Err:       err,
 		}
@@ -551,11 +885,18 @@ func (d *MySQLDriver) BuildDumpCmd(loc base.DBMSLocation, scope string) string {
 
 // BuildRestoreCmd returns the mysql CLI command used by PipeExecutor (T13)
 // to restore on the remote SSH host.
-func (d *MySQLDriver) BuildRestoreCmd(loc base.DBMSLocation) string {
+func (d *MySQLDriver) BuildRestoreCmd(loc base.DBMSLocation, _ *base.RestoreOption) string {
 	if !loc.IsSSHTunnel() {
 		return ""
 	}
-	return d.buildMySQLCmd(loc.SSHTunnel, loc.Database)
+	// The CLI takes the session the SQL path sets up for itself through
+	// --init-command: see mysqlAllowNonStandardFK. It goes ahead of the
+	// database, which ends the options.
+	cmd := d.buildMySQLCmd(loc.SSHTunnel, "") + " --init-command='" + mysqlAllowNonStandardFK + "'"
+	if loc.Database != "" {
+		cmd += " " + loc.Database
+	}
+	return cmd
 }
 
 // =============================================================================
@@ -1475,21 +1816,51 @@ func (d *MySQLDriver) queryNames(ctx context.Context, db *sql.DB, query string) 
 // =============================================================================
 
 // DescribeTable returns column and index metadata for a single table.
+//
+// The row count is filled in only when loc.Metric.MySQL.RowCountExact asks for
+// it: an exact COUNT(*) scans the table, which a caller after the structure alone
+// should not pay for. It is counted here rather than in describeTableVia*, which
+// Inspect's per-table loop also calls after counting the table itself.
 func (d *MySQLDriver) DescribeTable(ctx context.Context, loc base.DBMSLocation, table string) (*base.TableInfo, error) {
+	countQ := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s",
+		mysqlQuoteIdent(loc.Database), mysqlQuoteIdent(table))
 	if loc.IsDirect() {
 		db, err := d.openDB(loc)
 		if err != nil {
 			return nil, err
 		}
 		defer db.Close()
-		return d.describeTableViaSQL(ctx, db, loc.Database, table)
+		info, err := d.describeTableViaSQL(ctx, db, loc.Database, table)
+		if err != nil || !mysqlMetric(loc).rowCountExact {
+			return info, err
+		}
+		if err := db.QueryRowContext(ctx, countQ).Scan(&info.RowCount); err != nil {
+			return nil, fmt.Errorf("count rows in %s: %w", table, err)
+		}
+		return info, nil
 	}
 	exec, err := base.DialSSHExec(loc.SSHTunnel.SSH)
 	if err != nil {
 		return nil, err
 	}
 	defer exec.Close()
-	return d.describeTableViaSSH(ctx, exec, loc, table)
+	info, err := d.describeTableViaSSH(ctx, exec, loc, table)
+	if err != nil || !mysqlMetric(loc).rowCountExact {
+		return info, err
+	}
+	res, err := d.mysqlQueryViaSSH(exec, loc.SSHTunnel, "", countQ)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	if len(res) == 0 || len(res[0]) == 0 {
+		return nil, fmt.Errorf("count rows in %s: empty result", table)
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(res[0][0]), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("count rows in %s: %w", table, err)
+	}
+	info.RowCount = n
+	return info, nil
 }
 
 func (d *MySQLDriver) describeTableViaSQL(ctx context.Context, db *sql.DB, database, table string) (*base.TableInfo, error) {
@@ -2132,45 +2503,72 @@ func (d *MySQLDriver) listColumns(ctx context.Context, db *sql.DB, database, tab
 // correctly handling DELIMITER changes used by stored routines and triggers.
 func splitMySQLStatements(script string) []string {
 	var stmts []string
+	_ = eachMySQLStatement(strings.NewReader(script), func(stmt string) error {
+		stmts = append(stmts, stmt)
+		return nil
+	})
+	return stmts
+}
+
+// eachMySQLStatement reads a MySQL SQL script from r and calls fn with each of
+// its statements in turn, as splitMySQLStatements returns them. It stops at the
+// first error fn returns, or at a fault reading r.
+//
+// It is how a restore reads a dump: one statement in memory at a time. Reading
+// the file whole and splitting it first held a 10 GB dump in memory two and
+// three times over, and the restore reported nothing until all of it was done.
+func eachMySQLStatement(r io.Reader, fn func(stmt string) error) error {
 	delim := ";"
 	var buf strings.Builder
 
-	sc := bufio.NewScanner(strings.NewReader(script))
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	sc := bufio.NewScanner(r)
+	// The limit is one LINE, and a statement is one line: a multi-row INSERT
+	// of the SQL dump (mysqlInsertBatchBytes), or a single row holding a large
+	// BLOB. At the old 1 MB a longer line ended the scan silently, and every
+	// statement after it was dropped from the restore.
+	sc.Buffer(make([]byte, 1<<20), base.MaxStatementLine)
 
 	for sc.Scan() {
-		line := sc.Text()
-		upper := strings.ToUpper(strings.TrimSpace(line))
+		line := sc.Bytes()
 
-		if strings.HasPrefix(upper, "DELIMITER") {
+		// Only the head of the line is compared: upper-casing the whole of a
+		// megabyte INSERT to look for "DELIMITER" copied every line once more.
+		if t := bytes.TrimSpace(line); len(t) >= 9 && bytes.EqualFold(t[:9], []byte("DELIMITER")) {
 			if s := strings.TrimSpace(buf.String()); s != "" {
-				stmts = append(stmts, s)
+				if err := fn(s); err != nil {
+					return err
+				}
 			}
 			buf.Reset()
-			parts := strings.Fields(line)
+			parts := strings.Fields(string(line))
 			if len(parts) >= 2 {
 				delim = parts[1]
 			}
 			continue
 		}
 
-		buf.WriteString(line)
-		buf.WriteString("\n")
+		buf.Write(line)
+		buf.WriteByte('\n')
 
 		current := strings.TrimRight(buf.String(), " \t\r\n")
 		if strings.HasSuffix(current, delim) {
 			stmt := strings.TrimSpace(current[:len(current)-len(delim)])
-			if stmt != "" {
-				stmts = append(stmts, stmt)
-			}
 			buf.Reset()
+			if stmt != "" {
+				if err := fn(stmt); err != nil {
+					return err
+				}
+			}
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
 	}
 
 	if s := strings.TrimSpace(buf.String()); s != "" {
-		stmts = append(stmts, s)
+		return fn(s)
 	}
-	return stmts
+	return nil
 }
 
 var (

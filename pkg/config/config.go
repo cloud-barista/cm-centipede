@@ -21,6 +21,7 @@ type CentipedeConfig struct {
 	Tumblebug  TumblebugConfig  `mapstructure:"tumblebug"`
 	API        APIConfig        `mapstructure:"api"`
 	DB         DBConfig         `mapstructure:"db"`
+	Migration  MigrationConfig  `mapstructure:"migration"`
 	Encryption EncryptionConfig `mapstructure:"encryption"`
 	Logfile    LogfileConfig    `mapstructure:"logfile"`
 	Loglevel   string           `mapstructure:"loglevel"`
@@ -75,6 +76,15 @@ type AuthConfig struct {
 
 type DBConfig struct {
 	Path string `mapstructure:"path"`
+}
+
+// MigrationConfig holds server-wide defaults for migration execution.
+type MigrationConfig struct {
+	// StagingDir is the local staging root used when a migration request names
+	// none. Empty leaves the choice to transx-ex: $TMPDIR/transxex-staging, or
+	// /tmp/transxex-staging when TMPDIR is unset. Init stores it as an absolute
+	// path.
+	StagingDir string `mapstructure:"stagingDir"`
 }
 
 type EncryptionConfig struct {
@@ -143,6 +153,7 @@ func Init() {
 	_ = v.BindEnv("centipede.tumblebug.password", "CENTIPEDE_TUMBLEBUG_PASSWORD")
 	_ = v.BindEnv("centipede.api.auth.enabled", "CENTIPEDE_API_AUTH_ENABLED")
 	_ = v.BindEnv("centipede.db.path", "CENTIPEDE_DB_PATH")
+	_ = v.BindEnv("centipede.migration.stagingDir", "CENTIPEDE_MIGRATION_STAGING_DIR")
 	_ = v.BindEnv("centipede.encryption.secretKey", "CENTIPEDE_ENCRYPTION_SECRET_KEY")
 	_ = v.BindEnv("centipede.loglevel", "CENTIPEDE_LOGLEVEL")
 
@@ -164,6 +175,16 @@ func Init() {
 
 	if err := v.UnmarshalKey("centipede", &Conf); err != nil {
 		panic("failed to unmarshal config: " + err.Error())
+	}
+
+	// Resolved once here, so a relative path means the same directory however
+	// long the server runs, and the value a migration logs is the one it used.
+	if dir := strings.TrimSpace(Conf.Migration.StagingDir); dir != "" {
+		dir = ExpandTilde(dir)
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+		Conf.Migration.StagingDir = dir
 	}
 }
 

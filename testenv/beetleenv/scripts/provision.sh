@@ -257,15 +257,17 @@ provision_database_engine() {
     body="$(inject_rdbms_target "$rec" "$CSP" "$name")"
 
     # Read from the request rather than from the recommendation, because the two
-    # no longer agree: publicAccess and backupRetentionDays are re-asserted during
-    # injection (see the note on inject_rdbms_target), and it is what is about to
-    # be created that is worth printing. Named fields only - the body holds the
-    # admin password.
+    # no longer agree: publicAccess, backupRetentionDays and (on NCP)
+    # ncpDBACGToAllowAllInbound are re-asserted during injection (see the note on
+    # inject_rdbms_target), and it is what is about to be created that is worth
+    # printing. Named fields only - the body holds the admin password.
     printf '%s' "$body" | jq -r '.targetRDBMSInstances[0] |
         "  engine           \(.dbEngine) \(.dbEngineVersion)",
         "  instance spec    \(.dbInstanceSpec // "(chosen by cb-tumblebug)")",
         "  storage          \(if .storageType == "" or .storageType == null then "(managed by the CSP)" else "\(.storageType) \(.storageSize)GB" end)",
         "  public access    \(.publicAccess)",
+        (if has("ncpDBACGToAllowAllInbound") then
+        "  acg open         \(.ncpDBACGToAllowAllInbound)" else empty end),
         "  backups          \(if .backupRetentionDays == 0 then "disabled" else "\(.backupRetentionDays) days" end)"'
 
     # The recommendation is recorded, not the request body: state/ never holds a
@@ -286,11 +288,13 @@ provision_database_engine() {
     migrate POST "/migration/middleware/ns/${NS_PATH}/rdbms" "$body" \
         "${name} (a managed RDBMS takes 5-30 minutes)" "$RDBMS_TIMEOUT"
 
+    # The read has no adminUserName since cm-beetle v0.6.2; .env names the one
+    # the instance was created with.
     if bt_get "/migration/middleware/ns/${NS_PATH}/rdbms/$(urlq "$name")"; then
-        bt_payload | jq -r '
+        bt_payload | jq -r --arg u "$(csp_env "$CSP" DB_ADMIN_USERNAME)" '
             "  status           \(.status // "-")",
             "  endpoint         \(if (.endpoint // "") == "" then "(not assigned yet)" else .endpoint end)",
-            "  admin user       \(.adminUserName // "-")"'
+            "  admin user       \(.adminUserName // ($u | select(. != "") | "\(.)  (.env)") // "-")"'
     fi
 }
 

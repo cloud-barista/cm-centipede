@@ -86,7 +86,8 @@ Options:
   --keep-on-fail               keep a failed cell's source container
   --stop-on-fail               stop at the first FAIL
   --tls-mode MODE              transport security for the target (default: $TARGET_TLS_MODE)
-                               disable|prefer|require|verify-ca|verify-full
+                               auto|disable|prefer|require|verify-ca|verify-full
+                               auto — centipede picks it from cm-beetle's report
   --target-db-create WHO       who creates the target database (default: $TARGET_DB_CREATE)
                                centipede — centipede creates it and owns it, so a
                                            failed migration drops it whole
@@ -162,10 +163,16 @@ assert_tls_mode() {
 		warn "  To check it over TLS, run with --tls-mode require (it applies to every engine)."
 	done
 
+	# auto verifies against the CA cb-spider collected from the instance, so the
+	# trust-store warning belongs to the explicit verify modes alone.
 	case "$mode" in
+	auto)
+		info "TLS mode auto: centipede decides per connection from cm-beetle's secure-transport"
+		info "  report; the mode it settled on is in centipede's server log." ;;
 	verify-ca|verify-full)
 		warn "TLS mode $mode uses the system trust store only."
-		warn "  RDS and NCP sign with their own CAs, so verification may fail." ;;
+		warn "  RDS and NCP sign with their own CAs, so verification may fail."
+		warn "  --tls-mode auto verifies against the CA cb-spider collected instead." ;;
 	esac
 	return 0
 }
@@ -434,14 +441,29 @@ wait_target_reachable() {
 	done
 	printf '\n' >&2
 	fail "cannot reach the target endpoint: $RDBMS_HOST:$RDBMS_PORT (${timeout}s)"
-	fail "  Check public access (publicAccess=$RDBMS_PUBLIC) and the inbound rule on"
-	fail "  security group $(sg_name "$CSP") ($MATRIX_ALLOWED_CIDR)."
-	if [ "$(lower "$CSP")" = "ncp" ]; then
-		fail "  On NCP, check the public domain has been issued too. publicAccess is an"
-		fail "  observation, not an echo of the request: cb-spider sets it true only when the"
-		fail "  instance actually has a public domain, and falls back to the private one"
-		fail "  otherwise (ncp/resources/RDBMSHandler.go). false here means $RDBMS_HOST is"
-		fail "  the private domain, which is unreachable from outside the VPC."
+	if [ "$(lower "$CSP")" != "ncp" ]; then
+		fail "  Check public access (publicAccess=$RDBMS_PUBLIC) and the inbound rule on"
+		fail "  security group $(sg_name "$CSP") ($MATRIX_ALLOWED_CIDR)."
+		return 1
+	fi
+	# On NCP the matrix's security group plays no part: Cloud DB ignores it and
+	# runs behind an ACG of its own. Two things gate the address, checked in order.
+	if [ "$RDBMS_PUBLIC" != "true" ]; then
+		fail "  No public domain (publicAccess=$RDBMS_PUBLIC). publicAccess is an observation,"
+		fail "  not an echo of the request: cb-spider sets it true only when the instance"
+		fail "  actually has a public domain, and falls back to the private one otherwise"
+		fail "  (ncp/resources/RDBMSHandler.go). $RDBMS_HOST is the private domain, which is"
+		fail "  unreachable from outside the VPC. Request the public domain in the console."
+	fi
+	if [ "$RDBMS_ACG_OPEN" != "true" ]; then
+		fail "  The instance ACG has no inbound rule from cb-spider (ncpDBACGToAllowAllInbound="
+		fail "  ${RDBMS_ACG_OPEN:-?}). Add TCP $RDBMS_PORT in the NCP console: Server > ACG > the ACG"
+		fail "  of $RDBMS_CSP_NAME > Inbound - or set NCP_DB_ACG_ALLOW_ALL_INBOUND=true and"
+		fail "  recreate the instance."
+	fi
+	if [ "$RDBMS_PUBLIC" = "true" ] && [ "$RDBMS_ACG_OPEN" = "true" ]; then
+		fail "  Public domain and ACG rule are both in place - check this host's own outbound"
+		fail "  path to $RDBMS_HOST:$RDBMS_PORT."
 	fi
 	return 1
 }
@@ -646,6 +668,10 @@ write_result_json() {
 		# tlsMode is recorded per engine. MongoDB cannot use prefer and drops to
 		# disable, so a run-wide targetTLSMode alone would make that column's PASS
 		# read as something it is not.
+		#
+		# auto is recorded as auto. The mode centipede settled on is decided per
+		# connection and reported only in centipede's server log, so nothing here
+		# can read it back.
 		engines="$(jq -c --arg e "$engine" --argjson c "$cells" \
 			--arg tls "$(target_tls_mode "$engine")" \
 			'. + [{engine:$e, tlsMode:$tls, cells:$c}]' <<<"$engines")"
@@ -811,12 +837,23 @@ matrix_main() {
 		info "target db   : TARGET_DB_CREATE=centipede — centipede creates it through beetle and"
 		info "              owns it, so a failed cell drops it whole"
 	fi
-	info "target TLS  : TARGET_TLS_MODE=$(target_tls_mode)   (transx-ex's connection setting for the migration)"
+	if [ "$(target_tls_mode)" = "auto" ]; then
+		info "target TLS  : TARGET_TLS_MODE=auto   (centipede picks the migration's mode from cm-beetle)"
+	else
+		info "target TLS  : TARGET_TLS_MODE=$(target_tls_mode)   (transx-ex's connection setting for the migration)"
+	fi
 	for engine in $engines; do
 		tls_mode_downgraded "$engine" \
 			&& info "              $engine alone runs at $(target_tls_mode "$engine") — it does not support $(target_tls_mode)"
 	done
 	info "on failure  : dbmsOnFailure=${DBMS_ON_FAILURE:-cleanup}"
+	if [ "$(db_acg_open "$CSP")" = "true" ]; then
+		warn "target ACG  : NCP_DB_ACG_ALLOW_ALL_INBOUND=true — cb-spider opens TCP 0.0.0.0/0 -> DB port"
+		warn "              on each instance's ACG. Test instances only; each is deleted with its column."
+	elif [ "$(lower "$CSP")" = "ncp" ]; then
+		warn "target ACG  : NCP_DB_ACG_ALLOW_ALL_INBOUND=false — the instance ACG keeps no inbound"
+		warn "              rule, so add one in the console or the target will not be reachable."
+	fi
 	[ -n "$ONLY_CELLS" ] && info "cells       : $ONLY_CELLS"
 
 	assert_tls_mode "$engines" || die "TLS mode check failed. Nothing was created."
@@ -885,6 +922,7 @@ matrix_main() {
 	assert_connection "$CSP" || die "connection check failed. Nothing was created."
 	assert_src_passwords || die "credential check failed. Nothing was created."
 	assert_db_password "$CSP" || die "credential check failed. Nothing was created."
+	assert_db_access "$CSP" || die "access setting check failed. Nothing was created."
 	ensure_namespace || die "could not prepare the namespace. Nothing was created."
 
 	sub "3) target versions — checked against the cb-tumblebug catalogue"
@@ -986,11 +1024,11 @@ matrix_defaults() {
 	# target ahead of time gets the second - so both are runnable.
 	TARGET_DB_CREATE="$(lower "${TARGET_DB_CREATE:-centipede}")"
 
-	# Transport security for the target. prefer is the default because a managed
-	# instance offers TLS either way, so the connection is encrypted in practice,
-	# and it still reaches the ones that refuse plaintext (MariaDB 11.8+, RDS
-	# PostgreSQL).
-	TARGET_TLS_MODE="${TARGET_TLS_MODE:-prefer}"
+	# Transport security for the target. auto is the default because it is what a
+	# beetleDb reference does when nothing is said: centipede asks cm-beetle how the
+	# instance does TLS and connects to match - verified where cb-spider collected
+	# a CA, plaintext where the instance offers no TLS (NCP).
+	TARGET_TLS_MODE="${TARGET_TLS_MODE:-auto}"
 	MONGODB_AUTH_SOURCE="${MONGODB_AUTH_SOURCE:-admin}"
 
 	# There is no secure-transport switch and no PostgreSQL template setting on this

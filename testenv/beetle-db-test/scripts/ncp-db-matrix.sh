@@ -52,7 +52,7 @@ CSP_TITLE="NCP"
 csp_after_instance_ready() {
 	local engine="$1" dver="$2"
 
-	sub "NCP public domain — waiting on the console step"
+	sub "NCP public domain / ACG — waiting on the console step"
 	info "instance      : $RDBMS_NAME  (status ${RDBMS_STATUS:-?})"
 	info "current address: ${RDBMS_ENDPOINT:-(none)}   publicAccess=${RDBMS_PUBLIC:-?}"
 	info "CSP resource  : $(rdbms_csp_label)"
@@ -60,6 +60,13 @@ csp_after_instance_ready() {
 	info "Request the public domain in the NCP console:"
 	info "  Database > Cloud DB for ${engine} > select the DB server"
 	info "    > DB Management > Public Domain Management > Request"
+	if [ "$(db_acg_open "$CSP")" = "true" ]; then
+		info "The ACG inbound rule is cb-spider's job (NCP_DB_ACG_ALLOW_ALL_INBOUND=true); it is"
+		info "checked after Enter."
+	else
+		info "Add the ACG inbound rule as well (NCP_DB_ACG_ALLOW_ALL_INBOUND=false):"
+		info "  Server > ACG > the ACG of the DB server > Inbound > TCP ${RDBMS_PORT:-<db port>}"
+	fi
 
 	wait_enter "once the console request is done"
 
@@ -70,6 +77,19 @@ csp_after_instance_ready() {
 	if ! rdbms_info "$CSP" "$RDBMS_NAME"; then
 		bt_report "could not read the instance back: $RDBMS_NAME"
 		return 1
+	fi
+
+	# Not a stop either. cb-spider treats a failed ACG rule as a warning and the
+	# create as a success, so this read is the only place the failure shows; and
+	# a reused instance, or a rule added by hand, may still be fine.
+	if [ "$RDBMS_ACG_OPEN" = "true" ]; then
+		ok "ACG inbound rule confirmed (ncpDBACGToAllowAllInbound=true)"
+	elif [ "$(db_acg_open "$CSP")" = "true" ]; then
+		warn "ncpDBACGToAllowAllInbound is false although it was requested — cb-spider could not"
+		warn "  add the ACG rule (or this is a reused instance created without it). Add it in the"
+		warn "  console: Server > ACG > the ACG of $RDBMS_CSP_NAME > Inbound > TCP ${RDBMS_PORT:-<db port>}"
+	else
+		warn "ACG inbound rule not requested — the reachability check passes only if one was added by hand."
 	fi
 
 	if [ "$RDBMS_PUBLIC" = "true" ]; then

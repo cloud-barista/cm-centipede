@@ -2,12 +2,18 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"github.com/cloud-barista/cm-centipede/transx-ex/core"
 	base "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/driver/base"
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // =============================================================================
@@ -58,7 +64,7 @@ func TestBuildDumpCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 
 func TestBuildRestoreCmd_ContainsMySQL(t *testing.T) {
 	drv := NewMySQLDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelMySQL())
+	cmd := drv.BuildRestoreCmd(sshTunnelMySQL(), nil)
 	if !strings.HasPrefix(cmd, "mysql") {
 		t.Errorf("BuildRestoreCmd should start with 'mysql': %s", cmd)
 	}
@@ -1218,5 +1224,604 @@ func TestMysqlBuildDSN_CarriesTheTLSParam(t *testing.T) {
 	}
 	if !strings.Contains(dsn, "tls=skip-verify") {
 		t.Errorf("DSN does not carry the TLS parameter:\n%s", dsn)
+	}
+}
+
+// =============================================================================
+// Restore round trips (MySQL server required)
+// =============================================================================
+//
+// These put dumps back through Restore and compare what lands with what was
+// dumped. The fixture alone is a couple of rows per table, which never reaches
+// the paths a real restore takes - an INSERT split across statements and
+// written over several connections - so each test adds rtRows rows first.
+
+const rtRows = 200000
+
+// rtRowsPerInsert keeps one INSERT near the megabyte the SQL dump batches to.
+const rtRowsPerInsert = 10000
+
+func rtOpen(t *testing.T, loc base.DBMSLocation) *sql.DB {
+	t.Helper()
+	db, err := NewMySQLDriver().openDB(loc)
+	if err != nil {
+		t.Fatalf("open %s: %v", loc.Database, err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+func rtExec(t *testing.T, db *sql.DB, stmts ...string) {
+	t.Helper()
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+}
+
+// rtFreshDB creates an empty database name, dropped again when the test ends.
+func rtFreshDB(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+	rtExec(t, db, "DROP DATABASE IF EXISTS `"+name+"`", "CREATE DATABASE `"+name+"`")
+	t.Cleanup(func() { db.Exec("DROP DATABASE IF EXISTS `" + name + "`") })
+}
+
+// rtTS is row i's TIMESTAMP, in UTC.
+func rtTS(i int) time.Time { return time.Unix(int64(1700000000+i*37), 0).UTC() }
+
+// rtValues renders rows [from, to) as INSERT value tuples. Row 0 is in the
+// AUTO_INCREMENT column, which comes back as 0 only under NO_AUTO_VALUE_ON_ZERO.
+func rtValues(from, to int) string {
+	var sb strings.Builder
+	for i := from; i < to; i++ {
+		if i > from {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, "(%d,'%s','%x',%d)", i, rtTS(i).Format("2006-01-02 15:04:05"), uint64(i)*2654435761, (i*7919)%100000)
+	}
+	return sb.String()
+}
+
+const rtBulkTable = "CREATE TABLE `rt_bulk` (`id` INT AUTO_INCREMENT PRIMARY KEY, `ts` TIMESTAMP NULL, " +
+	"`v` VARCHAR(32), `n` INT, UNIQUE KEY `uq_v` (`v`), KEY `idx_n` (`n`), KEY `idx_ts` (`ts`))"
+
+// rtFillBulk adds rt_bulk to the source database for the test's duration.
+func rtFillBulk(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	for _, s := range []string{
+		"SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO')",
+		"SET SESSION time_zone = '+00:00'",
+		"DROP TABLE IF EXISTS `rt_bulk`",
+		rtBulkTable,
+	} {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS `rt_bulk`") })
+	for from := 0; from < rtRows; from += rtRowsPerInsert {
+		if _, err := conn.ExecContext(ctx, "INSERT INTO `rt_bulk` VALUES "+rtValues(from, min(from+rtRowsPerInsert, rtRows))); err != nil {
+			t.Fatalf("fill rt_bulk: %v", err)
+		}
+	}
+}
+
+// rtSnapshot describes a database as far as a restore must reproduce it: each
+// table's rows and checksum, and the objects around them - triggers and
+// routines with the sql_mode they were created under.
+func rtSnapshot(t *testing.T, db *sql.DB, schema string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	rows, err := db.Query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'", schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var n string
+		rows.Scan(&n)
+		tables = append(tables, n)
+	}
+	rows.Close()
+	for _, tbl := range tables {
+		var count int64
+		var name string
+		var sum sql.NullInt64
+		db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, tbl)).Scan(&count)
+		db.QueryRow(fmt.Sprintf("CHECKSUM TABLE `%s`.`%s`", schema, tbl)).Scan(&name, &sum)
+		out["table "+tbl] = fmt.Sprintf("rows=%d checksum=%d", count, sum.Int64)
+		// The definition whole: an index put back without its COMMENT, its
+		// prefix length or its visibility shows here and nowhere else.
+		var create string
+		db.QueryRow(fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schema, tbl)).Scan(&name, &create)
+		out["create "+tbl] = rtNormalizeCreate(create)
+	}
+	for label, q := range map[string]string{
+		"indexes":  "SELECT CONCAT(TABLE_NAME, '.', INDEX_NAME, ':', NON_UNIQUE, ':', COLUMN_NAME) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ?",
+		"fks":      "SELECT CONCAT(TABLE_NAME, '.', CONSTRAINT_NAME) FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = ?",
+		"views":    "SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = ?",
+		"triggers": "SELECT CONCAT(TRIGGER_NAME, ':', SQL_MODE) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?",
+		"routines": "SELECT CONCAT(ROUTINE_TYPE, ' ', ROUTINE_NAME, ':', SQL_MODE) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ?",
+		"events":   "SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ?",
+	} {
+		rows, err := db.Query(q, schema)
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		var vals []string
+		for rows.Next() {
+			var v string
+			rows.Scan(&v)
+			vals = append(vals, v)
+		}
+		rows.Close()
+		sort.Strings(vals)
+		out[label] = strings.Join(vals, "; ")
+	}
+	return out
+}
+
+// rtAutoIncrement is the counter SHOW CREATE TABLE prints, which a restore need
+// not reproduce: it follows the rows, not the definition.
+var rtAutoIncrement = regexp.MustCompile(` AUTO_INCREMENT=\d+`)
+
+// rtNormalizeCreate makes a SHOW CREATE TABLE comparable across a restore: the
+// AUTO_INCREMENT counter goes, and the key and constraint lines are sorted.
+// InnoDB lists indexes in the order they were created, so the ones a restore
+// deferred come back last; the columns keep their order, which is part of the
+// definition.
+func rtNormalizeCreate(create string) string {
+	lines := strings.Split(rtAutoIncrement.ReplaceAllString(create, ""), "\n")
+	var cols, keys []string
+	var head, tail string
+	for i, l := range lines {
+		switch {
+		case i == 0:
+			head = l
+		case strings.HasPrefix(l, ")"):
+			tail = strings.Join(lines[i:], "\n")
+		case strings.HasPrefix(l, "  `"):
+			cols = append(cols, strings.TrimSuffix(l, ","))
+		default:
+			keys = append(keys, strings.TrimSuffix(l, ","))
+		}
+		if tail != "" {
+			break
+		}
+	}
+	sort.Strings(keys)
+	return head + "\n" + strings.Join(cols, ",\n") + "\n--\n" + strings.Join(keys, ",\n") + "\n" + tail
+}
+
+// rtFillIndexes adds rt_idx, a table with every kind of index a restore may
+// defer or must leave alone, and - where the server allows a foreign key on a
+// non-unique key - rt_ref, whose key refers to one of rt_idx's plain indexes.
+func rtFillIndexes(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS `rt_ref`, `rt_idx`") })
+	for _, s := range []string{
+		"SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO')",
+		"DROP TABLE IF EXISTS `rt_ref`, `rt_idx`",
+		"CREATE TABLE `rt_idx` (`id` INT AUTO_INCREMENT PRIMARY KEY, `a` INT, `b` VARCHAR(100), `c` TEXT, " +
+			"`d` INT, `bulk_id` INT, " +
+			"KEY `k_a` (`a`) COMMENT 'a plain key, (with) punctuation', KEY `k_b_prefix` (`b`(10)), " +
+			"KEY `k_d_desc` (`d` DESC), KEY `k_ad_invisible` (`a`, `d`) INVISIBLE, KEY `k_func` ((`d` + 1)), " +
+			"UNIQUE KEY `uq_b` (`b`), FULLTEXT KEY `ft_c` (`c`), KEY `k_bulk` (`bulk_id`), " +
+			"CONSTRAINT `fk_idx_bulk` FOREIGN KEY (`bulk_id`) REFERENCES `rt_bulk` (`id`)) ENGINE=InnoDB",
+		"INSERT INTO `rt_idx` VALUES (0, 0, 'zero', 'the zero row', 0, 1)",
+	} {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	var sb strings.Builder
+	for i := 1; i <= 2000; i++ {
+		if i > 1 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, "(%d,%d,'row %d','words for row %d and some text',%d,%d)", i, i%50, i, i, i, i)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO `rt_idx` VALUES "+sb.String()); err != nil {
+		t.Fatalf("fill rt_idx: %v", err)
+	}
+	// A foreign key on a non-unique key, as a source from before MySQL 8.4 may
+	// hold one: 8.4 refuses it unless the session allows it, the way a restore's
+	// does. The restore has to carry it over, and leave k_a in place for it.
+	if _, err := conn.ExecContext(ctx, mysqlAllowNonStandardFK); err != nil {
+		t.Fatalf("allow non-standard foreign keys: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE `rt_ref` (`id` INT PRIMARY KEY, `a` INT, KEY `k_ref_a` (`a`), "+
+		"CONSTRAINT `fk_ref_a` FOREIGN KEY (`a`) REFERENCES `rt_idx` (`a`)) ENGINE=InnoDB"); err != nil {
+		t.Fatalf("create rt_ref: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO `rt_ref` VALUES (1, 1), (2, 2)"); err != nil {
+		t.Fatalf("fill rt_ref: %v", err)
+	}
+}
+
+// rtPhases records the phases a restore reports, and the tables it reports
+// rebuilding, for a check that an operator watching the progress is told.
+type rtPhases struct {
+	mu      sync.Mutex
+	seen    []string
+	rebuilt map[string]bool
+}
+
+func (r *rtPhases) ctx(ctx context.Context) context.Context {
+	return core.WithReporter(ctx, core.ReporterFunc(func(u core.Update) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if u.Phase != "" && (len(r.seen) == 0 || r.seen[len(r.seen)-1] != u.Phase) {
+			r.seen = append(r.seen, u.Phase)
+		}
+		if strings.HasPrefix(u.Phase, base.PhaseRebuildingIndexes) && u.Item != "" {
+			if r.rebuilt == nil {
+				r.rebuilt = map[string]bool{}
+			}
+			r.rebuilt[u.Item] = true
+		}
+	}))
+}
+
+// rtRebuildPhase is how a restore reports its rebuild: the tables finished out
+// of how many, then the ones in progress, each with a percentage where the
+// server keeps one.
+var rtRebuildPhase = regexp.MustCompile(`^rebuilding indexes: (\d+)/(\d+) tables((, \w+( \d+%)?)*)$`)
+
+// check wants the restore to have reported holding indexes back, then
+// rebuilding them - table among them - until every one is done, in that order.
+func (r *rtPhases) check(t *testing.T, table string) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t.Logf("phases reported: %q", r.seen)
+	deferred, rebuilding, finished := -1, -1, false
+	for i, p := range r.seen {
+		if strings.HasPrefix(p, "indexes deferred: ") && deferred < 0 {
+			deferred = i
+		}
+		if !strings.HasPrefix(p, base.PhaseRebuildingIndexes) {
+			continue
+		}
+		rebuilding = i
+		m := rtRebuildPhase.FindStringSubmatch(p)
+		if m == nil {
+			t.Errorf("rebuild phase %q is not \"rebuilding indexes: n/N tables[, table[ p%%]]...\"", p)
+			continue
+		}
+		finished = finished || (m[1] == m[2] && m[3] == "")
+	}
+	if deferred < 0 || rebuilding < deferred {
+		t.Errorf("phases reported = %q, want the indexes held back and then rebuilt", r.seen)
+	}
+	if !finished {
+		t.Errorf("phases reported = %q, want the rebuild reported finished, n/n tables", r.seen)
+	}
+	if !r.rebuilt[table] {
+		t.Errorf("tables reported rebuilding = %v, want %s among them", r.rebuilt, table)
+	}
+}
+
+// rtWithDeferBytes runs fn with base.RestoreIndexDeferBytes at v, and the
+// rebuild's progress asked for often enough to catch a build that takes a
+// fraction of a second.
+func rtWithDeferBytes(t *testing.T, v int64, fn func()) {
+	t.Helper()
+	oldBytes, oldEvery := base.RestoreIndexDeferBytes, base.RebuildProgressEvery
+	base.RestoreIndexDeferBytes, base.RebuildProgressEvery = v, 20*time.Millisecond
+	defer func() { base.RestoreIndexDeferBytes, base.RebuildProgressEvery = oldBytes, oldEvery }()
+	fn()
+}
+
+func rtCompare(t *testing.T, db *sql.DB, src, dst string) {
+	t.Helper()
+	want, got := rtSnapshot(t, db, src), rtSnapshot(t, db, dst)
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s: %s = %q, source has %q", dst, k, got[k], w)
+		}
+	}
+	for k := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("%s: %s is not in the source", dst, k)
+		}
+	}
+}
+
+// rtRestoreFails runs a restore that must fail and checks it returns: a writer
+// failing while others are mid-statement must not leave the restore waiting.
+func rtRestoreFails(t *testing.T, loc base.DBMSLocation, path string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- NewMySQLDriver().Restore(context.Background(), loc, path, nil) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("restore onto rows already there succeeded, want a duplicate key error")
+		} else if !strings.Contains(err.Error(), "Duplicate entry") {
+			t.Errorf("restore error = %v, want a duplicate key error", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("restore onto rows already there did not return")
+	}
+}
+
+// TestMySQLDumpRestore_Full round-trips the driver's own full dump - schema,
+// rows, triggers and events - into an empty database, once for each way the
+// restore may treat the secondary indexes: deferred from the first row, deferred
+// partway through rt_bulk's rows, and left to the automatic threshold, which a
+// table this size stays under. Then it restores the rows once more onto the
+// rows already there.
+func TestMySQLDumpRestore_Full(t *testing.T) {
+	env := mysqlTestSetup(t)
+	drv := NewMySQLDriver()
+	ctx := context.Background()
+
+	src := env.loc
+	src.Database = env.srcDB
+	db := rtOpen(t, src)
+	rtFillBulk(t, db)
+	rtFillIndexes(t, db)
+
+	dir := t.TempDir()
+	if err := drv.Dump(ctx, src, base.ScopeFull, dir+"/full.sql", nil, nil); err != nil {
+		t.Fatalf("Dump full: %v", err)
+	}
+	dst := src
+	dst.Database = "testdb_rt"
+	for _, c := range []struct {
+		name  string
+		bytes int64
+	}{
+		{"defer from the first row", 0},
+		{"defer partway", 2 << 20},
+		{"automatic", base.DeferIndexAuto},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rtFreshDB(t, db, dst.Database)
+			phases := rtPhases{}
+			rtWithDeferBytes(t, c.bytes, func() {
+				if err := drv.Restore(phases.ctx(ctx), dst, dir+"/full.sql", nil); err != nil {
+					t.Fatalf("Restore full: %v", err)
+				}
+			})
+			rtCompare(t, db, src.Database, dst.Database)
+			// rt_idx's FULLTEXT index is held back under every setting, so the
+			// progress has to say so, and then show it rebuilt.
+			phases.check(t, "rt_idx")
+		})
+	}
+
+	rtFreshDB(t, db, dst.Database)
+	if err := drv.Restore(ctx, dst, dir+"/full.sql", nil); err != nil {
+		t.Fatalf("Restore full: %v", err)
+	}
+	if err := drv.Dump(ctx, src, base.ScopeDataOnly, dir+"/data.sql", nil, nil); err != nil {
+		t.Fatalf("Dump data-only: %v", err)
+	}
+	rtRestoreFails(t, dst, dir+"/data.sql")
+}
+
+// rtMysqldump is a dump in mysqldump's shape: the session it sets up around the
+// rows (TIME_ZONE, SQL_MODE), LOCK TABLES around each table's INSERTs, and the
+// session put back at the end. A staged dump from an ssh-tunnel source has this
+// shape and is restored over the SQL path.
+func rtMysqldump() string {
+	var sb strings.Builder
+	sb.WriteString("-- MySQL dump 10.13  Distrib 8.0, for Linux (x86_64)\n" +
+		"--\n-- Host: localhost    Database: testdb_src\n" +
+		"-- ------------------------------------------------------\n\n" +
+		"/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n" +
+		"/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;\n" +
+		"/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;\n" +
+		"/*!50503 SET NAMES utf8mb4 */;\n" +
+		"/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;\n" +
+		"/*!40103 SET TIME_ZONE='+00:00' */;\n" +
+		"/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;\n" +
+		"/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n" +
+		"/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n" +
+		"/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;\n\n" +
+		"--\n-- Table structure for table `rt_bulk`\n--\n\n" +
+		"DROP TABLE IF EXISTS `rt_bulk`;\n" +
+		"/*!40101 SET @saved_cs_client     = @@character_set_client */;\n" +
+		"/*!50503 SET character_set_client = utf8mb4 */;\n" +
+		rtBulkTable + ";\n" +
+		"/*!40101 SET character_set_client = @saved_cs_client */;\n\n" +
+		"--\n-- Dumping data for table `rt_bulk`\n--\n\n" +
+		"LOCK TABLES `rt_bulk` WRITE;\n" +
+		"/*!40000 ALTER TABLE `rt_bulk` DISABLE KEYS */;\n")
+	for from := 0; from < rtRows; from += rtRowsPerInsert {
+		sb.WriteString("INSERT INTO `rt_bulk` VALUES " + rtValues(from, min(from+rtRowsPerInsert, rtRows)) + ";\n")
+	}
+	sb.WriteString("/*!40000 ALTER TABLE `rt_bulk` ENABLE KEYS */;\n" +
+		"UNLOCK TABLES;\n" +
+		"/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;\n\n" +
+		"/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n" +
+		"/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n" +
+		"/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;\n" +
+		"/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;\n" +
+		"/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;\n" +
+		"/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;\n" +
+		"/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;\n\n" +
+		"-- Dump completed\n")
+	return sb.String()
+}
+
+// TestMySQLRestore_MysqldumpFormat restores a mysqldump-shaped dump with the
+// server's default zone moved off UTC. Every connection the restore writes
+// rows over has to run the dump's SET TIME_ZONE and SQL_MODE, or the
+// TIMESTAMPs land shifted and row 0 under another id; and LOCK TABLES, taken
+// by one connection, must not keep the others out.
+func TestMySQLRestore_MysqldumpFormat(t *testing.T) {
+	env := mysqlTestSetup(t)
+	src := env.loc
+	src.Database = env.srcDB
+	db := rtOpen(t, src)
+
+	var zone string
+	if err := db.QueryRow("SELECT @@GLOBAL.time_zone").Scan(&zone); err != nil {
+		t.Fatal(err)
+	}
+	rtExec(t, db, "SET GLOBAL time_zone = '+09:00'")
+	t.Cleanup(func() { db.Exec("SET GLOBAL time_zone = ?", zone) })
+
+	dst := src
+	dst.Database = "testdb_rt_cli"
+	rtFreshDB(t, db, dst.Database)
+	path := t.TempDir() + "/mysqldump.sql"
+	if err := os.WriteFile(path, []byte(rtMysqldump()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewMySQLDriver().Restore(context.Background(), dst, path, nil); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	var count, zeros int
+	var tsSum, nSum int64
+	if err := db.QueryRow("SELECT COUNT(*), SUM(id = 0), SUM(UNIX_TIMESTAMP(ts)), SUM(n) FROM `testdb_rt_cli`.`rt_bulk`").
+		Scan(&count, &zeros, &tsSum, &nSum); err != nil {
+		t.Fatal(err)
+	}
+	var wantTS, wantN int64
+	for i := 0; i < rtRows; i++ {
+		wantTS += rtTS(i).Unix()
+		wantN += int64((i * 7919) % 100000)
+	}
+	if count != rtRows || zeros != 1 {
+		t.Errorf("rows = %d with %d of id 0, want %d with 1", count, zeros, rtRows)
+	}
+	if tsSum != wantTS {
+		t.Errorf("sum of TIMESTAMPs = %d, want %d (off by %ds a row)", tsSum, wantTS, (tsSum-wantTS)/int64(rtRows))
+	}
+	if nSum != wantN {
+		t.Errorf("sum of n = %d, want %d", nSum, wantN)
+	}
+}
+
+// rtParentChildDump is a mysqldump-shaped dump in mysqldump's order, a table at
+// a time: rt_parent and its rows, then rt_child, whose foreign key refers to
+// rt_parent's plain index k_k. With the indexes deferred from the first row,
+// k_k is gone by the time rt_child is created.
+func rtParentChildDump() string {
+	var sb strings.Builder
+	sb.WriteString("/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n" +
+		"/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n" +
+		"DROP TABLE IF EXISTS `rt_parent`;\n" +
+		"CREATE TABLE `rt_parent` (`id` INT PRIMARY KEY, `k` INT, KEY `k_k` (`k`)) ENGINE=InnoDB;\n" +
+		"LOCK TABLES `rt_parent` WRITE;\n")
+	for from := 0; from < 20000; from += 5000 {
+		sb.WriteString("INSERT INTO `rt_parent` VALUES ")
+		for i := from; i < from+5000; i++ {
+			if i > from {
+				sb.WriteByte(',')
+			}
+			fmt.Fprintf(&sb, "(%d,%d)", i, i%100)
+		}
+		sb.WriteString(";\n")
+	}
+	sb.WriteString("UNLOCK TABLES;\n" +
+		"DROP TABLE IF EXISTS `rt_child`;\n" +
+		"CREATE TABLE `rt_child` (`id` INT PRIMARY KEY, `k` INT, KEY `k_child` (`k`), " +
+		"CONSTRAINT `fk_child_k` FOREIGN KEY (`k`) REFERENCES `rt_parent` (`k`)) ENGINE=InnoDB;\n" +
+		"LOCK TABLES `rt_child` WRITE;\n" +
+		"INSERT INTO `rt_child` VALUES (1,1),(2,2),(3,3);\n" +
+		"UNLOCK TABLES;\n" +
+		"/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n" +
+		"/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n")
+	return sb.String()
+}
+
+// TestMySQLRestore_DeferredIndexFKOrder restores rtParentChildDump with the
+// indexes deferred from the first row: rt_child's foreign key needs the index
+// rt_parent's rows had deferred, which has to be back for it, and both tables
+// must end as the dump defines them.
+func TestMySQLRestore_DeferredIndexFKOrder(t *testing.T) {
+	env := mysqlTestSetup(t)
+	src := env.loc
+	src.Database = env.srcDB
+	db := rtOpen(t, src)
+
+	dst := src
+	dst.Database = "testdb_rt_fk"
+	rtFreshDB(t, db, dst.Database)
+	path := t.TempDir() + "/parent-child.sql"
+	if err := os.WriteFile(path, []byte(rtParentChildDump()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rtWithDeferBytes(t, 0, func() {
+		if err := NewMySQLDriver().Restore(context.Background(), dst, path, nil); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+	})
+
+	var name, parent, child string
+	db.QueryRow("SHOW CREATE TABLE `testdb_rt_fk`.`rt_parent`").Scan(&name, &parent)
+	db.QueryRow("SHOW CREATE TABLE `testdb_rt_fk`.`rt_child`").Scan(&name, &child)
+	if !strings.Contains(parent, "KEY `k_k` (`k`)") {
+		t.Errorf("rt_parent lost k_k:\n%s", parent)
+	}
+	if !strings.Contains(child, "CONSTRAINT `fk_child_k` FOREIGN KEY (`k`) REFERENCES `rt_parent` (`k`)") {
+		t.Errorf("rt_child lost its foreign key:\n%s", child)
+	}
+	var parents, children int
+	db.QueryRow("SELECT (SELECT COUNT(*) FROM `testdb_rt_fk`.`rt_parent`), (SELECT COUNT(*) FROM `testdb_rt_fk`.`rt_child`)").
+		Scan(&parents, &children)
+	if parents != 20000 || children != 3 {
+		t.Errorf("rows = %d parents, %d children, want 20000 and 3", parents, children)
+	}
+}
+
+// TestMySQLNonStandardForeignKeys finds the foreign keys MySQL 8.4 deprecates
+// - on a non-unique key, or on part of a unique one - and only those: a key on
+// a primary key, or on a whole unique key, is standard.
+func TestMySQLNonStandardForeignKeys(t *testing.T) {
+	env := mysqlTestSetup(t)
+	src := env.loc
+	src.Database = env.srcDB
+	db := rtOpen(t, src)
+	rtFillBulk(t, db)
+	rtFillIndexes(t, db)
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS `rt_part_child`, `rt_order_child`, `rt_pair`") })
+	for _, s := range []string{
+		mysqlAllowNonStandardFK,
+		"DROP TABLE IF EXISTS `rt_part_child`, `rt_order_child`, `rt_pair`",
+		"CREATE TABLE `rt_pair` (`id` INT PRIMARY KEY, `x` INT, `y` INT, UNIQUE KEY `uq_xy` (`x`, `y`)) ENGINE=InnoDB",
+		"CREATE TABLE `rt_part_child` (`id` INT PRIMARY KEY, `x` INT, " +
+			"CONSTRAINT `fk_part` FOREIGN KEY (`x`) REFERENCES `rt_pair` (`x`)) ENGINE=InnoDB",
+		"CREATE TABLE `rt_order_child` (`id` INT PRIMARY KEY, `x` INT, `y` INT, " +
+			"CONSTRAINT `fk_whole` FOREIGN KEY (`x`, `y`) REFERENCES `rt_pair` (`x`, `y`)) ENGINE=InnoDB",
+	} {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+
+	got, err := NewMySQLDriver().NonStandardForeignKeys(ctx, src)
+	if err != nil {
+		t.Fatalf("NonStandardForeignKeys: %v", err)
+	}
+	want := []string{"rt_part_child.fk_part", "rt_ref.fk_ref_a"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("NonStandardForeignKeys = %v, want %v", got, want)
 	}
 }

@@ -26,8 +26,8 @@ cd "$(dirname "$0")"
 # ── Settings — from .env (cp .env.example .env) ──────────────────────────────
 # Every variable below the checks comes from there: HB_BASE, CP_BASE, CP_USER,
 # CP_PASS, SRC_PROVIDER, SRC_HOST, SRC_PORT, SRC_DB_USER, SRC_DB_PASS, SRC_DB,
-# NS_ID, RDBMS_ID, DB_PASSWORD, DST_DB, NAME, POLL. .env.example says what each
-# one is.
+# NS_ID, RDBMS_ID, DB_USER, DB_PASSWORD, DST_DB, NAME, POLL. .env.example says
+# what each one is.
 #
 # A variable already set in the shell wins over the file, so one value can be
 # changed for one run - and the two passwords can be kept out of the file:
@@ -155,17 +155,17 @@ echo "    collected: $(echo "$SRC_MODEL" | jq -r '[.sourceDataMigrationModel.dat
 # The two ends are named in completely different ways. The source arrives inside
 # "source" as honeybee collected it, carrying a honeybee reference cm-centipede
 # resolves back into the NCP host and the account it was given in step 2. The
-# target is a cm-beetle reference plus one secret: beetleDb names an instance
-# that already exists and cm-centipede reads its host, port and admin account
-# from cm-beetle — but not the password, which cm-beetle never hands back, so it
-# travels here. It doubles as the admin password for creating the target
+# target is a cm-beetle reference plus the admin login: beetleDb names an
+# instance that already exists and cm-centipede reads its host and port from
+# cm-beetle — but not the login, which cm-beetle never hands back (the user name
+# has been missing from its RDBMS read since v0.6.2), so both travel here and
+# username is required. They double as the admin login for creating the target
 # database, which cm-centipede does itself.
 #
-# username is deliberately not sent: empty means "the instance admin as cm-beetle
-# reports it", and naming it too only creates a way for the two to disagree.
-#
-# tlsMode "prefer" encrypts where the instance offers TLS and still connects
-# where it does not — the same value the source connection uses.
+# tlsMode "auto" lets cm-centipede pick the mode from what cm-beetle reports on
+# the instance - verify-full against the CA cb-spider collected, for RDS. It is
+# also what an absent tlsMode means; it is written out here to be seen. The
+# source connection stays on prefer: auto exists on a beetleDb reference only.
 #
 # dbmsFilter names the one database on the server and drops one view from it.
 # Validation knows about the rule, so the view is reported as excluded rather
@@ -187,8 +187,9 @@ RESPONSE=$(curl -s -X POST "$CP_BASE/plans/target" -u "$CP_AUTH" \
             \"beetleDb\": {
               \"nsId\": \"$NS_ID\",
               \"rdbmsId\": \"$RDBMS_ID\",
+              \"username\": \"${DB_USER:-dbadmin}\",
               \"password\": \"$DB_PASSWORD\",
-              \"tlsMode\": \"prefer\"
+              \"tlsMode\": \"auto\"
             }
           },
           \"dbmsFilter\": {

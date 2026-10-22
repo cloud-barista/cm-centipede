@@ -1,16 +1,12 @@
 package validation
 
 import (
+	"context"
 	"fmt"
-	"net"
-	"os"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
-
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 	targetmodel "github.com/cloud-barista/cm-centipede/dmdl/target-model"
@@ -20,33 +16,40 @@ import (
 )
 
 // ValidateFileSystem checks that each dst folder in m contains exactly the same files
-// as the corresponding src folder, with identical SHA256 checksums.
-// Returns one ValidationDetailItem per mismatch (missing file, extra file, or hash diff).
-// Connection errors are reported as a failed item for the folder root.
-func ValidateFileSystem(m targetmodel.MigrationFileSystemModel) ([]model.ValidationDetailItem, error) {
-	// Cross-storage (filesystem→objectstorage) compares heterogeneous endpoints
-	// (SSH checksums vs S3 ETags) and is not yet supported; report it as skipped
-	// rather than failing to resolve the object-storage destination as SSH.
-	if m.DstType == commonmodel.StorageTypeObjectStorage {
-		return []model.ValidationDetailItem{{
-			ItemPath: "",
-			Status:   "skipped",
-			Message:  "cross-storage validation (filesystem→objectstorage) is not supported",
-		}}, nil
-	}
+// as the corresponding src folder. opt.Mode decides what "the same" means: size
+// and modification time (ModeQuick), or size and SHA256 (ModeChecksum).
+// Returns one ValidationDetailItem per mismatch (missing file, extra file, or a
+// size, time or hash diff). Connection errors are reported as a failed item for
+// the folder root.
+//
+// A folder that landed in object storage (cross-storage) is compared by path
+// and size only, whatever opt.Mode says — see validateCrossStorage.
+func ValidateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemModel, opt Options) ([]model.ValidationDetailItem, error) {
+	cross := m.DstType == commonmodel.StorageTypeObjectStorage
 
 	srcSSH, err := resolveSSHConfig(m.SrcConnection)
 	if err != nil {
 		return nil, fmt.Errorf("resolve src connection: %w", err)
 	}
-	dstSSH, err := resolveSSHConfig(m.DstConnection)
-	if err != nil {
-		return nil, fmt.Errorf("resolve dst connection: %w", err)
+	var dstSSH *transxex.SSHConfig
+	if !cross {
+		if dstSSH, err = resolveSSHConfig(m.DstConnection); err != nil {
+			return nil, fmt.Errorf("resolve dst connection: %w", err)
+		}
 	}
 
 	var details []model.ValidationDetailItem
-	for _, folder := range m.Folders {
-		folderDetails, err := validateSSHFolder(srcSSH, dstSSH, folder.SrcPath, folder.DstPath, folder.Rules)
+	for i, folder := range m.Folders {
+		fopt := opt.within(itemLabel(i, len(m.Folders), folder.SrcPath))
+		var folderDetails []model.ValidationDetailItem
+		if cross {
+			folderDetails, err = validateCrossStorage(
+				func() (map[string]int64, error) { return folderSizes(ctx, srcSSH, folder.SrcPath) },
+				func() (map[string]int64, error) { return bucketSizes(m.DstConnection, folder.DstPath) },
+				folder.SrcPath, folder.DstPath, folder.Rules, "file", "object", fopt)
+		} else {
+			folderDetails, err = validateSSHFolder(ctx, srcSSH, dstSSH, folder.SrcPath, folder.DstPath, folder.Rules, fopt)
+		}
 		if err != nil {
 			details = append(details, model.ValidationDetailItem{
 				ItemPath: folder.SrcPath,
@@ -60,40 +63,111 @@ func ValidateFileSystem(m targetmodel.MigrationFileSystemModel) ([]model.Validat
 	return details, nil
 }
 
-// validateSSHFolder computes per-file SHA256 checksums on both hosts and
-// returns a failed ValidationDetailItem for each discrepancy.
+// validateSSHFolder reads both folders and returns a failed ValidationDetailItem
+// for each discrepancy.
+//
+// Both ends are listed first — size, modification time and path, one find per
+// host, seconds for any number of files — and both at once. In ModeChecksum the
+// files are then hashed, again on both hosts at once and with every core each
+// has, but only those whose hash can still decide something: a file the filter
+// dropped, one missing from the destination or one already differing in size
+// is reported from the listing alone.
 //
 // rules are the filter the migration applied to this folder. They change the
 // source direction only: a file the filter dropped is absent from the
 // destination on purpose, so it is not a miss. The destination direction keeps
-// reading the WHOLE source listing — see the three outcomes below.
-func validateSSHFolder(srcCfg, dstCfg *transxex.SSHConfig, srcPath, dstPath string, rules []commonmodel.PathFilterRule) ([]model.ValidationDetailItem, error) {
+// reading the WHOLE source listing — see the three outcomes in compareFileTrees.
+func validateSSHFolder(
+	ctx context.Context,
+	srcCfg, dstCfg *transxex.SSHConfig,
+	srcPath, dstPath string,
+	rules []commonmodel.PathFilterRule,
+	opt Options,
+) ([]model.ValidationDetailItem, error) {
 	flt, err := newMigrationFilter(rules)
 	if err != nil {
 		return nil, fmt.Errorf("build migration filter: %w", err)
 	}
+	mode := opt.mode()
 
-	srcFiles, err := remoteFiles(srcCfg, srcPath, flt.needsSize())
+	opt.report(mode + " · listing files")
+	var srcFiles, dstFiles map[string]remoteFile
+	err = bothSides(
+		func() (err error) {
+			if srcFiles, err = listFiles(ctx, srcCfg, srcPath); err != nil {
+				return fmt.Errorf("list src files %s: %w", srcPath, err)
+			}
+			return nil
+		},
+		func() (err error) {
+			if dstFiles, err = listFiles(ctx, dstCfg, dstPath); err != nil {
+				return fmt.Errorf("list dst files %s: %w", dstPath, err)
+			}
+			return nil
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("compute src checksums %s: %w", srcPath, err)
-	}
-	// Sizes are only ever read to answer a size rule against the source, which is
-	// the side the filter was applied to. The destination never needs them.
-	dstFiles, err := remoteFiles(dstCfg, dstPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("compute dst checksums %s: %w", dstPath, err)
+		return nil, err
 	}
 
-	return compareFileTrees(srcFiles, dstFiles, flt, srcPath, dstPath), nil
+	if mode == ModeChecksum {
+		paths := pathsToHash(srcFiles, dstFiles, flt)
+		progress := newSideProgress(opt, mode+" · hashing", len(paths), "files")
+		var srcHashes, dstHashes map[string]string
+		err = bothSides(
+			func() (err error) {
+				srcHashes, err = hashFiles(ctx, srcCfg, srcPath, paths, func() { progress.advance(true) })
+				if err != nil {
+					return fmt.Errorf("compute src checksums %s: %w", srcPath, err)
+				}
+				return nil
+			},
+			func() (err error) {
+				dstHashes, err = hashFiles(ctx, dstCfg, dstPath, paths, func() { progress.advance(false) })
+				if err != nil {
+					return fmt.Errorf("compute dst checksums %s: %w", dstPath, err)
+				}
+				return nil
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range paths {
+			s, d := srcFiles[p], dstFiles[p]
+			s.hash, d.hash = srcHashes[p], dstHashes[p]
+			srcFiles[p], dstFiles[p] = s, d
+		}
+	}
+
+	return compareFileTrees(srcFiles, dstFiles, flt, srcPath, dstPath, mode), nil
 }
 
-// compareFileTrees is validateSSHFolder's verdict, with the two remote reads
+// pathsToHash lists the files whose hashes compareFileTrees will compare: the
+// ones the migration carried that the destination also holds at the same size.
+// Every other source file is already decided by the listing.
+func pathsToHash(srcFiles, dstFiles map[string]remoteFile, flt *migrationFilter) []string {
+	var paths []string
+	for relPath, src := range srcFiles {
+		if flt.excludesFile(relPath, src.size) {
+			continue
+		}
+		if dst, ok := dstFiles[relPath]; ok && dst.size == src.size {
+			paths = append(paths, relPath)
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// compareFileTrees is validateSSHFolder's verdict, with the remote reads
 // already done. Separated so the comparison — which is where the filter changes
 // what is reported — can be exercised without a host to SSH into.
 func compareFileTrees(
 	srcFiles, dstFiles map[string]remoteFile,
 	flt *migrationFilter,
 	srcPath, dstPath string,
+	mode string,
 ) []model.ValidationDetailItem {
 	found := newFindings(srcPath)
 
@@ -112,9 +186,23 @@ func compareFileTrees(
 			continue
 		}
 		dst, ok := dstFiles[relPath]
-		if !ok {
+		switch {
+		case !ok:
 			found.fail(srcPath+"/"+relPath, "file missing in destination")
-		} else if src.hash != dst.hash {
+		case src.size != dst.size:
+			found.fail(srcPath+"/"+relPath,
+				fmt.Sprintf("size differs: src=%d dst=%d bytes", src.size, dst.size))
+		case mode == ModeQuick && src.mtime != dst.mtime:
+			// Whole seconds: rsync -a carries the time across, but not every
+			// filesystem keeps the fraction.
+			found.fail(srcPath+"/"+relPath,
+				fmt.Sprintf("modification time differs: src=%s dst=%s",
+					time.Unix(src.mtime, 0).UTC().Format(time.RFC3339),
+					time.Unix(dst.mtime, 0).UTC().Format(time.RFC3339)))
+		case mode == ModeChecksum && (src.hash == "" || dst.hash == ""):
+			// Listed but not hashed: the file went away between the two reads.
+			found.fail(srcPath+"/"+relPath, "checksum unavailable: file changed during validation")
+		case mode == ModeChecksum && src.hash != dst.hash:
 			found.fail(srcPath+"/"+relPath,
 				fmt.Sprintf("checksum mismatch: src=%s dst=%s", src.hash, dst.hash))
 		}
@@ -155,185 +243,45 @@ func compareFileTrees(
 	return found.summarise(len(excluded), "file(s) excluded by the migration filter")
 }
 
-// remoteFile is one regular file as both ends are read back: its content hash,
-// and its size when a size rule made the size worth fetching.
+// remoteFile is one regular file as both ends are read back: its size and
+// modification time (whole seconds) from the listing, and its content hash
+// when ModeChecksum hashed it.
 type remoteFile struct {
-	hash string
-	size int64
+	size  int64
+	mtime int64
+	hash  string
 }
 
-// remoteFiles returns a map of relative-path → remoteFile for every regular file
-// found recursively under root on the host described by cfg.
-// The relative path is stripped of the leading root prefix.
-//
-// withSize adds a second command that reads the sizes. It is asked for only when
-// the folder's filter carries a size rule, because that is the only thing sizes
-// decide here — the comparison itself is by hash, and an extra walk of the tree
-// on a remote host is not worth paying for a field nothing reads.
-func remoteFiles(cfg *transxex.SSHConfig, root string, withSize bool) (map[string]remoteFile, error) {
-	// Use print0/xargs -0 to handle filenames with spaces or special characters.
-	cmd := fmt.Sprintf(
-		"find %s -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null",
-		shellQuote(root),
-	)
-	out, err := runSSHCommand(cfg, cmd)
+// sshFolder is the folder at root on the SSH host cfg describes, as transx-ex
+// takes a location.
+func sshFolder(cfg *transxex.SSHConfig, root string) transxex.StorageLocation {
+	return transxex.StorageLocation{
+		StorageType: transxex.StorageTypeFilesystem,
+		Path:        root,
+		Filesystem:  &transxex.FilesystemAccess{AccessType: transxex.AccessTypeSSH, SSH: cfg},
+	}
+}
+
+// listFiles reads every regular file under root on the host described by cfg,
+// keyed by its path relative to root. transx-ex reads the tree the way the
+// migration wrote it.
+func listFiles(ctx context.Context, cfg *transxex.SSHConfig, root string) (map[string]remoteFile, error) {
+	list, err := transxex.ListFiles(ctx, sshFolder(cfg, root))
 	if err != nil {
 		return nil, err
 	}
-
-	result := make(map[string]remoteFile)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
-		// sha256sum output: "<hash>  <absolute path>" (two spaces)
-		idx := strings.Index(line, "  ")
-		if idx < 0 {
-			continue
-		}
-		hash := strings.TrimSpace(line[:idx])
-		relPath := relativeTo(root, line[idx+2:])
-		if relPath == "" || hash == "" {
-			continue
-		}
-		result[relPath] = remoteFile{hash: hash}
+	files := make(map[string]remoteFile, len(list))
+	for _, f := range list {
+		files[f.Path] = remoteFile{size: f.Size, mtime: f.ModTime}
 	}
-
-	if !withSize {
-		return result, nil
-	}
-	if err := addRemoteSizes(cfg, root, result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return files, nil
 }
 
-// addRemoteSizes fills in the size of every file already listed in files.
-//
-// NUL-delimited like the hash command above, so a newline in a file name cannot
-// shift the parse. -printf is GNU find, which is the same family the surrounding
-// find -print0 / sort -z / xargs -0 already assumes.
-func addRemoteSizes(cfg *transxex.SSHConfig, root string, files map[string]remoteFile) error {
-	cmd := fmt.Sprintf(
-		"find %s -type f -printf '%%s\\t%%p\\0' 2>/dev/null",
-		shellQuote(root),
-	)
-	out, err := runSSHCommand(cfg, cmd)
-	if err != nil {
-		return err
-	}
-
-	for _, record := range strings.Split(out, "\x00") {
-		if record == "" {
-			continue
-		}
-		size, fullPath, found := strings.Cut(record, "\t")
-		if !found {
-			continue
-		}
-		relPath := relativeTo(root, fullPath)
-		entry, ok := files[relPath]
-		if !ok {
-			continue
-		}
-		n, err := strconv.ParseInt(strings.TrimSpace(size), 10, 64)
-		if err != nil {
-			continue
-		}
-		entry.size = n
-		files[relPath] = entry
-	}
-	return nil
-}
-
-// relativeTo strips root and the separator that follows it from an absolute path.
-func relativeTo(root, fullPath string) string {
-	return strings.TrimPrefix(strings.TrimPrefix(fullPath, root), "/")
-}
-
-// runSSHCommand opens an SSH session to the host described by cfg, executes command,
-// and returns the combined stdout+stderr output as a string.
-func runSSHCommand(cfg *transxex.SSHConfig, command string) (string, error) {
-	authMethods, err := buildAuthMethods(cfg)
-	if err != nil {
-		return "", fmt.Errorf("build SSH auth: %w", err)
-	}
-	if len(authMethods) == 0 {
-		return "", fmt.Errorf("no SSH authentication method available for %s", cfg.Host)
-	}
-
-	timeout := 30 * time.Second
-	if cfg.ConnectTimeout > 0 {
-		timeout = time.Duration(cfg.ConnectTimeout) * time.Second
-	}
-	port := cfg.Port
-	if port == 0 {
-		port = 22
-	}
-
-	clientCfg := &ssh.ClientConfig{
-		User:            cfg.Username,
-		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec — host key verification is handled at infrastructure level
-		Timeout:         timeout,
-	}
-
-	addr := fmt.Sprintf("%s:%d", cfg.Host, port)
-	client, err := ssh.Dial("tcp", addr, clientCfg)
-	if err != nil {
-		return "", fmt.Errorf("SSH dial %s: %w", addr, err)
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("SSH new session: %w", err)
-	}
-	defer session.Close()
-
-	out, err := session.CombinedOutput(command)
-	if err != nil {
-		return "", fmt.Errorf("SSH command failed on %s: %w", addr, err)
-	}
-	return string(out), nil
-}
-
-// buildAuthMethods constructs SSH auth methods from cfg.
-// Priority: PrivateKey string → PrivateKeyPath file → SSH agent.
-func buildAuthMethods(cfg *transxex.SSHConfig) ([]ssh.AuthMethod, error) {
-	var methods []ssh.AuthMethod
-
-	if strings.TrimSpace(cfg.PrivateKey) != "" {
-		key := normalizePrivateKey(cfg.PrivateKey)
-		signer, err := ssh.ParsePrivateKey([]byte(key))
-		if err != nil {
-			return nil, fmt.Errorf("parse private key: %w", err)
-		}
-		methods = append(methods, ssh.PublicKeys(signer))
-	}
-
-	if len(methods) == 0 && strings.TrimSpace(cfg.PrivateKeyPath) != "" {
-		keyBytes, err := os.ReadFile(cfg.PrivateKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("read private key file %s: %w", cfg.PrivateKeyPath, err)
-		}
-		signer, err := ssh.ParsePrivateKey(keyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("parse private key file: %w", err)
-		}
-		methods = append(methods, ssh.PublicKeys(signer))
-	}
-
-	if len(methods) == 0 || cfg.UseAgent {
-		if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-			conn, err := net.Dial("unix", sock)
-			if err == nil {
-				methods = append(methods, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
-			}
-		}
-	}
-
-	return methods, nil
+// hashFiles returns the SHA256 of each of paths, relative to root, on the host
+// described by cfg. onFile is called once for every file hashed, as its hash
+// arrives.
+func hashFiles(ctx context.Context, cfg *transxex.SSHConfig, root string, paths []string, onFile func()) (map[string]string, error) {
+	return transxex.HashFiles(ctx, sshFolder(cfg, root), paths, func(string) { onFile() })
 }
 
 // resolveSSHConfig maps a ConnectionRef to a transxex.SSHConfig.
@@ -344,42 +292,43 @@ func resolveSSHConfig(ref commonmodel.ConnectionRef) (*transxex.SSHConfig, error
 	return migration.ResolveSSHConfig(ref)
 }
 
-// normalizePrivateKey converts escaped newline sequences to real newlines.
-// Handles keys stored as single-line strings in YAML or environment variables.
-func normalizePrivateKey(key string) string {
-	if strings.Contains(key, "\n") && !strings.Contains(key, "\\n") {
-		return key
-	}
-	return strings.ReplaceAll(key, "\\n", "\n")
-}
-
-// shellQuote wraps s in single quotes for safe shell interpolation,
-// escaping any embedded single quotes.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // ── Object Storage Validation ─────────────────────────────────────────────────
 
 // ValidateObjectStorage checks that each dst bucket in m contains exactly the same
 // objects as the corresponding src bucket, with identical ETags.
 // Returns one ValidationDetailItem per mismatch (missing object, extra object, or ETag diff).
 // Connection errors are reported as a failed item for the bucket path.
-func ValidateObjectStorage(m targetmodel.MigrationObjectStorageModel) ([]model.ValidationDetailItem, error) {
-	// Cross-storage (objectstorage→filesystem) compares heterogeneous endpoints
-	// (S3 ETags vs SSH checksums) and is not yet supported; report it as skipped
-	// rather than failing to resolve the SSH destination as object storage.
-	if m.DstType == commonmodel.StorageTypeFilesystem {
-		return []model.ValidationDetailItem{{
-			ItemPath: "",
-			Status:   "skipped",
-			Message:  "cross-storage validation (objectstorage→filesystem) is not supported",
-		}}, nil
+//
+// Objects are compared from their listings alone — nothing is downloaded — so
+// opt.Mode does not apply here.
+func ValidateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStorageModel, opt Options) ([]model.ValidationDetailItem, error) {
+	// A bucket that landed on a file system (cross-storage) is compared by path
+	// and size only — see validateCrossStorage.
+	cross := m.DstType == commonmodel.StorageTypeFilesystem
+	var dstSSH *transxex.SSHConfig
+	if cross {
+		var err error
+		if dstSSH, err = resolveSSHConfig(m.DstConnection); err != nil {
+			return nil, fmt.Errorf("resolve dst connection: %w", err)
+		}
 	}
 
 	var details []model.ValidationDetailItem
-	for _, bucket := range m.Buckets {
-		bucketDetails, err := validateObjectBucket(m.SrcConnection, m.DstConnection, bucket.SrcPath, bucket.DstPath, bucket.Rules)
+	for i, bucket := range m.Buckets {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		bopt := opt.within(itemLabel(i, len(m.Buckets), bucket.SrcPath))
+		var bucketDetails []model.ValidationDetailItem
+		var err error
+		if cross {
+			bucketDetails, err = validateCrossStorage(
+				func() (map[string]int64, error) { return bucketSizes(m.SrcConnection, bucket.SrcPath) },
+				func() (map[string]int64, error) { return folderSizes(ctx, dstSSH, bucket.DstPath) },
+				bucket.SrcPath, bucket.DstPath, bucket.Rules, "object", "file", bopt)
+		} else {
+			bucketDetails, err = validateObjectBucket(m.SrcConnection, m.DstConnection, bucket.SrcPath, bucket.DstPath, bucket.Rules, bopt)
+		}
 		if err != nil {
 			details = append(details, model.ValidationDetailItem{
 				ItemPath: bucket.SrcPath,
@@ -399,7 +348,7 @@ func ValidateObjectStorage(m targetmodel.MigrationObjectStorageModel) ([]model.V
 // validateSSHFolder reads a folder's: excluded objects are not misses on the way
 // out, and an excluded object found in the destination is a warning rather than
 // the false claim that the source does not have it.
-func validateObjectBucket(srcRef, dstRef commonmodel.ConnectionRef, srcPath, dstPath string, rules []commonmodel.PathFilterRule) ([]model.ValidationDetailItem, error) {
+func validateObjectBucket(srcRef, dstRef commonmodel.ConnectionRef, srcPath, dstPath string, rules []commonmodel.PathFilterRule, opt Options) ([]model.ValidationDetailItem, error) {
 	flt, err := newMigrationFilter(rules)
 	if err != nil {
 		return nil, fmt.Errorf("build migration filter: %w", err)
@@ -428,14 +377,27 @@ func validateObjectBucket(srcRef, dstRef commonmodel.ConnectionRef, srcPath, dst
 	_, srcPrefix := transxex.ParseBucketAndKey(srcPath)
 	_, dstPrefix := transxex.ParseBucketAndKey(dstPath)
 
-	srcObjects, err := srcProvider.ListObjects(srcPrefix)
+	// Both listings at once: they are different endpoints.
+	opt.report("listing objects")
+	var srcObjects, dstObjects []transxex.ObjectInfo
+	err = bothSides(
+		func() (err error) {
+			if srcObjects, err = srcProvider.ListObjects(srcPrefix); err != nil {
+				return fmt.Errorf("list src objects: %w", err)
+			}
+			return nil
+		},
+		func() (err error) {
+			if dstObjects, err = dstProvider.ListObjects(dstPrefix); err != nil {
+				return fmt.Errorf("list dst objects: %w", err)
+			}
+			return nil
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("list src objects: %w", err)
+		return nil, err
 	}
-	dstObjects, err := dstProvider.ListObjects(dstPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("list dst objects: %w", err)
-	}
+	opt.report(fmt.Sprintf("comparing %s src · %s dst objects", commas(len(srcObjects)), commas(len(dstObjects))))
 
 	srcMap := buildObjectMap(srcObjects, srcPrefix)
 	dstMap := buildObjectMap(dstObjects, dstPrefix)
@@ -541,6 +503,165 @@ func normalizeETag(etag string) string {
 	return strings.Trim(etag, `"`)
 }
 
+// ── Cross-Storage Validation ──────────────────────────────────────────────────
+
+// validateCrossStorage compares a folder against a bucket prefix, or a bucket
+// prefix against a folder: one end a file system, the other object storage.
+//
+// By path and size only, whatever Options.Mode asks for. The two ends share no
+// cheap content fingerprint to set side by side — a file has no ETag, and an
+// ETag is an MD5 only for an object uploaded in one part — and a modification
+// time does not survive the move into object storage. A listing of each end
+// still says what matters most: every file arrived, at its size, and nothing
+// else is there.
+//
+// srcList and dstList each read one end, keyed by path relative to the migrated
+// folder or prefix — the key the transfer wrote by and the filter judges.
+// srcNoun and dstNoun name what each end holds, for the messages.
+func validateCrossStorage(
+	srcList, dstList func() (map[string]int64, error),
+	srcPath, dstPath string,
+	rules []commonmodel.PathFilterRule,
+	srcNoun, dstNoun string,
+	opt Options,
+) ([]model.ValidationDetailItem, error) {
+	flt, err := newMigrationFilter(rules)
+	if err != nil {
+		return nil, fmt.Errorf("build migration filter: %w", err)
+	}
+
+	opt.report("cross-storage · listing")
+	var src, dst map[string]int64
+	err = bothSides(
+		func() (err error) {
+			if src, err = srcList(); err != nil {
+				return fmt.Errorf("list src %ss %s: %w", srcNoun, srcPath, err)
+			}
+			return nil
+		},
+		func() (err error) {
+			if dst, err = dstList(); err != nil {
+				return fmt.Errorf("list dst %ss %s: %w", dstNoun, dstPath, err)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	opt.report(fmt.Sprintf("cross-storage · comparing %s %ss · %s %ss",
+		commas(len(src)), srcNoun, commas(len(dst)), dstNoun))
+
+	return compareCrossTrees(src, dst, flt, srcPath, dstPath, srcNoun, dstNoun), nil
+}
+
+// compareCrossTrees is validateCrossStorage's verdict, with both listings read.
+// The outcomes are compareFileTrees' without the time and hash checks: missing,
+// a different size, or present in the destination only — a warning rather than
+// a failure when the source has it but the filter kept it out.
+func compareCrossTrees(
+	src, dst map[string]int64,
+	flt *migrationFilter,
+	srcPath, dstPath string,
+	srcNoun, dstNoun string,
+) []model.ValidationDetailItem {
+	found := newFindings(srcPath)
+
+	srcKeys := make([]string, 0, len(src))
+	for k := range src {
+		srcKeys = append(srcKeys, k)
+	}
+	sort.Strings(srcKeys)
+
+	excluded := make(map[string]bool)
+	for _, rel := range srcKeys {
+		size := src[rel]
+		if flt.excludesFile(rel, size) {
+			excluded[rel] = true
+			continue
+		}
+		dstSize, ok := dst[rel]
+		switch {
+		case !ok:
+			found.fail(joinItem(srcPath, rel), srcNoun+" missing in destination")
+		case dstSize != size:
+			found.fail(joinItem(srcPath, rel),
+				fmt.Sprintf("size differs: src=%d dst=%d bytes", size, dstSize))
+		}
+	}
+
+	dstKeys := make([]string, 0, len(dst))
+	for k := range dst {
+		dstKeys = append(dstKeys, k)
+	}
+	sort.Strings(dstKeys)
+
+	for _, rel := range dstKeys {
+		if _, ok := src[rel]; !ok {
+			found.fail(joinItem(dstPath, rel), dstNoun+" exists in destination but not in source")
+			continue
+		}
+		if excluded[rel] {
+			found.notice(srcNoun+"(s) excluded by the migration filter"+
+				" but present in the destination", rel)
+		}
+	}
+
+	return found.summarise(len(excluded), srcNoun+"(s) excluded by the migration filter")
+}
+
+// folderSizes lists every regular file under root on the host cfg describes,
+// by size, keyed by its path relative to root.
+func folderSizes(ctx context.Context, cfg *transxex.SSHConfig, root string) (map[string]int64, error) {
+	files, err := listFiles(ctx, cfg, root)
+	if err != nil {
+		return nil, err
+	}
+	sizes := make(map[string]int64, len(files))
+	for rel, f := range files {
+		sizes[rel] = f.size
+	}
+	return sizes, nil
+}
+
+// bucketSizes lists every object under the bucket path at ref, by size, keyed by
+// its key relative to the path's prefix — the same key transx-ex wrote a file
+// to, or read an object from, so it lines up with a folder's relative paths.
+//
+// A key ending in "/" is a folder marker some tools write: it names a
+// directory, which a file system lists as no file, so it is left out.
+func bucketSizes(ref commonmodel.ConnectionRef, bucketPath string) (map[string]int64, error) {
+	loc, err := resolveOSLoc(ref, bucketPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve location: %w", err)
+	}
+	provider, err := transxex.NewS3Provider(loc)
+	if err != nil {
+		return nil, fmt.Errorf("create S3 provider: %w", err)
+	}
+	defer transxex.CloseS3Provider(provider) //nolint:errcheck
+
+	_, prefix := transxex.ParseBucketAndKey(bucketPath)
+	objects, err := provider.ListObjects(prefix)
+	if err != nil {
+		return nil, err
+	}
+	sizes := make(map[string]int64, len(objects))
+	for rel, o := range buildObjectMap(objects, prefix) {
+		if strings.HasSuffix(rel, "/") {
+			continue
+		}
+		sizes[rel] = o.size
+	}
+	return sizes, nil
+}
+
+// joinItem joins a folder or bucket path and a relative path for an ItemPath,
+// without doubling the slash a bucket path keeps at its end.
+func joinItem(root, rel string) string {
+	return strings.TrimSuffix(root, "/") + "/" + rel
+}
+
 // ── DBMS Validation ───────────────────────────────────────────────────────────
 
 // ValidateDBMS compares every database this model migrated: per-table row counts
@@ -549,55 +670,258 @@ func normalizeETag(etag string) string {
 // Comparing data alone would miss anything without rows — a view, a function, a
 // trigger — and those are exactly what fails quietly, most often because a
 // MySQL/MariaDB DEFINER clause names a user the target does not have.
-func ValidateDBMS(m targetmodel.MigrationDBModel) ([]model.ValidationDetailItem, error) {
-	dbType := string(m.DBType)
-	metric := validationMetric(m.DBType)
-
+//
+// A database that cannot be read is reported as one failed item and the next
+// one is validated: one unreachable database does not erase what the others
+// would have said. opt.Mode does not apply here.
+func ValidateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, opt Options) ([]model.ValidationDetailItem, error) {
 	var details []model.ValidationDetailItem
-	for _, d := range m.Databases {
-		dstName := d.DstName
-		if dstName == "" {
-			dstName = d.SrcName
+	for i, d := range m.Databases {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-
-		srcLoc, err := resolveDBLoc(m.SrcConnection, d.SrcName, dbType)
+		dopt := opt.within(itemLabel(i, len(m.Databases), d.SrcName))
+		dbDetails, err := validateDatabase(ctx, m, d, dopt)
 		if err != nil {
-			return nil, fmt.Errorf("resolve src connection: %w", err)
+			details = append(details, model.ValidationDetailItem{
+				ItemPath: d.SrcName,
+				Status:   "failed",
+				Message:  fmt.Sprintf("validation error: %v", err),
+			})
+			continue
 		}
-		dstLoc, err := resolveDBLoc(m.DstConnection, dstName, dbType)
-		if err != nil {
-			return nil, fmt.Errorf("resolve dst connection: %w", err)
-		}
-
-		// Both sides are inspected through the same schema selection the migration
-		// ran under. Without it each side would report every schema in its database,
-		// and a migration of one schema out of several would be compared against
-		// tables it never touched.
-		srcSchemas, dstSchemas := splitPgSchemaPairs(d.PgSchemas)
-		srcLoc.PgSchema = srcSchemas
-		dstLoc.PgSchema = dstSchemas
-		if len(dstLoc.PgSchema) == 0 {
-			dstLoc.PgSchema = srcSchemas
-		}
-
-		// Both sides are inspected with the same opt-in metrics; see validationMetric.
-		srcLoc.Metric = metric
-		dstLoc.Metric = metric
-
-		srcInfo, err := transxex.InspectDBMS(srcLoc)
-		if err != nil {
-			return nil, fmt.Errorf("inspect src database %q: %w", d.SrcName, err)
-		}
-		dstInfo, err := transxex.InspectDBMS(dstLoc)
-		if err != nil {
-			return nil, fmt.Errorf("inspect dst database %q: %w", dstName, err)
-		}
-
-		details = append(details, compareDBTables(srcInfo, dstInfo, len(dstSchemas) > 0, d.Rules)...)
-		details = append(details, compareSchemaObjects(srcInfo, dstInfo, d.Rules)...)
-		details = append(details, compareCharsets(srcInfo, dstInfo)...)
+		details = append(details, dbDetails...)
 	}
 	return details, nil
+}
+
+// validateDatabase validates one database of m in two passes.
+//
+// The first inspects both sides at once without exact row counts: the table
+// list, the schema objects and the character set, in seconds. The second
+// replaces the row counts — statistics estimates until then — with exact ones,
+// table by table through DescribeTable, which is what lets the progress line
+// name how many tables are done. One Inspect counting every table itself says
+// nothing until it has counted the last of them.
+func validateDatabase(
+	ctx context.Context,
+	m targetmodel.MigrationDBModel,
+	d targetmodel.DBMigrationInfo,
+	opt Options,
+) ([]model.ValidationDetailItem, error) {
+	dbType := string(m.DBType)
+	dstName := d.DstName
+	if dstName == "" {
+		dstName = d.SrcName
+	}
+
+	srcLoc, err := resolveDBLoc(m.SrcConnection, d.SrcName, dbType)
+	if err != nil {
+		return nil, fmt.Errorf("resolve src connection: %w", err)
+	}
+	dstLoc, err := resolveDBLoc(m.DstConnection, dstName, dbType)
+	if err != nil {
+		return nil, fmt.Errorf("resolve dst connection: %w", err)
+	}
+
+	// Both sides are inspected through the same schema selection the migration
+	// ran under. Without it each side would report every schema in its database,
+	// and a migration of one schema out of several would be compared against
+	// tables it never touched.
+	srcSchemas, dstSchemas := splitPgSchemaPairs(d.PgSchemas)
+	srcLoc.PgSchema = srcSchemas
+	dstLoc.PgSchema = dstSchemas
+	if len(dstLoc.PgSchema) == 0 {
+		dstLoc.PgSchema = srcSchemas
+	}
+
+	// Both sides are inspected with the same opt-in metrics; see validationMetric.
+	metric := validationMetric(m.DBType)
+	srcLoc.Metric = metric
+	dstLoc.Metric = metric
+
+	opt.report("inspecting tables and schema objects")
+	var srcInfo, dstInfo *transxex.DBMSInfo
+	err = bothSides(
+		func() (err error) {
+			if srcInfo, err = transxex.InspectDBMS(srcLoc); err != nil {
+				return fmt.Errorf("inspect src database %q: %w", d.SrcName, err)
+			}
+			return nil
+		},
+		func() (err error) {
+			if dstInfo, err = transxex.InspectDBMS(dstLoc); err != nil {
+				return fmt.Errorf("inspect dst database %q: %w", dstName, err)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	renamed := len(dstSchemas) > 0
+	var details []model.ValidationDetailItem
+	details = append(details, countRows(ctx, srcLoc, dstLoc, m.DBType, srcInfo, dstInfo, renamed, d.Rules, opt)...)
+	details = append(details, compareDBTables(srcInfo, dstInfo, renamed, d.Rules)...)
+	details = append(details, compareSchemaObjects(srcInfo, dstInfo, d.Rules)...)
+	details = append(details, compareCharsets(srcInfo, dstInfo)...)
+	details = append(details, deprecatedForeignKeys(dstLoc, dstInfo)...)
+	return details, nil
+}
+
+// deprecatedForeignKeys warns of the foreign keys a MySQL 8.4 target holds on a
+// non-unique or partial key. The migration created them as the source had
+// them, so they are not a failure; but 8.4 deprecates them and a later release
+// is to refuse them, which the operator should know before upgrading. A target
+// whose keys cannot be read is not reported on: this is a warning, and the
+// validation stands without it.
+func deprecatedForeignKeys(dstLoc transxex.DBMSLocation, dst *transxex.DBMSInfo) []model.ValidationDetailItem {
+	if !transxex.RestrictsNonStandardForeignKeys(dstLoc.DBMSType, dst.ServerVersion) {
+		return nil
+	}
+	keys, err := transxex.NonStandardForeignKeys(dstLoc)
+	if err != nil {
+		return nil
+	}
+	var details []model.ValidationDetailItem
+	for _, k := range keys {
+		details = append(details, model.ValidationDetailItem{
+			ItemPath: dstLoc.Database + "/foreign_key:" + k,
+			Status:   "warning",
+			Message: fmt.Sprintf("refers to a non-unique or partial key, which MySQL %s deprecates; "+
+				"a later release refuses it, so give the referenced columns a UNIQUE key before upgrading", dst.ServerVersion),
+		})
+	}
+	return details
+}
+
+// rowCountConcurrency is how many tables are counted at once. Each count is a
+// connection to either side, and a COUNT(*) scans its table, so this is kept
+// well below what a server allows.
+const rowCountConcurrency = 4
+
+// countRows replaces the row counts in src and dst — statistics estimates, as
+// Inspect left them — with exact ones, one DescribeTable per table on each side.
+//
+// Only the tables whose counts compareDBTables compares are counted: one the
+// filter dropped, or one absent from either side, is decided without a count. A
+// table whose count could not be read is reported and taken out of both
+// listings, so an estimate never stands in for an exact count.
+func countRows(
+	ctx context.Context,
+	srcLoc, dstLoc transxex.DBMSLocation,
+	dbType commonmodel.DBMSType,
+	src, dst *transxex.DBMSInfo,
+	renamed bool,
+	rules []commonmodel.DBMSFilterRule,
+	opt Options,
+) []model.ValidationDetailItem {
+	key := tableKey(renamed)
+	dropped, _ := filteredTables(rules)
+
+	dstIdx := make(map[string]int, len(dst.Tables))
+	for i, t := range dst.Tables {
+		dstIdx[key(t)] = i
+	}
+	type pair struct{ si, di int }
+	var pairs []pair
+	for si, t := range src.Tables {
+		k := key(t)
+		if dropped[k] {
+			continue
+		}
+		if di, ok := dstIdx[k]; ok {
+			pairs = append(pairs, pair{si, di})
+		}
+	}
+
+	metric := rowCountMetric(dbType)
+	progress := newSideProgress(opt, "counting rows", len(pairs), "tables")
+	errs := make([]error, len(pairs))
+	sem := make(chan struct{}, rowCountConcurrency)
+	var wg sync.WaitGroup
+	for n, p := range pairs {
+		if err := ctx.Err(); err != nil {
+			errs[n] = err
+			continue
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(n int, p pair) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// Each goroutine writes only its own pair's entries, so the two
+			// listings need no lock.
+			errs[n] = bothSides(
+				func() error {
+					c, err := exactRowCount(srcLoc, metric, src.Tables[p.si])
+					if err != nil {
+						return fmt.Errorf("src: %w", err)
+					}
+					src.Tables[p.si].RowCount = c
+					progress.advance(true)
+					return nil
+				},
+				func() error {
+					c, err := exactRowCount(dstLoc, metric, dst.Tables[p.di])
+					if err != nil {
+						return fmt.Errorf("dst: %w", err)
+					}
+					dst.Tables[p.di].RowCount = c
+					progress.advance(false)
+					return nil
+				},
+			)
+		}(n, p)
+	}
+	wg.Wait()
+
+	var details []model.ValidationDetailItem
+	dropSrc, dropDst := map[int]bool{}, map[int]bool{}
+	for n, err := range errs {
+		if err == nil {
+			continue
+		}
+		p := pairs[n]
+		details = append(details, model.ValidationDetailItem{
+			ItemPath: src.Database + "/" + key(src.Tables[p.si]),
+			Status:   "failed",
+			Message:  fmt.Sprintf("row count failed: %v", err),
+		})
+		dropSrc[p.si], dropDst[p.di] = true, true
+	}
+	src.Tables = withoutTables(src.Tables, dropSrc)
+	dst.Tables = withoutTables(dst.Tables, dropDst)
+	return details
+}
+
+// exactRowCount counts t's rows at loc. A PostgreSQL table is looked up in its
+// own schema alone, so a name several schemas share is not ambiguous.
+func exactRowCount(loc transxex.DBMSLocation, metric *transxex.DBMSMetricOption, t transxex.TableInfo) (int64, error) {
+	loc.Metric = metric
+	if t.PgSchema != "" {
+		loc.PgSchema = []string{t.PgSchema}
+	}
+	info, err := transxex.DescribeTable(loc, t.Name)
+	if err != nil {
+		return 0, err
+	}
+	return info.RowCount, nil
+}
+
+// withoutTables returns tables less the entries whose index drop holds.
+func withoutTables(tables []transxex.TableInfo, drop map[int]bool) []transxex.TableInfo {
+	if len(drop) == 0 {
+		return tables
+	}
+	out := make([]transxex.TableInfo, 0, len(tables)-len(drop))
+	for i, t := range tables {
+		if !drop[i] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // splitPgSchemaPairs mirrors the migration adapter: name pairs in, the two
@@ -733,40 +1057,70 @@ func compareCharsets(src, dst *transxex.DBMSInfo) []model.ValidationDetailItem {
 	return details
 }
 
-// validationMetric selects what an inspection must collect for validation.
+// validationMetric selects what the first inspection must collect for
+// validation: the schema object inventories. They are opt-in, and
+// compareSchemaObjects can only compare what was collected: without them a view
+// or event missing from the target passes as two empty lists.
 //
-// Row counts must be exact. A default inspect reports the engine's statistics
-// estimate, which InnoDB gives as 0 for a table restored moments ago — read as
-// a row count that is every migrated table looking empty.
-//
-// The schema object inventories are opt-in the same way, and compareSchemaObjects
-// can only compare what was collected: without them a view or event missing from
-// the target passes as two empty lists.
+// Row counts are left to rowCountMetric and countRows, table by table.
 func validationMetric(dbType commonmodel.DBMSType) *transxex.DBMSMetricOption {
 	t := func() *bool { b := true; return &b }
 	switch dbType {
 	case commonmodel.DBMSTypeMySQL:
 		return &transxex.DBMSMetricOption{MySQL: &transxex.MySQLMetric{
-			RowCountExact: t(), ForeignKeys: t(), Views: t(),
+			ForeignKeys: t(), Views: t(),
 			Functions: t(), Procedures: t(), Triggers: t(), Events: t(),
 		}}
 	case commonmodel.DBMSTypeMariaDB:
 		return &transxex.DBMSMetricOption{MariaDB: &transxex.MariaDBMetric{
-			RowCountExact: t(), ForeignKeys: t(), Views: t(),
+			ForeignKeys: t(), Views: t(),
 			Functions: t(), Procedures: t(), Triggers: t(), Events: t(),
 		}}
 	case commonmodel.DBMSTypePostgreSQL:
 		return &transxex.DBMSMetricOption{PostgreSQL: &transxex.PostgreSQLMetric{
-			RowCountExact: t(), ForeignKeys: t(), Views: t(), MaterializedViews: t(),
+			ForeignKeys: t(), Views: t(), MaterializedViews: t(),
 			Functions: t(), Procedures: t(), Triggers: t(),
 			Sequences: t(), Types: t(), Extensions: t(), Rules: t(),
 		}}
 	case commonmodel.DBMSTypeMongoDB:
 		return &transxex.DBMSMetricOption{MongoDB: &transxex.MongoDBMetric{
-			RowCountExact: t(), Views: t(), Validators: t(),
+			Views: t(), Validators: t(),
 		}}
 	default:
 		return nil
+	}
+}
+
+// rowCountMetric asks DescribeTable for an exact row count.
+//
+// Row counts must be exact. Without it the engine's statistics estimate is all
+// there is, which InnoDB gives as 0 for a table restored moments ago — read as a
+// row count that is every migrated table looking empty. MongoDB's DescribeTable
+// always counts exactly.
+func rowCountMetric(dbType commonmodel.DBMSType) *transxex.DBMSMetricOption {
+	t := func() *bool { b := true; return &b }
+	switch dbType {
+	case commonmodel.DBMSTypeMySQL:
+		return &transxex.DBMSMetricOption{MySQL: &transxex.MySQLMetric{RowCountExact: t()}}
+	case commonmodel.DBMSTypeMariaDB:
+		return &transxex.DBMSMetricOption{MariaDB: &transxex.MariaDBMetric{RowCountExact: t()}}
+	case commonmodel.DBMSTypePostgreSQL:
+		return &transxex.DBMSMetricOption{PostgreSQL: &transxex.PostgreSQLMetric{RowCountExact: t()}}
+	case commonmodel.DBMSTypeMongoDB:
+		return &transxex.DBMSMetricOption{MongoDB: &transxex.MongoDBMetric{RowCountExact: t()}}
+	default:
+		return nil
+	}
+}
+
+// tableKey says how a table is identified when the two sides are matched up —
+// see compareDBTables for why renamed decides it.
+func tableKey(renamed bool) func(transxex.TableInfo) string {
+	return func(t transxex.TableInfo) string {
+		if renamed || t.PgSchema == "" {
+			return t.Name
+		}
+		return t.PgSchema + "." + t.Name
 	}
 }
 
@@ -786,12 +1140,7 @@ func validationMetric(dbType commonmodel.DBMSType) *transxex.DBMSMetricOption {
 // which is the same false positive compareSchemaObjects has always avoided on the
 // schema side.
 func compareDBTables(src, dst *transxex.DBMSInfo, renamed bool, rules []commonmodel.DBMSFilterRule) []model.ValidationDetailItem {
-	key := func(t transxex.TableInfo) string {
-		if renamed || t.PgSchema == "" {
-			return t.Name
-		}
-		return t.PgSchema + "." + t.Name
-	}
+	key := tableKey(renamed)
 	srcMap := make(map[string]int64, len(src.Tables))
 	for _, t := range src.Tables {
 		srcMap[key(t)] = t.RowCount

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/google/uuid"
@@ -46,6 +47,18 @@ func CreateMigration(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse(
 			fmt.Sprintf("dbmsOnFailure must be %q or %q (got %q)",
 				model.DBMSOnFailureCleanup, model.DBMSOnFailureKeep, req.DBMSOnFailure)))
+	}
+	// Checked here because the migration runs asynchronously: an unusable
+	// directory would otherwise fail every item that stages, one by one.
+	if req.StagingDir != "" {
+		if !filepath.IsAbs(req.StagingDir) {
+			return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse(
+				fmt.Sprintf("stagingDir must be an absolute path (got %q)", req.StagingDir)))
+		}
+		req.StagingDir = filepath.Clean(req.StagingDir)
+		if err := migrationpkg.CheckStagingDir(req.StagingDir); err != nil {
+			return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse("stagingDir: "+err.Error()))
+		}
 	}
 
 	// The plan arrives as POST /plans/target answered it, so every check below is
@@ -107,6 +120,7 @@ func CreateMigration(c echo.Context) error {
 		Description:   req.Description,
 		Plan:          req.Plan,
 		DBMSOnFailure: req.DBMSOnFailure,
+		StagingDir:    req.StagingDir,
 		Status:        "pending",
 	}
 	if err := dao.CreateMigration(m); err != nil {

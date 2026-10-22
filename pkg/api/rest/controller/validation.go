@@ -1,9 +1,12 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog/log"
@@ -17,10 +20,13 @@ import (
 // StartValidation godoc
 //
 //	@Summary		Start validation for a completed migration
-//	@Description	Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed, 409 if validation is already running.
+//	@Description	Validates that the destination data matches the source after a completed migration. Returns 400 if migration is not completed or the mode is unknown, 409 if validation is already running.
+//	@Description	The optional body's mode decides how filesystem items are compared: "quick" (default) compares size and modification time only, "checksum" hashes every migrated file on both hosts. Object storage, databases and cross-storage items (path and size) are compared one way whatever it says. While the validation runs, GET reports its progress in validationMessage.
 //	@Tags			validation
+//	@Accept			json
 //	@Produce		json
-//	@Param			migrationId	path		string	true	"Migration ID"
+//	@Param			migrationId	path		string							true	"Migration ID"
+//	@Param			request		body		model.StartValidationRequest	false	"Validation options"
 //	@Success		202			{object}	model.ApiResponse[model.SimpleMessageResponse]
 //	@Failure		400			{object}	model.ApiResponse[any]
 //	@Failure		404			{object}	model.ApiResponse[any]
@@ -29,6 +35,21 @@ import (
 //	@Router			/centipede/migration/{migrationId}/validation [post]
 func StartValidation(c echo.Context) error {
 	id := c.Param("migrationId")
+
+	// The body is optional: none at all is the default mode.
+	var req model.StartValidationRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse("invalid request body: "+err.Error()))
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = validationpkg.ModeQuick
+	}
+	if !validationpkg.ValidMode(mode) {
+		return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse(
+			fmt.Sprintf("unknown validation mode %q: want %q or %q", req.Mode,
+				validationpkg.ModeQuick, validationpkg.ModeChecksum)))
+	}
 
 	m, err := dao.GetMigration(id)
 	if err != nil {
@@ -47,14 +68,17 @@ func StartValidation(c echo.Context) error {
 		return c.JSON(http.StatusConflict, model.SimpleErrorResponse("validation is already running for migration: "+id))
 	}
 
+	now := time.Now()
 	m.ValidationStatus = "running"
 	m.ValidationMessage = ""
 	m.ValidationDetails = nil
+	m.ValidationMode = mode
+	m.ValidationStartedAt = &now
 	if err := dao.UpdateMigrationValidation(m); err != nil {
 		return c.JSON(http.StatusInternalServerError, model.SimpleErrorResponse("update validation status: "+err.Error()))
 	}
 
-	go runValidation(id)
+	go runValidation(id, mode)
 
 	return c.JSON(http.StatusAccepted, model.SuccessResponseWithMessage(
 		model.SimpleMessageResponse{Message: "validation started"},
@@ -93,13 +117,52 @@ func GetValidation(c echo.Context) error {
 		ValidationStatus:  status,
 		ValidationMessage: m.ValidationMessage,
 		Details:           m.ValidationDetails,
+		Mode:              m.ValidationMode,
+		StartedAt:         m.ValidationStartedAt,
 	}))
+}
+
+// progressInterval is the shortest gap between two writes of a running
+// validation's progress. A checksum run reports every file it hashes; the
+// record only has to be fresh enough for a screen polling it.
+const progressInterval = 2 * time.Second
+
+// validationProgress writes a running validation's progress line to its record,
+// at most once per progressInterval. It is called from several goroutines at
+// once, and stop() ends it before the result is written, so a late progress
+// line cannot land on top of the result.
+type validationProgress struct {
+	mu      sync.Mutex
+	m       *model.Migration
+	last    time.Time
+	stopped bool
+}
+
+func (p *validationProgress) report(message string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped || time.Since(p.last) < progressInterval {
+		return
+	}
+	p.last = time.Now()
+	p.m.ValidationMessage = message
+	if err := dao.UpdateMigrationValidation(p.m); err != nil {
+		log.Warn().Str("migrationID", p.m.ID).Err(err).Msg("runValidation: update progress failed")
+	}
+}
+
+func (p *validationProgress) stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopped = true
 }
 
 // runValidation orchestrates ValidateFileSystem, ValidateObjectStorage, and ValidateDBMS
 // for all plan items, then persists the aggregated result into the Migration record.
-// Must be launched as a goroutine: go runValidation(migrationID)
-func runValidation(migrationID string) {
+// Must be launched as a goroutine: go runValidation(migrationID, mode)
+//
+// mode is how filesystem items are compared; see validationpkg.Options.
+func runValidation(migrationID, mode string) {
 	m, err := dao.GetMigration(migrationID)
 	if err != nil {
 		log.Error().Str("migrationID", migrationID).Err(err).Msg("runValidation: load migration failed")
@@ -108,6 +171,27 @@ func runValidation(migrationID string) {
 
 	var allDetails []model.ValidationDetailItem
 	prop := m.Plan.TargetDataMigrationModel
+	ctx := context.Background()
+
+	progress := &validationProgress{m: m}
+	total := len(prop.FileSystems) + len(prop.ObjectStorages) + len(prop.Databases)
+	entry := 0
+	// optsFor leads each progress line with the plan entry it belongs to — when
+	// there are several. A plan holds one entry per source connection, so a
+	// group migration's hosts can share a path, and "2/3" is what tells them
+	// apart; with one entry the counter says nothing. The kind is left out: the
+	// path or database name and the unit counted already say it.
+	optsFor := func() validationpkg.Options {
+		entry++
+		prefix := ""
+		if total > 1 {
+			prefix = fmt.Sprintf("%d/%d · ", entry, total)
+		}
+		return validationpkg.Options{
+			Mode:     mode,
+			Progress: func(message string) { progress.report(prefix + message) },
+		}
+	}
 
 	// The plan entry is stamped here rather than inside pkg/core/validation: a
 	// validator is handed one entry and never sees the plan it sits in, the same
@@ -122,7 +206,7 @@ func runValidation(migrationID string) {
 
 	// ── Filesystem ───────────────────────────────────────────────────────────
 	for _, fs := range prop.FileSystems {
-		details, err := validationpkg.ValidateFileSystem(fs)
+		details, err := validationpkg.ValidateFileSystem(ctx, fs, optsFor())
 		if err != nil {
 			allDetails = append(allDetails, model.ValidationDetailItem{
 				PlanEntryID: fs.PlanEntryID,
@@ -137,7 +221,7 @@ func runValidation(migrationID string) {
 
 	// ── Object Storage ───────────────────────────────────────────────────────
 	for _, oss := range prop.ObjectStorages {
-		details, err := validationpkg.ValidateObjectStorage(oss)
+		details, err := validationpkg.ValidateObjectStorage(ctx, oss, optsFor())
 		if err != nil {
 			allDetails = append(allDetails, model.ValidationDetailItem{
 				PlanEntryID: oss.PlanEntryID,
@@ -152,7 +236,7 @@ func runValidation(migrationID string) {
 
 	// ── DBMS ─────────────────────────────────────────────────────────────────
 	for _, db := range prop.Databases {
-		details, err := validationpkg.ValidateDBMS(db)
+		details, err := validationpkg.ValidateDBMS(ctx, db, optsFor())
 		if err != nil {
 			allDetails = append(allDetails, model.ValidationDetailItem{
 				PlanEntryID: db.PlanEntryID,
@@ -196,6 +280,7 @@ func runValidation(migrationID string) {
 		}
 	}
 
+	progress.stop()
 	m.ValidationStatus = overallStatus
 	m.ValidationMessage = message
 	m.ValidationDetails = allDetails

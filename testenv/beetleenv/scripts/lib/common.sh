@@ -220,6 +220,22 @@ bool_env() {
     esac
 }
 
+# db_public_access <csp> — _DB_PUBLIC_ACCESS. Unset means true, except on NCP,
+#   where true is refused (see validate_db_access).
+db_public_access() {
+    local def=true
+    [ "$(csp_lower "$1")" = "ncp" ] && def=false
+    bool_env "$1" DB_PUBLIC_ACCESS "$def"
+}
+
+# db_acg_open <csp> — BEETLEENV_NCP_DB_ACG_ALLOW_ALL_INBOUND (unset = true).
+#   Always false elsewhere: beetle rejects ncpDBACGToAllowAllInbound for any CSP
+#   but NCP.
+db_acg_open() {
+    if [ "$(csp_lower "$1")" != "ncp" ]; then printf 'false'; return 0; fi
+    bool_env "$1" DB_ACG_ALLOW_ALL_INBOUND true
+}
+
 # connection_name <csp> — beetle resolves connections as <csp>-<region> and
 #   nothing else (pkg/core/migration/object-storage.go GenerateConnectionName),
 #   so this is not a convention beetleenv gets to choose. A connection registered
@@ -406,6 +422,23 @@ require_csp_env() {
         return 1
     fi
     validate_db_password "$csp" || return 1
+    validate_db_access "$csp" || return 1
+    return 0
+}
+
+# validate_db_access <csp> — cb-spider v0.13.16+ refuses an NCP create with
+#   PublicAccess=true (NCP has no API to issue a public domain), and cm-beetle's
+#   migration API passes it through unchecked, so the refusal would otherwise
+#   arrive only once the create request has gone out.
+validate_db_access() {
+    [ "$(csp_lower "$1")" = "ncp" ] || return 0
+    if [ "$(db_public_access ncp)" = "true" ]; then
+        log_error "BEETLEENV_NCP_DB_PUBLIC_ACCESS=true cannot be used: cb-spider refuses an NCP Cloud DB"
+        log_error "  create with publicAccess=true. Set it to false. Outside access comes from the"
+        log_error "  console's public domain plus BEETLEENV_NCP_DB_ACG_ALLOW_ALL_INBOUND=true -"
+        log_error "  see ./scripts/ncp-db-domain.sh."
+        return 1
+    fi
     return 0
 }
 

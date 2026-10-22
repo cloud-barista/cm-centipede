@@ -183,6 +183,10 @@ BUCKET_ALL="$(refresh_entries "$BUCKET_ALL" '.objectStorage[]' objectStorage \
 # disagree with centipede on any image that is not cb-tumblebug's default.
 INFRA_ALL="$(refresh_entries "$INFRA_ALL" '.infra[]' infra \
     "/migration/ns/${NS_PATH}/infra")"
+# cm-beetle's RDBMS read has had no adminUserName since v0.6.2, so the admin user
+# comes from .env - the name the instance was created with - when beetle is
+# silent. Exported for the jq filters below, which read it as env.
+export CONNINFO_DB_ADMIN_USER="$(csp_env "$CSP" DB_ADMIN_USERNAME)"
 
 # ------------------------------------------------------------------------------
 # --json
@@ -197,8 +201,11 @@ if [ "$AS_JSON" -eq 1 ]; then
             rdbmsId: (.id // .name), uid: .uid,
             cspResourceId: .cspResourceId, cspResourceName: .cspResourceName,
             engine: .dbEngine, version: .dbEngineVersion,
-            endpoint: .endpoint, adminUserName: .adminUserName,
-            publicAccess: .publicAccess, status: .status }')" \
+            endpoint: .endpoint,
+            adminUserName: (.adminUserName // (env.CONNINFO_DB_ADMIN_USER | select(. != ""))),
+            publicAccess: .publicAccess,
+            ncpDBACGToAllowAllInbound: .ncpDBACGToAllowAllInbound,
+            status: .status }')" \
         --argjson buckets "$(ours_json "$BUCKET_ALL" '.objectStorage[]' '{
             osId: (.id // .name), uid: .uid,
             cspResourceId: .cspResourceId, cspResourceName: .cspResourceName,
@@ -419,7 +426,7 @@ ROWS="$(ours "$RDBMS_ALL" '.rdbms[]' '
     "      engine      \(.dbEngine // "-") \(.dbEngineVersion // "")\n" +
     "      status      \(.status // "-")\n" +
     "      endpoint    \(if (.endpoint // "") == "" then "(not assigned)" else .endpoint end)\n" +
-    "      admin user  \(.adminUserName // "-")\n" +
+    "      admin user  \(.adminUserName // (env.CONNINFO_DB_ADMIN_USER | select(. != "") | "\(.)  (.env)") // "-")\n" +
     "      csp id      \(.cspResourceId // .cspResourceName // "-")"')"
 if [ -n "$ROWS" ]; then
     printf '%s\n' "$ROWS"

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 	"github.com/cloud-barista/cm-centipede/pkg/config"
@@ -42,11 +43,36 @@ type OSConfig struct {
 
 // DBConfig is the normalised managed-DB access info. Password is not part of it:
 // the lookup never returns one, so the caller supplies it from the ref.
+// Username is empty from cm-beetle v0.6.2 on, whose RDBMS read dropped
+// adminUserName; the ref's own username is what callers use.
 type DBConfig struct {
 	DBType   string // mysql | mariadb — the engines cb-tumblebug provisions
 	Host     string
 	Port     int
 	Username string
+}
+
+// SecureTransport is what cb-spider measured on a managed instance's transport
+// security, as cm-beetle relays it. It is advice for choosing a TLS mode, not a
+// connection setting of its own.
+type SecureTransport struct {
+	// RecommendedSSLMode is DISABLED, VERIFY_CA, VERIFY_IDENTITY, or empty when
+	// the server offers TLS but its CA could not be collected (see CAError).
+	RecommendedSSLMode string
+
+	// RequireSecureTransport reports that the server refuses plaintext clients.
+	RequireSecureTransport bool
+
+	// CAPEM is the topmost certificate of the chain the server presented. cb-spider
+	// collects it without verifying it, so it is trusted on first use. Empty when
+	// the server sent none or the collection failed.
+	CAPEM string
+
+	// CANotAfter is when CAPEM expires; zero when unknown.
+	CANotAfter time.Time
+
+	// CAError says why CAPEM is empty when the server does offer TLS.
+	CAError string
 }
 
 // infraInfo mirrors the fields this package reads from
@@ -89,6 +115,8 @@ type osInfo struct {
 //
 // There is no port of its own: Endpoint carries "host:port", and no password
 // either, since the API returns one only when the instance is created.
+// AdminUserName is read for cm-beetle before v0.6.2 only; later versions omit it
+// (rdbmsmodel.RDBMSInfo), which is why BeetleDBRef requires a username.
 type rdbmsInfo struct {
 	Name          string `json:"name"`
 	Status        string `json:"status"`
@@ -96,6 +124,26 @@ type rdbmsInfo struct {
 	AdminUserName string `json:"adminUserName"`
 	Endpoint      string `json:"endpoint"`
 	PublicAccess  bool   `json:"publicAccess"`
+
+	// ConnectionConfig names the CSP holding the instance, which decides what
+	// of the source character set a new database can take (see charsetPolicies).
+	ConnectionConfig struct {
+		ProviderName string `json:"providerName"`
+	} `json:"connectionConfig"`
+}
+
+// secureTransportInfo mirrors the fields this package reads from
+// GET .../rdbms/{rdbmsId}/secure-transport. cm-beetle measures them by
+// connecting to the instance through cb-spider on every call.
+type secureTransportInfo struct {
+	RequireSecureTransport string `json:"requireSecureTransport"` // MySQL/MariaDB: "ON" | "OFF"
+	Enforced               bool   `json:"enforced"`               // PostgreSQL; false also when unknown
+	CACertificate          struct {
+		PEM      string `json:"pem"`
+		NotAfter string `json:"notAfter"`
+	} `json:"caCertificate"`
+	CACertificateError string `json:"caCertificateError"`
+	RecommendedSSLMode string `json:"recommendedSSLMode"`
 }
 
 // rdbmsDatabaseList mirrors GET .../rdbms/{rdbmsId}/database.
@@ -104,16 +152,25 @@ type rdbmsDatabaseList struct {
 }
 
 // rdbmsDatabaseCreateReq is the body of POST .../rdbms/{rdbmsId}/database.
-// It has no character set field, which is why a database created here cannot
-// inherit the source's (see CreateDatabase).
+// The admin account travels as headers, not here (see adminCredsOf).
 type rdbmsDatabaseCreateReq struct {
-	DatabaseName      string `json:"databaseName"`
-	AdminUserPassword string `json:"adminUserPassword"`
+	DatabaseName string `json:"databaseName"`
+	Charset      string `json:"charset,omitempty"`
+	Collation    string `json:"collation,omitempty"`
 }
 
-// adminPasswordHeader carries the managed instance's admin password on the
-// logical-database calls. cm-beetle does not store it, so every call repeats it.
-const adminPasswordHeader = "X-Admin-User-Password"
+// cm-beetle requires both headers on every logical-database call and answers
+// 400 when either is missing. It stores neither, so every call repeats them.
+const (
+	adminUserNameHeader = "X-Admin-User-Name"
+	adminPasswordHeader = "X-Admin-User-Password"
+)
+
+// adminCreds is the managed instance's admin account, sent as headers.
+// The zero value sends none — the plain reads use it.
+type adminCreds struct {
+	user, password string
+}
 
 // defaultPortOf returns the port an engine listens on when Endpoint omits one.
 func defaultPortOf(engine string) int {
@@ -240,6 +297,40 @@ func GetRDBMSAccessInfo(ref commonmodel.BeetleDBRef) (*DBConfig, error) {
 	}, nil
 }
 
+// GetSecureTransport asks cm-beetle how a managed RDBMS instance does transport
+// security, for choosing a TLS mode to connect with.
+//
+// adminUser is the account the connection itself uses, which the caller has
+// already resolved; cm-beetle needs it with the password to reach the instance,
+// and stores neither.
+func GetSecureTransport(ref commonmodel.BeetleDBRef, adminUser string) (*SecureTransport, error) {
+	if ref.Password == "" {
+		return nil, fmt.Errorf("beetle rdbms %q: admin password is empty", ref.RdbmsID)
+	}
+	admin := adminCreds{user: strings.TrimSpace(adminUser), password: ref.Password}
+	if admin.user == "" {
+		return nil, errNoAdminUser(ref)
+	}
+
+	var res infoSecureTransportResponse
+	if err := getJSONAsAdmin(rdbmsPath(ref)+"/secure-transport", admin, &res); err != nil {
+		return nil, err
+	}
+	raw := res.data()
+
+	st := &SecureTransport{
+		RecommendedSSLMode: strings.ToUpper(strings.TrimSpace(raw.RecommendedSSLMode)),
+		RequireSecureTransport: raw.Enforced ||
+			strings.EqualFold(raw.RequireSecureTransport, "ON") || raw.RequireSecureTransport == "1",
+		CAPEM:   strings.TrimSpace(normalizePEM(raw.CACertificate.PEM)),
+		CAError: raw.CACertificateError,
+	}
+	if t, err := time.Parse(time.RFC3339, raw.CACertificate.NotAfter); err == nil {
+		st.CANotAfter = t
+	}
+	return st, nil
+}
+
 // ListDatabases returns the logical databases inside a managed RDBMS instance.
 //
 // This is cm-beetle's own list, the same one CreateDatabase and DropDatabase
@@ -247,9 +338,13 @@ func GetRDBMSAccessInfo(ref commonmodel.BeetleDBRef) (*DBConfig, error) {
 // it, and that answer is what decides whether centipede owns a database and must
 // drop it after a failure.
 func ListDatabases(ref commonmodel.BeetleDBRef) ([]string, error) {
+	admin, err := adminCredsOf(ref, nil)
+	if err != nil {
+		return nil, err
+	}
 	var res infoRDBMSDatabaseResponse
 	path := fmt.Sprintf("/beetle/migration/middleware/ns/%s/rdbms/%s/database", ref.NsID, ref.RdbmsID)
-	if err := getJSONWithAdminPassword(path, ref.Password, &res); err != nil {
+	if err := getJSONAsAdmin(path, admin, &res); err != nil {
 		return nil, err
 	}
 	return res.data().Databases, nil
@@ -260,26 +355,96 @@ func ListDatabases(ref commonmodel.BeetleDBRef) ([]string, error) {
 // instance, so this never falls back to connecting to the database and issuing
 // CREATE DATABASE.
 //
-// The database takes the instance's default character set — cm-beetle's creation
-// request carries only a name and the admin password. That settles nothing for
-// the migration either way: a managed instance is MySQL or MariaDB, whose dumps
-// name a character set on every table they create, so the database default is
-// never what a restored table ends up with.
-//
-// TODO(beetle): pass the source character set through once cm-beetle's request
-// can carry one.
-func CreateDatabase(ref commonmodel.BeetleDBRef, database string) error {
-	path := fmt.Sprintf("/beetle/migration/middleware/ns/%s/rdbms/%s/database", ref.NsID, ref.RdbmsID)
-	body := rdbmsDatabaseCreateReq{DatabaseName: database, AdminUserPassword: ref.Password}
-	return sendJSON(http.MethodPost, path, body, "")
+// charset and collation are the source database's defaults. What the instance's
+// engine and CSP cannot take is dropped with a warning (see charsetPolicies),
+// and the database then follows the instance default for it. That costs the
+// migration nothing: a managed instance is MySQL or MariaDB, whose dumps name a
+// character set on every table they create, so the database default is never
+// what a restored table ends up with — only tables created later see it.
+func CreateDatabase(ref commonmodel.BeetleDBRef, database, charset, collation string) error {
+	// One instance read serves both the CSP and engine the character set
+	// depends on and the admin user name.
+	var res infoRDBMSResponse
+	if err := getJSON(rdbmsPath(ref), &res); err != nil {
+		return err
+	}
+	info := res.data()
+
+	admin, err := adminCredsOf(ref, &info)
+	if err != nil {
+		return err
+	}
+
+	cs, co, warning := databaseCharsetFor(info.ConnectionConfig.ProviderName, info.DBEngine, charset, collation)
+	if warning != "" {
+		log.Warn().
+			Str("rdbmsId", ref.RdbmsID).
+			Str("database", database).
+			Str("charset", charset).
+			Str("collation", collation).
+			Msg(warning)
+	}
+
+	path := rdbmsPath(ref) + "/database"
+	body := rdbmsDatabaseCreateReq{DatabaseName: database, Charset: cs, Collation: co}
+	return sendJSON(http.MethodPost, path, body, admin)
 }
 
 // DropDatabase removes a logical database centipede created through
 // CreateDatabase, after its migration failed or was cancelled.
 func DropDatabase(ref commonmodel.BeetleDBRef, database string) error {
+	admin, err := adminCredsOf(ref, nil)
+	if err != nil {
+		return err
+	}
 	path := fmt.Sprintf("/beetle/migration/middleware/ns/%s/rdbms/%s/database/%s",
 		ref.NsID, ref.RdbmsID, url.PathEscape(database))
-	return sendJSON(http.MethodDelete, path, nil, ref.Password)
+	return sendJSON(http.MethodDelete, path, nil, admin)
+}
+
+// adminCredsOf returns the admin account for ref's logical-database calls.
+// The user name is the ref's; only when it is empty does this fall back to the
+// one cm-beetle reports, as the connection itself does (managedDBConnConfig), so
+// both always name the same account. That fallback finds a name on cm-beetle
+// before v0.6.2 only.
+//
+// info is the instance when the caller has already read it; nil makes this read
+// it, and only when the ref names no user. The read goes to the instance
+// directly rather than through GetRDBMSAccessInfo, which fails on an instance
+// without an endpoint and needs none of it here.
+func adminCredsOf(ref commonmodel.BeetleDBRef, info *rdbmsInfo) (adminCreds, error) {
+	if ref.Password == "" {
+		return adminCreds{}, fmt.Errorf("beetle rdbms %q: admin password is empty", ref.RdbmsID)
+	}
+	user := strings.TrimSpace(ref.Username)
+	if user == "" {
+		if info == nil {
+			var res infoRDBMSResponse
+			if err := getJSON(rdbmsPath(ref), &res); err != nil {
+				return adminCreds{}, err
+			}
+			raw := res.data()
+			info = &raw
+		}
+		user = strings.TrimSpace(info.AdminUserName)
+	}
+	if user == "" {
+		return adminCreds{}, errNoAdminUser(ref)
+	}
+	return adminCreds{user: user, password: ref.Password}, nil
+}
+
+// errNoAdminUser is the failure when neither ref nor cm-beetle names the admin.
+// The phrase "reports no admin user name" is matched by testenv/beetle-db-test.
+func errNoAdminUser(ref commonmodel.BeetleDBRef) error {
+	return fmt.Errorf(
+		"beetle rdbms %q reports no admin user name (cm-beetle v0.6.2+ does not return it); "+
+			"set beetleDb.username to the instance admin", ref.RdbmsID)
+}
+
+// rdbmsPath is the cm-beetle path of ref's managed instance.
+func rdbmsPath(ref commonmodel.BeetleDBRef) string {
+	return fmt.Sprintf("/beetle/migration/middleware/ns/%s/rdbms/%s", ref.NsID, ref.RdbmsID)
 }
 
 // ── HTTP plumbing ────────────────────────────────────────────────────────────
@@ -340,6 +505,19 @@ func (r infoRDBMSResponse) data() rdbmsInfo {
 	return r.rdbmsInfo
 }
 
+type infoSecureTransportResponse struct {
+	Success *bool               `json:"success"`
+	Data    secureTransportInfo `json:"data"`
+	secureTransportInfo
+}
+
+func (r infoSecureTransportResponse) data() secureTransportInfo {
+	if r.Success != nil {
+		return r.Data
+	}
+	return r.secureTransportInfo
+}
+
 type infoRDBMSDatabaseResponse struct {
 	Success *bool             `json:"success"`
 	Data    rdbmsDatabaseList `json:"data"`
@@ -356,24 +534,25 @@ func (r infoRDBMSDatabaseResponse) data() rdbmsDatabaseList {
 // getJSON performs an authenticated GET against cm-beetle and decodes the body
 // into out.
 func getJSON(path string, out any) error {
-	return call(http.MethodGet, path, nil, "", out)
+	return call(http.MethodGet, path, nil, adminCreds{}, out)
 }
 
-// getJSONWithAdminPassword is getJSON for the logical-database reads, which
-// additionally need the managed instance's admin password.
-func getJSONWithAdminPassword(path, adminPassword string, out any) error {
-	return call(http.MethodGet, path, nil, adminPassword, out)
+// getJSONAsAdmin is getJSON for the logical-database reads, which additionally
+// need the managed instance's admin account.
+func getJSONAsAdmin(path string, admin adminCreds, out any) error {
+	return call(http.MethodGet, path, nil, admin, out)
 }
 
 // sendJSON performs an authenticated write against cm-beetle, discarding the
 // response body. body may be nil for requests that carry none.
-func sendJSON(method, path string, body any, adminPassword string) error {
-	return call(method, path, body, adminPassword, nil)
+func sendJSON(method, path string, body any, admin adminCreds) error {
+	return call(method, path, body, admin, nil)
 }
 
 // call issues one authenticated request against cm-beetle. out may be nil when
-// the response body is not needed; adminPassword is sent only when non-empty.
-func call(method, path string, body any, adminPassword string, out any) error {
+// the response body is not needed; the admin headers are sent only when admin
+// is set.
+func call(method, path string, body any, admin adminCreds, out any) error {
 	endpoint := strings.TrimRight(config.Conf.Beetle.Endpoint, "/")
 	target := endpoint + path
 
@@ -396,8 +575,9 @@ func call(method, path string, body any, adminPassword string, out any) error {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if adminPassword != "" {
-		req.Header.Set(adminPasswordHeader, adminPassword)
+	if admin != (adminCreds{}) {
+		req.Header.Set(adminUserNameHeader, admin.user)
+		req.Header.Set(adminPasswordHeader, admin.password)
 	}
 
 	resp, err := http.DefaultClient.Do(req) //nolint:noctx

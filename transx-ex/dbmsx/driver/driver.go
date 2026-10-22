@@ -33,6 +33,7 @@ type (
 	SSHConfig                   = base.SSHConfig
 	TargetGrant                 = base.TargetGrant
 	DumpOption                  = base.DumpOption
+	RestoreOption               = base.RestoreOption
 	DBMSInfo                    = base.DBMSInfo
 	PgSchemaInfo                = base.PgSchemaInfo
 	TableInfo                   = base.TableInfo
@@ -116,9 +117,10 @@ const (
 
 	SeverityBlocker = base.SeverityBlocker
 	SeverityWarning = base.SeverityWarning
-
-	DefaultStagingPath = base.DefaultStagingPath
 )
+
+// StagingPath returns the local directory intermediate dump files go in.
+var StagingPath = base.StagingPath
 
 // =============================================================================
 // Function / constructor re-exports
@@ -158,6 +160,10 @@ var TLSModes = base.TLSModes
 // PgSchemaRenameOpt returns a dump option's schema rename map, or nil.
 // See base.PgSchemaRenameOpt.
 var PgSchemaRenameOpt = base.PgSchemaRenameOpt
+
+// RedactedLoc returns a location with its database password replaced, for
+// building a command that can be shown. See base.RedactedLoc.
+var RedactedLoc = base.RedactedLoc
 
 // DiffCharset reports what stands between a source and a target profile.
 // See base.DiffCharset.

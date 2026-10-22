@@ -71,21 +71,27 @@ func (cw *countingWriter) Close() error {
 	return cw.w.Close()
 }
 
-// newCountingWriter creates (or truncates) the file at path and returns a
-// countingWriter whose notify increments BytesTransferred in the handle's progress.
-func (h *MigrationHandle) newCountingWriter(path string) (*countingWriter, error) {
-	f, err := os.Create(path)
-	if err != nil {
-		return nil, fmt.Errorf("create staging file %q: %w", path, err)
-	}
+// discardWriteCloser accepts every write and keeps none of it.
+type discardWriteCloser struct{}
+
+func (discardWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (discardWriteCloser) Close() error                { return nil }
+
+// newCountingWriter returns a countingWriter whose notify increments
+// BytesTransferred in the handle's progress.
+//
+// It counts and writes nothing: the driver creates the staging file itself and
+// copies to w only so the bytes can be counted. This used to open the same path
+// as a second file, and every byte of the dump went to disk twice.
+func (h *MigrationHandle) newCountingWriter() *countingWriter {
 	return &countingWriter{
-		w: f,
+		w: discardWriteCloser{},
 		notify: func(delta int64) {
 			h.updateProgress(func(p *MigrationProgress) {
 				p.BytesTransferred += delta
 			})
 		},
-	}, nil
+	}
 }
 
 // newTableNotify returns a callback that increments TablesDone and updates
@@ -164,6 +170,7 @@ func (h *MigrationHandle) run(dmm DBMSMigrationModel) error {
 		h.setFailed(err)
 		return err
 	}
+	warnNonStandardFKs(h.Context(), dmm, dstDriver)
 
 	// Migrate via direct-pipe or two-step staging.
 	if err := h.migrate(dmm, dstDriver); err != nil {
@@ -321,6 +328,7 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 	// Dump step.
 	h.SetStatus(StatusDumping)
 	logger.Info("migration status changed", slog.String("status", string(StatusDumping)), slog.String("mode", "staging"))
+	h.updateProgress(func(p *MigrationProgress) { p.Step, p.Steps = 1, 2 })
 
 	srcDriver, err := drvpkg.NewDBDriver(dmm.Source.DBMSType)
 	if err != nil {
@@ -329,7 +337,7 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 	// A file of this migration's own, not a path derived from the database name —
 	// see executor.NewStagingFile. Two migrations of the same database at the same
 	// scope used to share one file and overwrite each other's dump.
-	outputPath, cleanup, err := execpkg.NewStagingFile(dmm.Source.DBMSType, dmm.Source.Database, scope)
+	outputPath, cleanup, err := execpkg.NewStagingFile(dmm.StagingDir, dmm.Source.DBMSType, dmm.Source.Database, scope)
 	if err != nil {
 		return err
 	}
@@ -342,26 +350,76 @@ func (h *MigrationHandle) migrateViaStaging(dmm DBMSMigrationModel, dstDriver dr
 	// included: a partial dump is the same data with less of it.
 	defer cleanup()
 
-	cw, err := h.newCountingWriter(outputPath)
-	if err != nil {
-		return err
-	}
-	if err := srcDriver.Dump(h.Context(), dmm.Source, scope, outputPath, cw, dumpOption(dmm)); err != nil {
-		cw.Close() //nolint:errcheck
+	cw := h.newCountingWriter()
+	// The dump's bytes are counted by cw; the driver reports which table it is on.
+	if err := srcDriver.Dump(h.dumpContext(), dmm.Source, scope, outputPath, cw, dumpOption(dmm)); err != nil {
 		return &MigrationError{Stage: StageDump, Err: err}
-	}
-	if err := cw.Close(); err != nil {
-		return fmt.Errorf("close staging file: %w", err)
 	}
 
 	// Restore step.
 	h.SetStatus(StatusRestoring)
 	logger.Info("migration status changed", slog.String("status", string(StatusRestoring)))
 
-	if err := dstDriver.Restore(h.Context(), dmm.Destination, outputPath, h.newTableNotify()); err != nil {
+	// The restore counts from zero against the dump it reads: what was dumped is
+	// already known, and a figure carried over from the dump would sit still
+	// for the whole restore.
+	var size int64
+	if fi, err := os.Stat(outputPath); err == nil {
+		size = fi.Size()
+	}
+	h.updateProgress(func(p *MigrationProgress) {
+		p.Step = 2
+		p.BytesTransferred, p.BytesTotal = 0, size
+		p.TablesFinished, p.TablesTotal, p.RowsDone = 0, 0, 0
+		p.CurrentTable, p.Phase = "", ""
+	})
+
+	if err := dstDriver.Restore(h.restoreContext(), dmm.Destination, outputPath, h.newTableNotify()); err != nil {
 		return &MigrationError{Stage: StageRestore, Err: err}
 	}
+	// What a driver reports is the statements it ran, which leave out the
+	// dump's comments; the restore has read the file whole.
+	h.updateProgress(func(p *MigrationProgress) { p.BytesTransferred = p.BytesTotal })
 	return nil
+}
+
+// dumpContext is the handle's context carrying a reporter for the dump step:
+// the driver says which table it is on, out of how many. Bytes are not taken
+// from it — the counting writer the dump writes through has them.
+func (h *MigrationHandle) dumpContext() context.Context {
+	return core.WithReporter(h.Context(), core.ReporterFunc(func(u core.Update) {
+		h.updateProgress(func(p *MigrationProgress) {
+			if u.UnitsTotal > 0 {
+				p.TablesFinished, p.TablesTotal = u.Units, u.UnitsTotal
+			}
+			if u.Item != "" {
+				p.CurrentTable = u.Item
+			}
+		})
+	}))
+}
+
+// restoreContext is the handle's context carrying a reporter for the restore
+// step: the bytes of the dump executed (or sent to a CLI), the rows written and
+// the tables finished, each as the driver can tell them.
+func (h *MigrationHandle) restoreContext() context.Context {
+	return core.WithReporter(h.Context(), core.ReporterFunc(func(u core.Update) {
+		h.updateProgress(func(p *MigrationProgress) {
+			if u.Bytes > 0 {
+				p.BytesTransferred = u.Bytes
+			}
+			if u.Rows > 0 {
+				p.RowsDone = u.Rows
+			}
+			if u.UnitsTotal > 0 {
+				p.TablesFinished, p.TablesTotal = u.Units, u.UnitsTotal
+			}
+			if u.Item != "" {
+				p.CurrentTable = u.Item
+			}
+			p.Phase = u.Phase
+		})
+	}))
 }
 
 // =============================================================================

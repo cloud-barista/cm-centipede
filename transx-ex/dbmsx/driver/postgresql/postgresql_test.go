@@ -8,9 +8,12 @@ import (
 	filterpkg "github.com/cloud-barista/cm-centipede/transx-ex/dbmsx/filter"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -65,7 +68,7 @@ func TestBuildPGDumpCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 
 func TestBuildPGRestoreCmd_ContainsPsql(t *testing.T) {
 	drv := NewPostgreSQLDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelPG())
+	cmd := drv.BuildRestoreCmd(sshTunnelPG(), nil)
 	if !strings.HasPrefix(cmd, "PGPASSWORD=") && !strings.HasPrefix(cmd, "psql") {
 		t.Errorf("BuildRestoreCmd should start with psql or PGPASSWORD=...: %s", cmd)
 	}
@@ -76,7 +79,7 @@ func TestBuildPGRestoreCmd_ContainsPsql(t *testing.T) {
 
 func TestBuildPGRestoreCmd_DirectMode_ReturnsEmpty(t *testing.T) {
 	drv := NewPostgreSQLDriver()
-	if cmd := drv.BuildRestoreCmd(directPG()); cmd != "" {
+	if cmd := drv.BuildRestoreCmd(directPG(), nil); cmd != "" {
 		t.Errorf("BuildRestoreCmd for direct mode should be empty, got %q", cmd)
 	}
 }
@@ -604,32 +607,34 @@ func TestPostgreSQLInspect_SchemaObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if !containsAll(info.Views, "active_users") {
-		t.Errorf("Views = %v, want active_users", info.Views)
+	// Names come back schema-qualified, and routines with their identity
+	// signature (see the pgObjectQuery* contract); extensions alone are bare.
+	if !containsAll(info.Views, "public.active_users") {
+		t.Errorf("Views = %v, want public.active_users", info.Views)
 	}
-	if !containsAll(info.MaterializedViews, "mv_user_count") {
-		t.Errorf("MaterializedViews = %v, want mv_user_count", info.MaterializedViews)
+	if !containsAll(info.MaterializedViews, "public.mv_user_count") {
+		t.Errorf("MaterializedViews = %v, want public.mv_user_count", info.MaterializedViews)
 	}
-	if !containsAll(info.Functions, "user_count") {
-		t.Errorf("Functions = %v, want user_count", info.Functions)
+	if !containsAll(info.Functions, "public.user_count()") {
+		t.Errorf("Functions = %v, want public.user_count()", info.Functions)
 	}
-	if !containsAll(info.Procedures, "add_user") {
-		t.Errorf("Procedures = %v, want add_user", info.Procedures)
+	if !containsAll(info.Procedures, "public.add_user(IN uname text)") {
+		t.Errorf("Procedures = %v, want public.add_user(IN uname text)", info.Procedures)
 	}
-	if !containsAll(info.Triggers, "trg_orders_ai") {
-		t.Errorf("Triggers = %v, want trg_orders_ai", info.Triggers)
+	if !containsAll(info.Triggers, "public.trg_orders_ai") {
+		t.Errorf("Triggers = %v, want public.trg_orders_ai", info.Triggers)
 	}
-	if !containsAll(info.Sequences, "seq_demo") {
-		t.Errorf("Sequences = %v, want seq_demo", info.Sequences)
+	if !containsAll(info.Sequences, "public.seq_demo") {
+		t.Errorf("Sequences = %v, want public.seq_demo", info.Sequences)
 	}
-	if !containsAll(info.Types, "mood") {
-		t.Errorf("Types = %v, want mood", info.Types)
+	if !containsAll(info.Types, "public.mood") {
+		t.Errorf("Types = %v, want public.mood", info.Types)
 	}
 	if !containsAll(info.Extensions, "pgcrypto") {
 		t.Errorf("Extensions = %v, want pgcrypto", info.Extensions)
 	}
-	if !containsAll(info.Rules, "rule_noop") {
-		t.Errorf("Rules = %v, want rule_noop", info.Rules)
+	if !containsAll(info.Rules, "public.rule_noop") {
+		t.Errorf("Rules = %v, want public.rule_noop", info.Rules)
 	}
 	if len(info.ForeignKeys) == 0 {
 		t.Error("expected at least one foreign key")
@@ -781,7 +786,7 @@ func TestPgAnyColExcluded(t *testing.T) {
 
 func TestBuildPGRestoreCmd_HasOnErrorStop(t *testing.T) {
 	drv := NewPostgreSQLDriver()
-	cmd := drv.BuildRestoreCmd(sshTunnelPG())
+	cmd := drv.BuildRestoreCmd(sshTunnelPG(), nil)
 	if !strings.Contains(cmd, "ON_ERROR_STOP=1") {
 		t.Errorf("BuildRestoreCmd must set ON_ERROR_STOP=1 so a failed restore exits non-zero: %s", cmd)
 	}
@@ -1551,5 +1556,142 @@ func TestPgIsPostDataStmt_HoldsBackOnlyEnforcement(t *testing.T) {
 		if pgIsPostDataStmt(stmt) {
 			t.Errorf("should NOT be deferred but was:\n%s", stmt)
 		}
+	}
+}
+
+// =============================================================================
+// Restore round trips (PostgreSQL server required)
+// =============================================================================
+//
+// These put a dump back through Restore and compare what lands with what was
+// dumped. The fixture alone is a couple of rows per table; rt_bulk adds enough
+// rows for a COPY to stream in many reads and for the indexes the restore
+// builds after the rows to have something to sort.
+
+const rtRows = 200000
+
+func rtConn(t *testing.T, loc base.DBMSLocation) *pgx.Conn {
+	t.Helper()
+	conn, err := NewPostgreSQLDriver().openConn(context.Background(), loc)
+	if err != nil {
+		t.Fatalf("connect %s: %v", loc.Database, err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	return conn
+}
+
+func rtExec(t *testing.T, conn *pgx.Conn, stmts ...string) {
+	t.Helper()
+	for _, s := range stmts {
+		if _, err := conn.Exec(context.Background(), s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+}
+
+// rtSnapshot describes a database as far as a restore must reproduce it.
+func rtSnapshot(t *testing.T, conn *pgx.Conn) map[string]string {
+	t.Helper()
+	ctx := context.Background()
+	out := map[string]string{}
+	list := func(label, q string) {
+		rows, err := conn.Query(ctx, q)
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		vals, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		sort.Strings(vals)
+		out[label] = strings.Join(vals, "; ")
+	}
+	list("tables", `SELECT schemaname || '.' || relname FROM pg_stat_user_tables`)
+	for _, tbl := range strings.Split(out["tables"], "; ") {
+		if tbl == "" {
+			continue
+		}
+		var count int64
+		var sum string
+		if err := conn.QueryRow(ctx, "SELECT COUNT(*), COALESCE(md5(string_agg(t::text, ',' ORDER BY t::text)), '') FROM "+tbl+" t").
+			Scan(&count, &sum); err != nil {
+			t.Fatalf("%s: %v", tbl, err)
+		}
+		out["table "+tbl] = fmt.Sprintf("rows=%d md5=%s", count, sum)
+	}
+	list("indexes", `SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'`)
+	list("constraints", `SELECT conrelid::regclass || ' ' || pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE connamespace = 'public'::regnamespace`)
+	list("triggers", `SELECT tgrelid::regclass || '.' || tgname || ' ' || tgenabled::text FROM pg_trigger WHERE NOT tgisinternal`)
+	list("matviews", `SELECT matviewname || ' populated=' || ispopulated FROM pg_matviews WHERE schemaname = 'public'`)
+	list("routines", `SELECT p.oid::regprocedure::text FROM pg_proc p
+		WHERE p.pronamespace = 'public'::regnamespace`)
+	list("rules", `SELECT tablename || '.' || rulename FROM pg_rules WHERE schemaname = 'public'`)
+	return out
+}
+
+// TestPostgreSQLDumpRestore_Full round-trips the driver's own full dump into an
+// empty database. The dump writes each index ahead of the rows - an index on
+// the materialized view ahead of the view itself - and the restore builds them
+// once the rows are in; then its rows are restored once more onto the rows
+// already there.
+func TestPostgreSQLDumpRestore_Full(t *testing.T) {
+	env := pgTestSetup(t)
+	drv := NewPostgreSQLDriver()
+	ctx := context.Background()
+
+	src := env.loc
+	src.Database = env.srcDB
+	srcConn := rtConn(t, src)
+	t.Cleanup(func() {
+		srcConn.Exec(context.Background(), "DROP INDEX IF EXISTS rt_mv_idx; DROP TABLE IF EXISTS rt_bulk")
+	})
+	rtExec(t, srcConn,
+		"DROP TABLE IF EXISTS rt_bulk",
+		"CREATE TABLE rt_bulk (id int PRIMARY KEY, n int, v text, ts timestamptz)",
+		fmt.Sprintf(`INSERT INTO rt_bulk SELECT i, (i::bigint * 7919) %% 100000, md5(i::text),
+			to_timestamp(1700000000 + i * 37) FROM generate_series(1, %d) i`, rtRows),
+		"CREATE INDEX rt_bulk_n ON rt_bulk (n)",
+		"CREATE UNIQUE INDEX rt_bulk_v ON rt_bulk (v)",
+		"CREATE INDEX IF NOT EXISTS rt_mv_idx ON mv_user_count (c)",
+	)
+
+	admin := rtConn(t, env.loc)
+	rtExec(t, admin, "DROP DATABASE IF EXISTS testdb_rt WITH (FORCE)", "CREATE DATABASE testdb_rt")
+	t.Cleanup(func() { admin.Exec(context.Background(), "DROP DATABASE IF EXISTS testdb_rt WITH (FORCE)") })
+	dst := src
+	dst.Database = "testdb_rt"
+
+	dir := t.TempDir()
+	if err := drv.Dump(ctx, src, base.ScopeFull, dir+"/full.sql", nil, nil); err != nil {
+		t.Fatalf("Dump full: %v", err)
+	}
+	if err := drv.Restore(ctx, dst, dir+"/full.sql", nil); err != nil {
+		t.Fatalf("Restore full: %v", err)
+	}
+	want, got := rtSnapshot(t, srcConn), rtSnapshot(t, rtConn(t, dst))
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("testdb_rt: %s = %q, source has %q", k, got[k], w)
+		}
+	}
+	for k := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("testdb_rt: %s is not in the source", k)
+		}
+	}
+
+	if err := drv.Dump(ctx, src, base.ScopeDataOnly, dir+"/data.sql", nil, nil); err != nil {
+		t.Fatalf("Dump data-only: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- drv.Restore(ctx, dst, dir+"/data.sql", nil) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "duplicate key") {
+			t.Errorf("restore onto rows already there = %v, want a duplicate key error", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("restore onto rows already there did not return")
 	}
 }

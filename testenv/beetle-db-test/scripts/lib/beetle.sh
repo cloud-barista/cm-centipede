@@ -53,9 +53,10 @@
 #     version at 200 rather than an error, so three checks guard it:
 #     assert_target_versions, recommend_rdbms, and version_compatible after
 #     creation. Removing any one of them lets the wrong version get built.
-#   - The matrix cannot touch the managed instance's parameters. Columns whose
-#     instance sets require_secure_transport=ON cannot have a logical database
-#     created at all — see explain_insecure_transport.
+#   - The matrix cannot touch the managed instance's parameters. With cb-spider
+#     before v0.13.10, columns whose instance sets require_secure_transport=ON
+#     cannot have a logical database created at all — see
+#     explain_insecure_transport.
 #   - Both CSPs need a network. beetle creates a vNet with two subnets in two
 #     zones plus a security group; there is no default-VPC shortcut on either.
 
@@ -361,7 +362,8 @@ bt_wait() {
 # changing this function and nothing else.
 #
 #   Who needs it: the instance create call (adminUserPassword), every logical
-#   database call (X-Admin-User-Password), and centipede's target connection.
+#   database call (X-Admin-User-Name / X-Admin-User-Password), and centipede's
+#   target connection.
 db_password() { csp_env "$1" DB_PASSWORD; }
 
 # _assert_ncp_password PASS — NCP's rules, checked before anything is created.
@@ -413,6 +415,40 @@ assert_db_password() {
 		return 1
 	fi
 	[ "$csp" = "ncp" ] && { _assert_ncp_password "$pass" || return 1; }
+	return 0
+}
+
+# db_public_access CSP — <CSP>_DB_PUBLIC_ACCESS as true/false. Unset means true,
+#   except on NCP, where true is refused (see assert_db_access).
+db_public_access() {
+	local def=true
+	[ "$(lower "$1")" = "ncp" ] && def=false
+	csp_env_bool "$1" DB_PUBLIC_ACCESS "$def"
+}
+
+# db_acg_open CSP — NCP_DB_ACG_ALLOW_ALL_INBOUND as true/false (unset = true).
+#   Always false elsewhere: beetle rejects ncpDBACGToAllowAllInbound for any CSP
+#   but NCP.
+db_acg_open() {
+	[ "$(lower "$1")" = "ncp" ] || { printf 'false'; return 0; }
+	csp_env_bool "$1" DB_ACG_ALLOW_ALL_INBOUND true
+}
+
+# assert_db_access CSP — before anything is created.
+#   cb-spider v0.13.16+ refuses an NCP create with PublicAccess=true (NCP has no
+#   API to issue a public domain), and cm-beetle's migration API passes it through
+#   unchecked, so without this the refusal arrives only once the create request
+#   has gone out.
+assert_db_access() {
+	[ "$(lower "$1")" = "ncp" ] || return 0
+	if [ "$(db_public_access "$1")" = "true" ]; then
+		fail "NCP_DB_PUBLIC_ACCESS=true cannot be used."
+		fail "  cb-spider refuses an NCP Cloud DB create with publicAccess=true - NCP has no"
+		fail "  API to issue a public domain. Set it to false in ${ENV_FILE:-.env}."
+		fail "  Outside access comes from the console's public domain (the run stops for"
+		fail "  it) plus NCP_DB_ACG_ALLOW_ALL_INBOUND=true for the ACG inbound rule."
+		return 1
+	fi
 	return 0
 }
 
@@ -972,7 +1008,7 @@ inflight_report() {
 # The last layer is what makes a manual console deletion possible when automatic
 # deletion has failed.
 RDBMS_NAME=""; RDBMS_STATUS=""; RDBMS_ENDPOINT=""; RDBMS_HOST=""; RDBMS_PORT=""
-RDBMS_USER=""; RDBMS_ENGINE=""; RDBMS_VERSION=""; RDBMS_PUBLIC=""
+RDBMS_USER=""; RDBMS_ENGINE=""; RDBMS_VERSION=""; RDBMS_PUBLIC=""; RDBMS_ACG_OPEN=""
 RDBMS_UID=""; RDBMS_CSP_NAME=""; RDBMS_CSP_ID=""
 
 # rdbms_info CSP NAME — read the instance into RDBMS_*. 1 when it is not there.
@@ -980,15 +1016,22 @@ RDBMS_UID=""; RDBMS_CSP_NAME=""; RDBMS_CSP_ID=""
 #   overwrites endpoint / publicAccess / status with the live answer before
 #   storing it again (core/resource/rdbms.go GetRDBMS). That is what makes a
 #   public domain issued in the NCP console show up here.
+#   RDBMS_ACG_OPEN is the same kind of observation: cb-spider recomputes
+#   NCPAutoOpenACG from the rule tag it left on the ACG, so false means the rule
+#   is not there - including when adding it failed and the create still succeeded.
 rdbms_info() {
 	local csp="$1" name="$2"
 	bt_get "$(_rdbms_path)/$(urlq "$name")" || return 1
 	RDBMS_STATUS="$(bt_data '.status')"
 	RDBMS_ENDPOINT="$(bt_data '.endpoint')"
+	# The read has no adminUserName since cm-beetle v0.6.2 (rdbmsmodel.RDBMSInfo);
+	# the configured name is the one the instance was created with.
 	RDBMS_USER="$(bt_data '.adminUserName')"
+	RDBMS_USER="${RDBMS_USER:-$(csp_env "$csp" DB_ADMIN_USERNAME)}"
 	RDBMS_ENGINE="$(bt_data '.dbEngine')"
 	RDBMS_VERSION="$(bt_data '.dbEngineVersion')"
 	RDBMS_PUBLIC="$(bt_data '.publicAccess')"
+	RDBMS_ACG_OPEN="$(bt_data '.ncpDBACGToAllowAllInbound // false')"
 	RDBMS_UID="$(bt_data '.uid')"
 	RDBMS_CSP_NAME="$(bt_data '.cspResourceName')"
 	RDBMS_CSP_ID="$(bt_data '.cspResourceId')"
@@ -1061,7 +1104,8 @@ recommend_rdbms() {
 		--argjson memory "$(csp_env_int "$csp" DB_SRC_MEMORY_GB 4)" \
 		--argjson storage "$(csp_env_int "$csp" DB_SRC_STORAGE_GB 100)" \
 		--argjson port "$(engine_port "$engine")" \
-		--argjson public "$(csp_env_bool "$csp" DB_PUBLIC_ACCESS true)" \
+		--argjson public "$(db_public_access "$csp")" \
+		--argjson acg "$(db_acg_open "$csp")" \
 		'{desiredCloud:({csp:$csp, region:$region}
 		                + (if $zone == "" then {} else {zone:$zone} end)),
 		  sourceRDBMSInstances:[{
@@ -1072,7 +1116,8 @@ recommend_rdbms() {
 		            rootDisk:{type:"SSD", totalSize:$storage}}}],
 		  targetPreferences:({publicAccess:$public, highAvailability:false,
 		                      backupRetentionDays:0}
-		                     + (if $user == "" then {} else {adminUserName:$user} end))}')"
+		                     + (if $user == "" then {} else {adminUserName:$user} end)
+		                     + (if $csp == "ncp" then {ncpDBACGToAllowAllInbound:$acg} else {} end))}')"
 
 	if ! bt_post "/recommendation/middleware/rdbms?desiredCsp=$(urlq "$(lower "$csp")")&desiredRegion=$(urlq "$region")" "$body"; then
 		bt_report "RDBMS recommendation failed: $csp $engine $version"
@@ -1115,11 +1160,12 @@ recommend_rdbms() {
 #
 #   vNetId/subnetIds/securityGroupIds : beetle does not fill these, and creation
 #                                       fails when they are empty.
-#   adminUserPassword                 : left empty, beetle substitutes its own default.
+#   adminUserPassword                 : <CSP>_DB_PASSWORD; beetle has no default.
 #   adminUserName                     : <CSP>_DB_ADMIN_USERNAME.
 #   rdbmsName                         : the recommendation always says mig-rdbms-01,
 #                                       so every column would collide.
 #   publicAccess                      : <CSP>_DB_PUBLIC_ACCESS — see below.
+#   ncpDBACGToAllowAllInbound         : NCP_DB_ACG_ALLOW_ALL_INBOUND, NCP only — see below.
 #   backupRetentionDays               : <CSP>_DB_BACKUP_RETENTION_DAYS — see below.
 #
 #   Left as the recommendation returned it: dbInstanceSpec, storageType and
@@ -1129,17 +1175,24 @@ recommend_rdbms() {
 #   the one thing the recommendation is good at.
 #
 # ── Why publicAccess is asserted again ──────────────────────────────────────
-#   A recommendation can lower it. On NCP it always does:
+#   A recommendation can lower it, and .env is where that decision belongs, so it
+#   is put back. On NCP the recommendation always answers false:
 #
-#     beetle: NCP Cloud DB does not provide external public IP by default;
-#             instance(s) will be created within private VPC.
+#     beetle: NCP Cloud DB does not support publicAccess=true (Open API does not
+#             support public domain allocation). Enforced private access. ...
 #
-#   so a requested true comes back false and, left alone, false is what the CSP
-#   is asked for. .env is where that decision belongs, so it is put back.
+#   and false is the only value NCP can take - cb-spider refuses a create with
+#   true. assert_db_access stops NCP_DB_PUBLIC_ACCESS=true in the pre-flight, so
+#   what is put back here on NCP is always false.
 #
-#   ⚠ It does not conjure a public domain on NCP - that is still a console step
-#     (see the NCP notes in README.md). It only stops the request from disagreeing
-#     with the configuration.
+# ── Why ncpDBACGToAllowAllInbound is asserted again (NCP only) ──────────────
+#   Same reason: the create body is what reaches the CSP. With it true cb-spider
+#   waits for the instance to run and adds TCP 0.0.0.0/0 -> DB port to the ACG
+#   NCP made for it; the security group passed in securityGroupIds is ignored by
+#   NCP Cloud DB, so that ACG is the one that decides reachability.
+#
+#   ⚠ Neither field produces a public domain on NCP - that is still a console
+#     step (see the NCP notes in README.md).
 #
 # ── Why the backup retention is forced back down ────────────────────────────
 #   targetPreferences.backupRetentionDays=0 in the recommendation request comes
@@ -1171,13 +1224,16 @@ inject_rdbms_target() {
 		--arg pass "$(db_password "$csp")" \
 		--arg user "$(csp_env "$csp" DB_ADMIN_USERNAME)" \
 		--argjson backup "$(csp_env_int "$csp" DB_BACKUP_RETENTION_DAYS 0)" \
-		--argjson public "$(csp_env_bool "$csp" DB_PUBLIC_ACCESS true)" \
+		--argjson public "$(db_public_access "$csp")" \
+		--argjson acg "$(db_acg_open "$csp")" --arg csp "$(lower "$csp")" \
 		'.targetRDBMSInstances = [ .targetRDBMSInstances[] | (
 		      .rdbmsName = $name
 		    | .vNetId = $vnet
 		    | .subnetIds = $subnets
 		    | .securityGroupIds = (if $sg == "" then [] else [$sg] end)
 		    | .publicAccess = $public
+		    | (if $csp == "ncp" then .ncpDBACGToAllowAllInbound = $acg
+		       else del(.ncpDBACGToAllowAllInbound) end)
 		    | .backupRetentionDays = $backup
 		    | .adminUserPassword = $pass
 		    | (if $user == "" then . else .adminUserName = $user end)
@@ -1224,6 +1280,8 @@ create_rdbms() {
 			"    storage     \(if (.storageType // "") == "" then "(CSP managed)" else "\(.storageType) \(.storageSize)GB" end)",
 			"    admin       \(.adminUserName)",
 			"    public      \(.publicAccess)",
+			(if has("ncpDBACGToAllowAllInbound") then
+			"    acg-open    \(.ncpDBACGToAllowAllInbound)" else empty end),
 			"    backups     \(.backupRetentionDays) day(s)"'
 
 		step "creating the instance: $name (a managed RDBMS takes 5-30 min)"
@@ -1320,10 +1378,11 @@ delete_rdbms() {
 #   make new ones (NCP answers Error 1044, Access denied for user 'dbadmin'@'%').
 #   So the instance's owner, cm-beetle, is asked instead.
 #
-#   The API takes a name and the admin password, and nothing else - a character
-#   set cannot be specified, so the logical database follows the instance
-#   defaults. Table character sets travel inside the dump's CREATE TABLE
-#   statements, and centipede reports a database-level difference as a warning.
+#   The request carries a name, and the source's character set where the
+#   engine and CSP take one, in the body, and the admin account in two headers.
+#   What is left out follows the instance defaults. Table character sets travel
+#   inside the dump's CREATE TABLE statements either way, and centipede reports
+#   a database-level difference as a warning.
 #
 #   This step exists because centipede does not create the target database: it
 #   does so only for providerName "onprem", and a managed target is aws or ncp.
@@ -1342,17 +1401,80 @@ target_db_kind() {
 	esac
 }
 
+# bt_admin_headers CSP — the two headers every logical database call needs.
+#   cm-beetle answers 400 when either is missing. The user name is the one the
+#   instance was created with (<CSP>_DB_ADMIN_USERNAME, which RDBMS_USER also
+#   falls back to).
+bt_admin_headers() {
+	local user
+	user="$(csp_env "$1" DB_ADMIN_USERNAME)"
+	bt_header "X-Admin-User-Name: ${user:-$RDBMS_USER}"
+	bt_header "X-Admin-User-Password: $(db_password "$1")"
+}
+
 logical_db_list() {
 	local csp="$1" name="$2"
-	bt_header "X-Admin-User-Password: $(db_password "$csp")"
+	bt_admin_headers "$csp"
 	bt_get "$(_rdbms_path)/$(urlq "$name")/database" || return 1
 	bt_jq -r '.databases[]? // empty'
 }
 
+# _charset_policy_<engine> CSP — what this engine takes of the source character
+#   set on CSP:
+#     all      charset and collation
+#     charset  charset alone; the engine picks its default collation
+#     none     neither
+#   One function per engine, mirroring charsetPolicies in
+#   pkg/client/beetle/charset.go. An engine without one takes none.
+_charset_policy_mysql() {
+	case "$1" in
+	ncp|nhn) printf 'none' ;;   # either value switches creation to SQL
+	*)       printf 'all' ;;
+	esac
+}
+
+_charset_policy_mariadb() {
+	case "$1" in
+	ncp|nhn) printf 'none' ;;    # either value switches creation to SQL
+	alibaba) printf 'charset' ;; # Alibaba MariaDB rejects a collation
+	*)       printf 'all' ;;
+	esac
+}
+
+# src_charset_env ENGINE KIND — the source database's CHARSET or COLLATION as
+#   .env sets it, with the same defaults source.sh builds the source from.
+src_charset_env() {
+	local var
+	var="$(upper "$1")_SRC_$2"
+	case "$2" in
+	CHARSET)   printf '%s' "${!var-utf8mb4}" ;;
+	COLLATION) printf '%s' "${!var-utf8mb4_general_ci}" ;;
+	esac
+}
+
+# LOGICAL_DB_CHARSET — "charset/collation" the last logical_db_create sent,
+#   empty when it sent neither. For the log line only.
+LOGICAL_DB_CHARSET=""
+
+# logical_db_create CSP NAME DB ENGINE
 logical_db_create() {
-	local csp="$1" name="$2" db="$3" body raw
-	body="$(jq -n --arg db "$db" --arg pw "$(db_password "$csp")" \
-		'{databaseName:$db, adminUserPassword:$pw}')"
+	local csp="$1" name="$2" db="$3" engine policy="none" cs="" co="" body raw
+	engine="$(lower "${4:-}")"
+	if declare -F "_charset_policy_$engine" >/dev/null; then
+		policy="$("_charset_policy_$engine" "$(lower "$csp")")"
+	fi
+	case "$policy" in
+	all)     cs="$(src_charset_env "$engine" CHARSET)"; co="$(src_charset_env "$engine" COLLATION)" ;;
+	charset) cs="$(src_charset_env "$engine" CHARSET)" ;;
+	esac
+	LOGICAL_DB_CHARSET=""
+	[ -n "$cs$co" ] && LOGICAL_DB_CHARSET="${cs:-default}/${co:-default}"
+
+	body="$(jq -n --arg db "$db" --arg cs "$cs" --arg co "$co" \
+		'{databaseName:$db}
+		 + (if $cs == "" then {} else {charset:$cs} end)
+		 + (if $co == "" then {} else {collation:$co} end)')"
+	bt_admin_headers "$csp"
 	if bt_post "$(_rdbms_path)/$(urlq "$name")/database" "$body"; then
 		return 0
 	fi
@@ -1364,7 +1486,7 @@ logical_db_create() {
 
 logical_db_drop() {
 	local csp="$1" name="$2" db="$3"
-	bt_header "X-Admin-User-Password: $(db_password "$csp")"
+	bt_admin_headers "$csp"
 	if bt_delete "$(_rdbms_path)/$(urlq "$name")/database/$(urlq "$db")"; then
 		return 0
 	fi
@@ -1411,9 +1533,9 @@ target_db_create() {
 
 	target_db_clear "$csp" "$engine" "$dbs"
 	for db in $dbs; do
-		logical_db_create "$csp" "$inst" "$db" || return 1
+		logical_db_create "$csp" "$inst" "$db" "$engine" || return 1
 	done
-	info "target database created: $dbs  (instance $inst, instance default character set)"
+	info "target database created: $dbs  (instance $inst, character set ${LOGICAL_DB_CHARSET:-instance default})"
 	return 0
 }
 
@@ -1442,9 +1564,9 @@ target_db_drop() {
 # again. If the probe passes, the cells' creation passes.
 #
 # It earns its keep. Creating a logical database goes through cb-spider's SQL
-# fallback, which connects in plaintext to everything but IBM hosts, so an
-# instance with require_secure_transport=ON refuses it - and there is no setting
-# in this folder that changes that. Folding the column once and recording the
+# fallback, which before cb-spider v0.13.10 connects in plaintext to everything
+# but IBM hosts, so an instance with require_secure_transport=ON refuses it - and
+# there is no setting in this folder that changes that. Folding the column once and recording the
 # sentence the CSP produced reads far better than every cell dying of the same
 # error one at a time.
 TARGET_PROBE_REASON=""
@@ -1582,8 +1704,8 @@ cleanup_namespace() {
 # parameter group it attaches to a managed instance. So the same engine version
 # only refuses plaintext when a managed service built it.
 #
-# The path that creates a logical database, cb-spider's SQL fallback, enables TLS
-# for IBM hosts only:
+# The path that creates a logical database, cb-spider's SQL fallback, enabled TLS
+# for IBM hosts only before cb-spider v0.13.10:
 #
 #   // Enable TLS for IBM Cloud MySQL (skip server cert verification)
 #   if strings.Contains(strings.ToLower(host), ".databases.appdomain.cloud") {
@@ -1591,9 +1713,11 @@ cleanup_namespace() {
 #   }
 #   (cb-spider api-runtime/common-runtime/RDBMSManager.go, openRDBMSSQLConn)
 #
-# So it connects to AWS in plaintext and the server closes it with 3159. This is
-# not something the matrix can work around - it is lower in the stack - so what
-# can be done is spelled out instead.
+# So such a cb-spider connects to AWS in plaintext and the server closes it with
+# 3159. From v0.13.10 (commit 600a4f07) it connects with tls=preferred to every
+# CSP, which this error should no longer meet. Either way it is not something the
+# matrix can work around - it is lower in the stack - so what can be done is
+# spelled out instead.
 #
 # ⚠ TARGET_TLS_MODE does not help here. That value governs the migration
 #   transx-ex performs, not the connection cb-spider makes.
@@ -1632,8 +1756,20 @@ explain_dbtype_mismatch() {
 #   The messages come from pkg/client/beetle/client.go: "beetle unreachable" for a
 #   transport failure, "beetle returned NNN" for a refusal, and "has no endpoint
 #   yet" for an instance still being built.
+#
+#   "reports no admin user name" is not a reachability problem: beetle answered,
+#   but its RDBMS read has no adminUserName since v0.6.2, so the reference itself
+#   has to name the user. It gets its own explanation.
 explain_centipede_beetle() {
 	case "$1" in
+	*"reports no admin user name"*)
+		fail ""
+		fail "  Cause: the beetleDb reference carries no username, and cm-beetle cannot supply"
+		fail "         one: its RDBMS read (rdbmsmodel.RDBMSInfo) has had no adminUserName"
+		fail "         since v0.6.2. centipede reached beetle; the reference is what is short."
+		fail "  Check: $(upper "$CSP")_DB_ADMIN_USERNAME in .env — cp_dst_connection sends it as"
+		fail "         beetleDb.username, and it must be the name the instance was created with."
+		return 0 ;;
 	*"beetle unreachable"*|*"beetle returned"*|*"beetle rdbms"*|*"parse beetle response"*) ;;
 	*) return 0 ;;
 	esac
@@ -1663,9 +1799,10 @@ explain_insecure_transport() {
 	fail "         at every version, so the same engine version refuses plaintext only"
 	fail "         when a managed service built it."
 	fail "         Creating a logical database goes through cb-spider's SQL fallback, which"
-	fail "         enables TLS for IBM hosts only (RDBMSManager.go openRDBMSSQLConn), so it"
-	fail "         connects to every other CSP in plaintext. A constraint lower in the"
-	fail "         stack; nothing in this folder works around it."
+	fail "         before cb-spider v0.13.10 enables TLS for IBM hosts only"
+	fail "         (RDBMSManager.go openRDBMSSQLConn) and connects to every other CSP in"
+	fail "         plaintext. A constraint lower in the stack; nothing in this folder works"
+	fail "         around it."
 	fail "  Note : TARGET_TLS_MODE does not apply here. It governs the migration transx-ex"
 	fail "         performs, not the connection cb-spider makes."
 	fail "  What you can do:"
@@ -1674,7 +1811,7 @@ explain_insecure_transport() {
 	fail "       region offers with:  ./scripts/$(lower "${2:-aws}")-db-versions.sh"
 	fail "    2) Create a parameter group in the console with require_secure_transport=0,"
 	fail "       attach it and reboot (manual — no parameter-group API anywhere in the stack)."
-	fail "    3) Make cb-spider connect over TLS to other CSPs too (the one condition above)."
+	fail "    3) Run cb-spider v0.13.10 or later, which connects with tls=preferred to every CSP."
 }
 
 # explain_pg_maintenance_db ERROR — the "postgres" database transx-ex insists on.

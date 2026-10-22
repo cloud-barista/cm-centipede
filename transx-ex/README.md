@@ -152,7 +152,7 @@ Model → Validate() → Plan() → Pipeline{Steps} → Executor.Execute(ctx, sr
 | Source → Destination            | Pipeline                   | How                                  |
 | ------------------------------- | -------------------------- | ------------------------------------ |
 | filesystem ↔ filesystem         | `filesystem-transfer`      | rsync pull, push, or agent-forward   |
-| objectstorage ↔ objectstorage   | `objectstorage-transfer`   | download → local staging → upload    |
+| objectstorage ↔ objectstorage   | `objectstorage-transfer`   | each object streamed GET → PUT; `relay`: download → local staging → upload |
 | filesystem ↔ objectstorage      | `cross-storage-transfer`   | rsync and S3 combined                |
 
 Object storage access type `minio` covers every S3-compatible service and Azure
@@ -171,7 +171,7 @@ block is unchanged — `accessKeyId` is read as the storage account name and
 
 Both ends must run the same engine. A dump is the source engine's own dialect and the restore hands it over verbatim, so a cross-engine pair would fail somewhere mid-transfer; `ValidateDBMS` refuses it up front instead.
 
-Staging goes under `/tmp/transxex-staging`, in a `storage/` or `dbms/` subdirectory so concurrent migrations never share a directory.
+Staging goes under the model's `StagingDir` when it is set, otherwise under `$TMPDIR/transxex-staging` (`/tmp/transxex-staging` when `TMPDIR` is unset), in a `storage/` or `dbms/` subdirectory so concurrent migrations never share a directory.
 
 `direct-pipe` streams `pg_dump` straight into `psql`, so the schema names are already in the bytes by the time they leave the source host. Selecting schemas works there, but renaming them does not — see [PostgreSQL Schemas](#postgresql-schemas).
 

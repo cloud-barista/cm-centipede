@@ -44,6 +44,7 @@ type (
 	Severity             = drvpkg.Severity
 
 	DumpOption             = drvpkg.DumpOption
+	RestoreOption          = drvpkg.RestoreOption
 	CreateDatabaseOption   = drvpkg.CreateDatabaseOption
 	MySQLCreateOption      = drvpkg.MySQLCreateOption
 	MariaDBCreateOption    = drvpkg.MariaDBCreateOption
@@ -90,9 +91,10 @@ const (
 
 	SeverityBlocker = drvpkg.SeverityBlocker
 	SeverityWarning = drvpkg.SeverityWarning
-
-	DefaultStagingPath = drvpkg.DefaultStagingPath
 )
+
+// StagingPath returns the local directory intermediate dump files go in.
+var StagingPath = drvpkg.StagingPath
 
 // =============================================================================
 // Type aliases — re-export executor types so callers use unqualified names
@@ -149,6 +151,26 @@ type MigrationProgress struct {
 	TablesDone       int             `json:"tablesDone"`
 	CurrentTable     string          `json:"currentTable,omitempty"`
 	ErrMessage       string          `json:"error,omitempty"`
+
+	// Step is the step of a staged migration the counts belong to — 1 the dump,
+	// 2 the restore — out of Steps. A piped migration has one step and leaves
+	// both zero. BytesTransferred restarts at zero with the restore, and
+	// BytesTotal is then the size of the dump it is reading.
+	Step  int `json:"step,omitempty"`
+	Steps int `json:"steps,omitempty"`
+	// TablesFinished counts the tables (or collections) of the current step
+	// that are done, out of TablesTotal, as the driver reports them. TablesDone
+	// counts the restore's table notifications instead, which can fire more
+	// than once for a table.
+	TablesFinished int `json:"tablesFinished,omitempty"`
+	// RowsDone counts the rows (or documents) the restore has written. A
+	// restore through a CLI over SSH cannot count them, and leaves it zero.
+	RowsDone int64 `json:"rowsDone,omitempty"`
+	// Phase is what the current step is doing when Status alone says too
+	// little: "indexes deferred: 2 tables" while a restore writes rows with
+	// those tables' indexes held back, "rebuilding indexes" once it builds them.
+	// Empty when there is nothing more to say.
+	Phase string `json:"phase,omitempty"`
 }
 
 // The accessors below satisfy core.Progress, which is how core.Handle keeps
@@ -199,6 +221,12 @@ type DBMSMigrationModel struct {
 	// patch-level difference never blocks. Set this to migrate to an older
 	// server anyway — when the schema is known to use nothing the target lacks.
 	SkipVersionCheck bool `json:"skipVersionCheck,omitempty"`
+
+	// StagingDir is the local staging root a dump is written under before it is
+	// restored; the migration uses its dbms subdirectory. Empty selects the
+	// default, $TMPDIR/transxex-staging or /tmp/transxex-staging. It has no
+	// effect on an SSH-to-SSH pipe, which stages nothing.
+	StagingDir string `json:"stagingDir,omitempty"`
 }
 
 // =============================================================================

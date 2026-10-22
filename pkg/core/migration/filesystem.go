@@ -128,7 +128,9 @@ func resolveTransxLoc(ref commonmodel.ConnectionRef, storageType, path string, f
 // storage; transx handles the ssh→local→S3 relay). Processes folders in ascending
 // Order and emits a ProgressEvent per folder. Returns ctx.Err() on cancellation;
 // per-folder transfer errors are reported via ProgressEvent only (continues).
-func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemModel, progressCh chan<- ProgressEvent) error {
+// stagingDir is the local staging root a relay or cross-storage transfer uses
+// (see ResolveStagingDir); empty leaves it to transx-ex's default.
+func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemModel, stagingDir string, progressCh chan<- ProgressEvent) error {
 	srcSSH, err := ResolveSSHConfig(m.SrcConnection)
 	if err != nil {
 		return fmt.Errorf("resolve src connection: %w", err)
@@ -137,11 +139,11 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 	if dstType == "" {
 		dstType = commonmodel.StorageTypeFilesystem
 	}
-	// Normalise the transfer strategy; empty defaults to relay. Guards migrations
+	// Normalise the transfer strategy; empty defaults to direct. Guards migrations
 	// created directly (bypassing the plan layer) with an unset strategy.
 	strategy := m.Strategy
 	if strategy == "" {
-		strategy = commonmodel.StrategyRelay
+		strategy = commonmodel.StrategyDirect
 	}
 
 	folders := make([]targetmodel.FSMigrationInfo, len(m.Folders))
@@ -191,6 +193,7 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 			Source:      srcLoc,
 			Destination: dstLoc,
 			Strategy:    strategy,
+			StagingDir:  stagingDir,
 		}, folder.SrcPath, progressCh)
 		durationMs := time.Since(start).Milliseconds()
 

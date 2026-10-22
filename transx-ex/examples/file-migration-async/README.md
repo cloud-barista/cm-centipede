@@ -285,7 +285,7 @@ brew install rsync           # macOS
 
 ### Migration failed: staging directory
 
-The relay strategy uses `/tmp/transxex-staging` as local staging. Ensure the path is writable:
+The relay strategy stages under `$TMPDIR/transxex-staging` (`/tmp/transxex-staging` when `TMPDIR` is unset), or under the model's `StagingDir` when it is set. Ensure the path is writable:
 
 ```bash
 ls -la /tmp/transxex-staging

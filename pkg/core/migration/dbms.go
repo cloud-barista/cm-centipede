@@ -206,8 +206,12 @@ func ResolveDBMSLocation(ref commonmodel.ConnectionRef, database, dbType string)
 		if err := validateManagedEngine(engine); err != nil {
 			return transxex.DBMSLocation{}, err
 		}
+		tls, err := resolveManagedTLS(*ref.BeetleDB, acc)
+		if err != nil {
+			return transxex.DBMSLocation{}, err
+		}
 		return DBConnConfigToDBMSLocation(
-			managedDBConnConfig(engine, acc, *ref.BeetleDB), database)
+			managedDBConnConfig(engine, acc, *ref.BeetleDB, tls), database)
 
 	case commonmodel.ConnectionSourceDB:
 		if ref.DB == nil {
@@ -239,15 +243,13 @@ func validateManagedEngine(engine string) error {
 }
 
 // managedDBConnConfig builds a DBConnConfig for a managed cloud RDB (beetleDb):
-// direct access, with the endpoint and admin user from cm-beetle and the
-// settings the lookup cannot supply — the password and the TLS choice — from the
-// ref.
+// direct access, with the endpoint and admin user from cm-beetle, the password
+// from the ref, and the TLS mode and CA resolveManagedTLS settled on.
 //
-// ProviderName is left empty on purpose. cm-beetle's RDBMS read does not report
-// which CSP holds the instance, and the field decides nothing (transx-ex carries
-// it into DBMSLocation.ProviderName but never reads it), so naming a provider
-// here would mean inventing one.
-func managedDBConnConfig(engine string, acc *beetle.DBConfig, ref commonmodel.BeetleDBRef) commonmodel.DBConnConfig {
+// ProviderName is left empty on purpose. cm-beetle's RDBMS read does report the
+// CSP (connectionConfig.providerName), but the field decides nothing here
+// (transx-ex carries it into DBMSLocation.ProviderName but never reads it).
+func managedDBConnConfig(engine string, acc *beetle.DBConfig, ref commonmodel.BeetleDBRef, tls tlsDecision) commonmodel.DBConnConfig {
 	return commonmodel.DBConnConfig{
 		DBMSType:   engine,
 		AccessType: "direct",
@@ -255,8 +257,8 @@ func managedDBConnConfig(engine string, acc *beetle.DBConfig, ref commonmodel.Be
 		Port:       acc.Port,
 		Username:   pick(ref.Username, acc.Username),
 		Password:   ref.Password,
-		TLSMode:    ref.TLSMode,
-		TLSCAPEM:   ref.TLSCAPEM,
+		TLSMode:    tls.Mode,
+		TLSCAPEM:   tls.CAPEM,
 	}
 }
 
@@ -364,7 +366,11 @@ func EnsureTargetDatabase(
 		if err != nil {
 			return false, fmt.Errorf("decrypt connection ref: %w", err)
 		}
-		if err := beetle.CreateDatabase(*ref.BeetleDB, dstLoc.Database); err != nil {
+		var charset, collation string
+		if srcInfo != nil {
+			charset, collation = srcInfo.CharacterSet, srcInfo.Collation
+		}
+		if err := beetle.CreateDatabase(*ref.BeetleDB, dstLoc.Database, charset, collation); err != nil {
 			return false, fmt.Errorf("create target database %q: %w", dstLoc.Database, err)
 		}
 		return true, nil
@@ -379,7 +385,19 @@ func EnsureTargetDatabase(
 					"providerName %q (got %q) — provision it on the provider first",
 				dstLoc.Database, commonmodel.ProviderOnPrem, dst.DB.ProviderName)
 		}
-		if err := transxex.CreateDatabase(dstLoc, createOptionFrom(dstLoc.DBMSType, srcInfo)); err != nil {
+		opt := createOptionFrom(dstLoc.DBMSType, srcInfo)
+		err := transxex.CreateDatabase(dstLoc, opt)
+		// The source's libc locale need not be installed on the target host (an
+		// alpine image, or one that ships only C.UTF-8). Retry with the target's
+		// default locale rather than fail; the encoding is kept.
+		if err != nil && opt.PostgreSQL != nil && strings.Contains(err.Error(), "invalid locale name") {
+			log.Warn().Err(err).Str("database", dstLoc.Database).
+				Str("lcCollate", opt.PostgreSQL.LcCollate).Str("lcCtype", opt.PostgreSQL.LcCtype).
+				Msg("source locale not available on target; creating with target default locale")
+			opt.PostgreSQL.LcCollate, opt.PostgreSQL.LcCtype = "", ""
+			err = transxex.CreateDatabase(dstLoc, opt)
+		}
+		if err != nil {
 			return false, fmt.Errorf("create target database %q: %w", dstLoc.Database, err)
 		}
 		return true, nil
@@ -466,9 +484,12 @@ func createOptionFrom(dbmsType string, src *transxex.DBMSInfo) *transxex.CreateD
 // ssh-tunnel) is checked up-front by transxex.ValidateDBMS — MigrateDBMSAsync
 // does not validate on its own — and any violation is reported as a failed item.
 //
+// stagingDir is the local staging root a dump is written under (see
+// ResolveStagingDir); empty leaves it to transx-ex's default.
+//
 // Returns ctx.Err() on cancellation; per-item errors are reported through
 // progressCh and do not stop the remaining items.
-func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure string, progressCh chan<- ProgressEvent) error {
+func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure, stagingDir string, progressCh chan<- ProgressEvent) error {
 	dbType := string(m.DBType)
 
 	dbs := make([]targetmodel.DBMigrationInfo, len(m.Databases))
@@ -487,7 +508,7 @@ func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure 
 		default:
 		}
 
-		if err := migrateOneDatabase(ctx, m, d, dbType, onFailure, progressCh); err != nil {
+		if err := migrateOneDatabase(ctx, m, d, dbType, onFailure, stagingDir, progressCh); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -505,6 +526,7 @@ func migrateOneDatabase(
 	d targetmodel.DBMigrationInfo,
 	dbType string,
 	onFailure string,
+	stagingDir string,
 	progressCh chan<- ProgressEvent,
 ) error {
 	itemPath := fmt.Sprintf("%s/%s", dbType, d.SrcName)
@@ -571,6 +593,7 @@ func migrateOneDatabase(
 		// A database we created is dropped whole on failure, so there is nothing
 		// for the object-level rollback to do; the two paths are exclusive.
 		RollbackOnFailure: !created && !keep,
+		StagingDir:        stagingDir,
 	}
 
 	if err := transxex.ValidateDBMS(dmm); err != nil {
@@ -595,12 +618,28 @@ func migrateOneDatabase(
 		select {
 		case <-ticker.C:
 			p := handle.Progress()
-			progressCh <- ProgressEvent{
-				Kind:      EventTick,
-				ItemPath:  itemPath,
-				Current:   p.CurrentTable,
-				SizeBytes: p.BytesTransferred,
+			ev := ProgressEvent{
+				Kind:       EventTick,
+				ItemPath:   itemPath,
+				Current:    p.CurrentTable,
+				SizeBytes:  p.BytesTransferred,
+				Step:       p.Step,
+				Steps:      p.Steps,
+				Rows:       p.RowsDone,
+				Units:      p.TablesFinished,
+				UnitsTotal: p.TablesTotal,
+				BytesTotal: p.BytesTotal,
 			}
+			// A staged migration's two steps are its status: the dump, then the
+			// restore. A piped one has a single step and nothing to name. The
+			// phase is said beside it: a restore leaving some tables' indexes
+			// until their rows are in, and then building them - minutes in which
+			// the status alone would show the restore stopped on its last table.
+			if p.Steps > 0 {
+				ev.StepName = string(p.Status)
+				ev.StepDetail = p.Phase
+			}
+			progressCh <- ev
 
 		case <-ctx.Done():
 			handle.Cancel()

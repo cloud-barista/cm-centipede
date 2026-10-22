@@ -93,7 +93,7 @@ func planFilesystemTransfer(model DataMigrationModel) (*Pipeline, error) {
 // Step 1: Pull from remote source to local staging
 // Step 2: Push from local staging to remote destination
 func planRelayFilesystemTransfer(model DataMigrationModel) (*Pipeline, error) {
-	stagingLoc, cleanup, err := newStagingLocation()
+	stagingLoc, cleanup, err := newStagingLocation(model.StagingDir)
 	if err != nil {
 		return nil, err
 	}
@@ -138,9 +138,47 @@ func planRelayFilesystemTransfer(model DataMigrationModel) (*Pipeline, error) {
 // ============================================================================
 
 // planObjectStorageTransfer handles objectstorage ↔ objectstorage transfers.
-// Always uses relay via local staging: S3 → local → S3
+//
+// By default — auto, direct or unset — each object streams from source to
+// destination with nothing staged (S3 → S3). Strategy "relay" keeps the
+// two-step route through local staging (S3 → local → S3), for a source and
+// destination that should not be read and written at once.
 func planObjectStorageTransfer(model DataMigrationModel) (*Pipeline, error) {
-	stagingLoc, cleanup, err := newStagingLocation()
+	if model.Strategy == StrategyRelay {
+		return planRelayObjectStorageTransfer(model)
+	}
+
+	srcProvider, err := NewS3Provider(model.Source)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create source S3 provider: %w", err)
+	}
+	dstProvider, err := NewS3Provider(model.Destination)
+	if err != nil {
+		_ = CloseS3Provider(srcProvider)
+		return nil, fmt.Errorf("failed to create destination S3 provider: %w", err)
+	}
+
+	return &Pipeline{
+		Name: PipelineObjectStorageTransfer,
+		// What was resolved, not what was asked: auto and unset both end here.
+		Strategy: StrategyDirect,
+		Cleanup:  withProviders(nil, srcProvider, dstProvider),
+		Steps: []Step{
+			{
+				Name:        StepStreamS3ToS3,
+				Source:      model.Source,
+				Destination: model.Destination,
+				Executor:    NewS3StreamExecutor(srcProvider, dstProvider),
+			},
+		},
+	}, nil
+}
+
+// planRelayObjectStorageTransfer creates a two-step transfer via local staging.
+// Step 1: Download from source S3 to local staging
+// Step 2: Upload from local staging to destination S3
+func planRelayObjectStorageTransfer(model DataMigrationModel) (*Pipeline, error) {
+	stagingLoc, cleanup, err := newStagingLocation(model.StagingDir)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +265,7 @@ func planFilesystemToObjectStorage(model DataMigrationModel) (*Pipeline, error) 
 	}
 
 	// Relay transfer: ssh → local → s3
-	stagingLoc, cleanup, err := newStagingLocation()
+	stagingLoc, cleanup, err := newStagingLocation(model.StagingDir)
 	if err != nil {
 		_ = CloseS3Provider(s3Provider)
 		return nil, err
@@ -288,7 +326,7 @@ func planObjectStorageToFilesystem(model DataMigrationModel) (*Pipeline, error) 
 	}
 
 	// Relay transfer: s3 → local → ssh
-	stagingLoc, cleanup, err := newStagingLocation()
+	stagingLoc, cleanup, err := newStagingLocation(model.StagingDir)
 	if err != nil {
 		_ = CloseS3Provider(s3Provider)
 		return nil, err
@@ -338,21 +376,25 @@ func planObjectStorageToFilesystem(model DataMigrationModel) (*Pipeline, error) 
 //
 // MkdirTemp is what makes it safe rather than merely unlikely: it names and
 // creates in one atomic step, so two transfers planned at the same moment cannot
-// be handed the same path. The directory goes under DefaultStagingPath rather
-// than beside it, so concurrent relays stay collected in one place instead of
-// scattering temporary directories across /tmp.
+// be handed the same path. The directory goes under StagingPath(stagingDir)
+// rather than beside it, so concurrent relays stay collected in one place
+// instead of scattering temporary directories across /tmp.
+//
+// stagingDir is the model's StagingDir: the staging root the caller asked for,
+// or empty for the default.
 //
 // The returned cleanup is best effort and deliberately silent. Neither this
 // package nor core logs, a temporary directory that refuses to delete is not
 // something the caller of a finished transfer can act on, and the one thing
 // cleanup must never do is mask the transfer's own result — so it reports
-// nothing.
-func newStagingLocation() (DataLocation, func(), error) {
-	if err := os.MkdirAll(DefaultStagingPath, 0o750); err != nil {
-		return DataLocation{}, nil, fmt.Errorf("failed to create staging root %q: %w", DefaultStagingPath, err)
+// nothing. It removes only the directory it created, never the root.
+func newStagingLocation(stagingDir string) (DataLocation, func(), error) {
+	root := StagingPath(stagingDir)
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		return DataLocation{}, nil, fmt.Errorf("failed to create staging root %q: %w", root, err)
 	}
 
-	dir, err := os.MkdirTemp(DefaultStagingPath, "relay-")
+	dir, err := os.MkdirTemp(root, "relay-")
 	if err != nil {
 		return DataLocation{}, nil, fmt.Errorf("failed to create staging directory: %w", err)
 	}

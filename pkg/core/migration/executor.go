@@ -59,6 +59,8 @@ func (e *Executor) Execute(migrationID string) {
 	log.Info().Str("migrationID", migrationID).Int64("totalItems", m.TotalItems).Msg("migration execution started")
 
 	prop := m.Plan.TargetDataMigrationModel
+	stagingDir := ResolveStagingDir(m.StagingDir)
+	log.Info().Str("migrationID", migrationID).Str("stagingRoot", transxex.StagingRoot(stagingDir)).Msg("migration staging root")
 	var hasFailure bool
 
 	for i := range prop.FileSystems {
@@ -69,7 +71,7 @@ func (e *Executor) Execute(migrationID string) {
 		progressCh := make(chan ProgressEvent, 32)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateFileSystem(ctx, fs, progressCh)
+			_ = MigrateFileSystem(ctx, fs, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, fs.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -84,7 +86,7 @@ func (e *Executor) Execute(migrationID string) {
 		progressCh := make(chan ProgressEvent, 32)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateObjectStorage(ctx, oss, progressCh)
+			_ = MigrateObjectStorage(ctx, oss, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, oss.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -99,7 +101,7 @@ func (e *Executor) Execute(migrationID string) {
 		progressCh := make(chan ProgressEvent, 4)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateDBMS(ctx, dbEntry, m.DBMSOnFailure, progressCh)
+			_ = MigrateDBMS(ctx, dbEntry, m.DBMSOnFailure, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, dbEntry.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -139,56 +141,14 @@ const tickInterval = time.Second
 func (e *Executor) drainProgress(
 	m *model.Migration, migrationID, planEntryID string, progressCh <-chan ProgressEvent,
 ) (hadFailure bool) {
-	// What the items that have FINISHED moved, plus where each unfinished one has
-	// got to. A tick carries its own item's running total, so it REPLACES that
-	// item's entry rather than adding to a sum — adding would count the same bytes
-	// again on every observation. Kept per item because object storage migrates
-	// its buckets concurrently: several items report at once, and one running
-	// total cannot stand for all of them.
-	doneBytes := m.TransferredBytes
-	inflight := make(map[string]int64)
-	var lastTick time.Time
-
-	total := func() int64 {
-		sum := doneBytes
-		for _, b := range inflight {
-			sum += b
-		}
-		return sum
-	}
-
+	t := newProgressTracker(m, migrationID)
 	for ev := range progressCh {
 		if ev.Kind == EventTick {
-			if ev.SizeBytes < 0 {
-				continue
-			}
-			inflight[ev.ItemPath] = ev.SizeBytes
-			m.TransferredBytes = total()
-			if ev.Current != "" {
-				m.CurrentObject = ev.Current
-			}
-			if time.Since(lastTick) < tickInterval {
-				continue
-			}
-			lastTick = time.Now()
-			if err := dao.UpdateMigrationStatus(m); err != nil {
-				log.Error().Str("migrationID", migrationID).Err(err).Msg("execute: update progress failed")
-			}
+			t.tick(ev)
 			continue
 		}
 
-		m.ProcessedItems++
-		delete(inflight, ev.ItemPath)
-		// Nothing is in flight for this item any more, and a finished migration
-		// must not still name a file it is working on.
-		m.CurrentObject = ""
-
-		if ev.SizeBytes > 0 {
-			doneBytes += ev.SizeBytes
-		}
-		m.TransferredBytes = total()
-		if ev.Status == "failed" {
-			m.FailedItems++
+		if t.done(ev) {
 			hadFailure = true
 		}
 
@@ -216,6 +176,94 @@ func (e *Executor) drainProgress(
 		}
 	}
 	return
+}
+
+// progressTracker folds a run's ProgressEvents into the migration record: what
+// the finished items moved, where each unfinished one has got to, and what the
+// one in flight is doing right now.
+type progressTracker struct {
+	m           *model.Migration
+	migrationID string
+
+	// What the items that have FINISHED moved, plus where each unfinished one
+	// has got to. A tick carries its own item's running total, so it REPLACES
+	// that item's entry rather than adding to a sum — adding would count the
+	// same bytes again on every observation. Kept per item because object
+	// storage migrates its buckets concurrently: several items report at once,
+	// and one running total cannot stand for all of them.
+	doneBytes int64
+	inflight  map[string]int64
+	lastTick  time.Time
+}
+
+func newProgressTracker(m *model.Migration, migrationID string) *progressTracker {
+	return &progressTracker{
+		m:           m,
+		migrationID: migrationID,
+		doneBytes:   m.TransferredBytes,
+		inflight:    make(map[string]int64),
+	}
+}
+
+func (t *progressTracker) total() int64 {
+	sum := t.doneBytes
+	for _, b := range t.inflight {
+		sum += b
+	}
+	return sum
+}
+
+// tick applies an EventTick, writing the record at most once per tickInterval.
+func (t *progressTracker) tick(ev ProgressEvent) {
+	if ev.SizeBytes < 0 {
+		return
+	}
+	m := t.m
+	t.inflight[ev.ItemPath] = ev.SizeBytes
+	m.TransferredBytes = t.total()
+	if ev.Current != "" {
+		m.CurrentObject = ev.Current
+	}
+	// From the same tick as CurrentObject, so the step shown is the one the
+	// object named beside it is in.
+	m.CurrentStep, m.CurrentSteps = ev.Step, ev.Steps
+	m.CurrentStepName = ev.StepName
+	m.CurrentStepDetail = ev.StepDetail
+	m.CurrentUnits, m.CurrentUnitsTotal = ev.Units, ev.UnitsTotal
+	m.CurrentRows = ev.Rows
+	m.CurrentBytesTotal = ev.BytesTotal
+	if time.Since(t.lastTick) < tickInterval {
+		return
+	}
+	t.lastTick = time.Now()
+	if err := dao.UpdateMigrationStatus(m); err != nil {
+		log.Error().Str("migrationID", t.migrationID).Err(err).Msg("execute: update progress failed")
+	}
+}
+
+// done applies a finished item's counters — not its log row, which the caller
+// writes — and reports whether it failed.
+func (t *progressTracker) done(ev ProgressEvent) (failed bool) {
+	m := t.m
+	m.ProcessedItems++
+	delete(t.inflight, ev.ItemPath)
+	// Nothing is in flight for this item any more, and a finished migration
+	// must not still name a file it is working on.
+	m.CurrentObject = ""
+	m.CurrentStep, m.CurrentSteps = 0, 0
+	m.CurrentStepName, m.CurrentStepDetail = "", ""
+	m.CurrentUnits, m.CurrentUnitsTotal = 0, 0
+	m.CurrentRows, m.CurrentBytesTotal = 0, 0
+
+	if ev.SizeBytes > 0 {
+		t.doneBytes += ev.SizeBytes
+	}
+	m.TransferredBytes = t.total()
+	if ev.Status == "failed" {
+		m.FailedItems++
+		return true
+	}
+	return false
 }
 
 // countPlanItems returns the total migration item count in the plan.
@@ -340,7 +388,10 @@ func (e *Executor) Retry(migrationID, retryMode string) (*model.Migration, error
 		// quietly start cleaning them up. retryMode governs what is cleared *before*
 		// the retry runs; this governs what happens if the retry fails too.
 		DBMSOnFailure: orig.DBMSOnFailure,
-		Status:        "pending",
+		// Carried over as given: an empty value still means the configured
+		// default, resolved when the retry runs.
+		StagingDir: orig.StagingDir,
+		Status:     "pending",
 	}
 	if err := dao.CreateMigration(newMig); err != nil {
 		return nil, fmt.Errorf("create retry migration: %w", err)
@@ -376,6 +427,9 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 	now := time.Now()
 	m.Status = "running"
 	m.StartedAt = &now
+	// The previous run's finish would otherwise outlive it and sit before the new
+	// start, so a running retry would read as already finished.
+	m.CompletedAt = nil
 	if retryMode == "full" {
 		m.TotalItems = countPlanItems(m.Plan)
 	}
@@ -386,6 +440,8 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 	log.Info().Str("migrationID", migrationID).Str("retryMode", retryMode).Msg("retry execution started")
 
 	prop := m.Plan.TargetDataMigrationModel
+	stagingDir := ResolveStagingDir(m.StagingDir)
+	log.Info().Str("migrationID", migrationID).Str("stagingRoot", transxex.StagingRoot(stagingDir)).Msg("migration staging root")
 	var hasFailure bool
 
 	// ── File Systems ──────────────────────────────────────────────────────────
@@ -412,7 +468,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 		progressCh := make(chan ProgressEvent, 32)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateFileSystem(ctx, fs, progressCh)
+			_ = MigrateFileSystem(ctx, fs, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, fs.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -443,7 +499,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 		progressCh := make(chan ProgressEvent, 32)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateObjectStorage(ctx, oss, progressCh)
+			_ = MigrateObjectStorage(ctx, oss, stagingDir, progressCh)
 		}()
 		if e.drainProgress(m, migrationID, oss.PlanEntryID, progressCh) {
 			hasFailure = true
@@ -549,7 +605,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 		progressCh := make(chan ProgressEvent, 8)
 		go func() {
 			defer close(progressCh)
-			_ = MigrateDBMS(ctx, dbEntry, m.DBMSOnFailure, progressCh)
+			_ = MigrateDBMS(ctx, dbEntry, m.DBMSOnFailure, stagingDir, progressCh)
 		}()
 		if e.drainProgressWithRollback(m, migrationID, dbEntry.PlanEntryID, progressCh, rollbackOf) {
 			hasFailure = true
@@ -621,15 +677,21 @@ func failedObject(err error) (kind, name string) {
 // drainProgressWithRollback is like drainProgress but additionally stamps
 // RollbackStatus and RollbackErrorMsg on every created MigrationLog.
 // Used for DBMS retry items where a DROP was attempted before migration.
+//
+// Ticks are told apart from finished items here as in drainProgress. MigrateDBMS
+// reports its progress every second, and read as items those ticks each counted
+// a processed item, added the running byte total again and wrote a log row.
 func (e *Executor) drainProgressWithRollback(
 	m *model.Migration, migrationID, planEntryID string,
 	progressCh <-chan ProgressEvent, rollbackOf map[string]rollbackOutcome,
 ) (hadFailure bool) {
+	t := newProgressTracker(m, migrationID)
 	for ev := range progressCh {
-		m.ProcessedItems++
-		m.TransferredBytes += ev.SizeBytes
-		if ev.Status == "failed" {
-			m.FailedItems++
+		if ev.Kind == EventTick {
+			t.tick(ev)
+			continue
+		}
+		if t.done(ev) {
 			hadFailure = true
 		}
 

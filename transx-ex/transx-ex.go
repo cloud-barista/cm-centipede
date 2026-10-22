@@ -1,6 +1,7 @@
 package transxex
 
 import (
+	"context"
 	"crypto/rsa"
 	"log/slog"
 	"time"
@@ -106,6 +107,20 @@ func InspectObjectStorage(loc StorageLocation) (*OSInspectResult, error) {
 	return storagex.InspectObjectStorage(loc)
 }
 
+// ListFiles reads every regular file under the filesystem path at loc — path,
+// size and modification time — for checking a transfer file by file, which
+// InspectFilesystem's per-folder totals cannot do. See storagex.ListFiles.
+func ListFiles(ctx context.Context, loc StorageLocation) ([]FileInfo, error) {
+	return storagex.ListFiles(ctx, loc)
+}
+
+// HashFiles returns the SHA-256 of each of paths under the filesystem path at
+// loc, keyed by path, calling onFile as each one is hashed. See
+// storagex.HashFiles.
+func HashFiles(ctx context.Context, loc StorageLocation, paths []string, onFile func(path string)) (map[string]string, error) {
+	return storagex.HashFiles(ctx, loc, paths, onFile)
+}
+
 // InspectDBMS returns server- and schema-level metadata for the database at loc.
 func InspectDBMS(loc DBMSLocation) (*DBMSInfo, error) { return dbmsx.Inspect(loc) }
 
@@ -130,7 +145,9 @@ func ListDatabases(loc DBMSLocation) ([]string, error) { return dbmsx.ListDataba
 // other engines return an empty list.
 func ListSchemas(loc DBMSLocation) ([]string, error) { return dbmsx.ListSchemas(loc) }
 
-// DescribeTable returns column and index metadata for one table at loc.
+// DescribeTable returns column and index metadata for one table at loc. With
+// the engine's RowCountExact set in loc.Metric it also fills in an exact row
+// count; MongoDB always counts exactly.
 func DescribeTable(loc DBMSLocation, table string) (*TableInfo, error) {
 	return dbmsx.DescribeTable(loc, table)
 }
@@ -204,6 +221,20 @@ func CheckCharset(src, dst DBMSLocation) ([]CharsetIssue, error) {
 // anyway.
 func CheckVersion(src, dst DBMSLocation) (*VersionCompatibility, error) {
 	return dbmsx.CheckVersion(src, dst)
+}
+
+// NonStandardForeignKeys lists, as table.constraint, the foreign keys of loc's
+// database that refer to a non-unique key or to only part of a unique one,
+// which MySQL 8.4 deprecates. nil for any other engine. MigrateDBMS carries
+// them onto 8.4 as they are and warns of them before it starts.
+func NonStandardForeignKeys(loc DBMSLocation) ([]string, error) {
+	return dbmsx.NonStandardForeignKeys(loc)
+}
+
+// RestrictsNonStandardForeignKeys reports whether a server of dbmsType at
+// version refuses NonStandardForeignKeys' keys by default: MySQL from 8.4.
+func RestrictsNonStandardForeignKeys(dbmsType, version string) bool {
+	return dbmsx.RestrictsNonStandardForeignKeys(dbmsType, version)
 }
 
 // ============================================================================
@@ -298,6 +329,12 @@ func NewTumblebugProvider(config *TumblebugConfig) (*TumblebugProvider, error) {
 
 // NewS3Executor wraps a provider as a pipeline executor.
 func NewS3Executor(provider S3Provider) *S3Executor { return storagex.NewS3Executor(provider) }
+
+// NewS3StreamExecutor wraps two providers as a pipeline executor that streams
+// each object from src to dst, with nothing staged.
+func NewS3StreamExecutor(src, dst S3Provider) *S3StreamExecutor {
+	return storagex.NewS3StreamExecutor(src, dst)
+}
 
 // NewRsyncExecutor builds the rsync executor for a source/destination pair,
 // choosing pull, push or agent-forward from their access types.
