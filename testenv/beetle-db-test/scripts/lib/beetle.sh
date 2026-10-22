@@ -1024,7 +1024,10 @@ rdbms_info() {
 	bt_get "$(_rdbms_path)/$(urlq "$name")" || return 1
 	RDBMS_STATUS="$(bt_data '.status')"
 	RDBMS_ENDPOINT="$(bt_data '.endpoint')"
+	# The read has no adminUserName since cm-beetle v0.6.2 (rdbmsmodel.RDBMSInfo);
+	# the configured name is the one the instance was created with.
 	RDBMS_USER="$(bt_data '.adminUserName')"
+	RDBMS_USER="${RDBMS_USER:-$(csp_env "$csp" DB_ADMIN_USERNAME)}"
 	RDBMS_ENGINE="$(bt_data '.dbEngine')"
 	RDBMS_VERSION="$(bt_data '.dbEngineVersion')"
 	RDBMS_PUBLIC="$(bt_data '.publicAccess')"
@@ -1400,7 +1403,8 @@ target_db_kind() {
 
 # bt_admin_headers CSP — the two headers every logical database call needs.
 #   cm-beetle answers 400 when either is missing. The user name is the one the
-#   instance was created with, or what cm-beetle reports when .env names none.
+#   instance was created with (<CSP>_DB_ADMIN_USERNAME, which RDBMS_USER also
+#   falls back to).
 bt_admin_headers() {
 	local user
 	user="$(csp_env "$1" DB_ADMIN_USERNAME)"
@@ -1752,8 +1756,20 @@ explain_dbtype_mismatch() {
 #   The messages come from pkg/client/beetle/client.go: "beetle unreachable" for a
 #   transport failure, "beetle returned NNN" for a refusal, and "has no endpoint
 #   yet" for an instance still being built.
+#
+#   "reports no admin user name" is not a reachability problem: beetle answered,
+#   but its RDBMS read has no adminUserName since v0.6.2, so the reference itself
+#   has to name the user. It gets its own explanation.
 explain_centipede_beetle() {
 	case "$1" in
+	*"reports no admin user name"*)
+		fail ""
+		fail "  Cause: the beetleDb reference carries no username, and cm-beetle cannot supply"
+		fail "         one: its RDBMS read (rdbmsmodel.RDBMSInfo) has had no adminUserName"
+		fail "         since v0.6.2. centipede reached beetle; the reference is what is short."
+		fail "  Check: $(upper "$CSP")_DB_ADMIN_USERNAME in .env — cp_dst_connection sends it as"
+		fail "         beetleDb.username, and it must be the name the instance was created with."
+		return 0 ;;
 	*"beetle unreachable"*|*"beetle returned"*|*"beetle rdbms"*|*"parse beetle response"*) ;;
 	*) return 0 ;;
 	esac

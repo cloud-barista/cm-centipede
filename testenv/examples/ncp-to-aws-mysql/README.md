@@ -349,6 +349,7 @@ curl -s -X POST -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/plans/tar
             "beetleDb": {
               "nsId": "cpbt01",
               "rdbmsId": "cpbt-aws-db-mysql",
+              "username": "dbadmin",
               "password": "<the instance master password>",
               "tlsMode": "auto"
             }
@@ -380,11 +381,10 @@ to the same place.
 arrives inside `source` as honeybee collected it, carrying a `honeybee` reference
 that cm-centipede resolves back into the NCP host and the account it was given in
 step 4. The destination is `beetleDb`: an instance that already exists, whose
-host, port and admin account cm-centipede reads from cm-beetle. The password is
-the exception — cm-beetle takes one when the instance is created and **never
-hands it back**, so it travels here. `username` is deliberately absent: empty
-means "the admin as cm-beetle reports it", and naming it as well only creates a
-way for the two to disagree.
+host and port cm-centipede reads from cm-beetle. The admin login is the
+exception — cm-beetle takes it when the instance is created and **never hands it
+back** (its RDBMS read has had no `adminUserName` since v0.6.2), so both travel
+here, and `username` is required (`DB_USER` in `.env`).
 
 **cm-centipede creates the target database itself**, using that same password. A
 managed instance's master account is granted rights on the databases the service
@@ -650,6 +650,7 @@ set in the shell wins over the file. It stops before its first call while
 | `SRC_DB` | `testdb` | `TF_VAR_ncp_db_name` |
 | `NS_ID` | `cpbt01` | from `conn-info.sh aws --ids` |
 | `RDBMS_ID` | `cpbt-aws-db-mysql` | " |
+| `DB_USER` | `dbadmin` | the RDS instance's master user — `BEETLEENV_AWS_DB_ADMIN_USERNAME` |
 | `DB_PASSWORD` | `ChangeMe` | the RDS instance's master password |
 | `DST_DB` | `testdb` | what to call the database on the target |
 

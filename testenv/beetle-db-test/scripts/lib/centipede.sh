@@ -91,7 +91,7 @@ cp_preflight() {
 # The target connection — a beetleDb reference, never an inline db connection
 # ---------------------------------------------------------------------------
 # The target of this folder IS a cm-beetle managed instance, so it is named as
-# one. centipede then reads host/port/adminUserName from cm-beetle itself
+# one. centipede then reads host/port from cm-beetle itself
 # (client/beetle GetRDBMSAccessInfo) rather than being told, and the same
 # reference is what lets it create the target database through the instance's
 # owner - see TARGET_DB_CREATE.
@@ -108,9 +108,10 @@ cp_preflight() {
 #   created and never hands it back, so it travels in the reference, where it
 #   also serves as the admin password on the logical-database calls.
 #
-#   username is deliberately not sent. Empty means "the instance admin as
-#   cm-beetle reports it", which is the same value RDBMS_USER holds, and asking
-#   for it twice only creates a way for the two to disagree.
+#   username is sent too: <CSP>_DB_ADMIN_USERNAME, the name the instance was
+#   created with. Empty would mean "the instance admin as cm-beetle reports it",
+#   but cm-beetle's RDBMS read (rdbmsmodel.RDBMSInfo) has no adminUserName since
+#   v0.6.2, so centipede would fail with "reports no admin user name".
 #
 # tlsMode is omitted when it is auto: an empty value already means auto on a
 # beetleDb reference, and leaving it out runs the path most callers take. Every
@@ -121,9 +122,10 @@ cp_dst_connection() {
 	tls="$(target_tls_mode "$engine")"
 	jq -n \
 		--arg ns "$MATRIX_NS" --arg id "${ACTIVE_INSTANCE:-$RDBMS_NAME}" \
+		--arg u "$(csp_env "$(lower "$CSP")" DB_ADMIN_USERNAME)" \
 		--arg w "$(db_password "$(lower "$CSP")")" --arg tls "$tls" \
 		'{source:"beetleDb", beetleDb:(
-		    {nsId:$ns, rdbmsId:$id, password:$w}
+		    {nsId:$ns, rdbmsId:$id, username:$u, password:$w}
 		    + (if $tls == "auto" then {} else {tlsMode:$tls} end))}'
 }
 
