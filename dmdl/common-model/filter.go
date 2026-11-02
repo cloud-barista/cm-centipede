@@ -6,19 +6,19 @@ import (
 	"fmt"
 )
 
-// filter.go defines centipede's own mirror of the transx-ex and dbmsx filter
+// filter.go defines centipede's own mirror of the data-mig and dbmsx filter
 // pipelines. The model package stays free of any library dependency; the core
-// layer converts these mirror types into the concrete transx / dbmsx filter
+// layer converts these mirror types into the concrete data-mig / dbmsx filter
 // options at the call site (see core/migration).
 //
 // Both pipelines are ordered rule lists keyed by a "type" discriminator, so the
 // mirror types are flat structs carrying every field the underlying matchers
 // use. Unused fields stay zero/omitted per rule type.
 
-// ── transx-ex filter (shared by file system and object storage) ─────────────
+// ── data-mig filter (shared by file system and object storage) ──────────────
 
 // Path filter actions and rule type discriminators. They name the same strings
-// the transx-ex filter registry decodes, so a caller that has to branch on a
+// the data-mig filter registry decodes, so a caller that has to branch on a
 // rule — validation asking which rules can prune a directory, for one — does it
 // without a literal that drifts.
 const (
@@ -29,7 +29,7 @@ const (
 	PathRuleSize = "size"
 )
 
-// PathFilterRule mirrors one transx filter.Rule. It is an ordered include/exclude
+// PathFilterRule mirrors one data-mig filter.Rule. It is an ordered include/exclude
 // entry evaluated top-to-bottom; the first matching rule decides the outcome and
 // an item matched by no rule is kept.
 //
@@ -98,7 +98,7 @@ type DBMSFilterRule struct {
 
 // UnmarshalJSON accepts match as a string or as a JSON object. An object is kept
 // as its compact JSON text, so MongoDB's query document travels in the same
-// string field as a SQL predicate; transx-ex decides which form the engine takes.
+// string field as a SQL predicate; data-mig decides which form the engine takes.
 func (r *DBMSFilterRule) UnmarshalJSON(data []byte) error {
 	type plain DBMSFilterRule
 	var aux struct {
@@ -130,7 +130,7 @@ func (r *DBMSFilterRule) UnmarshalJSON(data []byte) error {
 
 // PgSchemaMapping maps one PostgreSQL schema from source to target.
 //
-// transx-ex takes DBMSLocation.PgSchema as a []string on each side and matches
+// data-mig takes DBMSLocation.PgSchema as a []string on each side and matches
 // them by position. Taking name pairs here instead means a caller cannot
 // silently migrate into the wrong schema by listing them out of order; the
 // adapter splits the pairs into the two positional slices.
@@ -169,7 +169,7 @@ type TargetMapping struct {
 }
 
 // FileSystemFilter defines file system migration filter conditions.
-// Rules mirror the transx-ex filter pipeline; TargetMapping is centipede-specific
+// Rules mirror the data-mig filter pipeline; TargetMapping is centipede-specific
 // single-folder selection + source→target remapping applied by the plan layer.
 // Supplying a filter at all means naming the folder it applies to, so
 // TargetMapping is required here; omitting the whole filter migrates the source

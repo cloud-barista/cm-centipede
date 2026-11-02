@@ -48,7 +48,7 @@ type BeetleConfig struct {
 }
 
 // TumblebugConfig holds the cb-tumblebug REST endpoint used during object
-// storage transfers only. transx-ex reaches managed buckets through
+// storage transfers only. data-mig reaches managed buckets through
 // cb-tumblebug's ObjectStorage API, so the endpoint is still needed even though
 // cb-tumblebug is not a selectable connection source.
 type TumblebugConfig struct {
@@ -81,13 +81,13 @@ type DBConfig struct {
 // MigrationConfig holds server-wide defaults for migration execution.
 type MigrationConfig struct {
 	// StagingDir is the local staging root used when a migration request names
-	// none. Empty leaves the choice to transx-ex: $TMPDIR/transxex-staging, or
-	// /tmp/transxex-staging when TMPDIR is unset. Init stores it as an absolute
+	// none. Empty leaves the choice to data-mig: $TMPDIR/datamig-staging, or
+	// /tmp/datamig-staging when TMPDIR is unset. Init stores it as an absolute
 	// path.
 	StagingDir string `mapstructure:"stagingDir"`
 
 	// Concurrency is how many transfers each item runs at once when a migration
-	// request names none: 1 to 32, or 0 to leave transx-ex's default (4).
+	// request names none: 1 to 32, or 0 to leave data-mig's default (4).
 	Concurrency int `mapstructure:"concurrency"`
 }
 

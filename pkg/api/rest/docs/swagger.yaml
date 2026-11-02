@@ -23,7 +23,7 @@ definitions:
           takes the mode cm-beetle recommends for the instance: verify-full,
           verify-ca or disable, falling back to require when no CA was collected and
           to prefer when cm-beetle could not say. Any other value means the same
-          thing here as on DBConnConfig — see the table in transx-ex's
+          thing here as on DBConnConfig — see the table in data-mig's
           dbmsx/driver/base/tls.go — and is used as given; plaintext therefore needs
           "disable" spelled out.
         enum:
@@ -151,7 +151,7 @@ definitions:
         type: integer
       providerName:
         description: |-
-          ProviderName records where the database is hosted. transx-ex carries it
+          ProviderName records where the database is hosted. data-mig carries it
           through to DBMSLocation.ProviderName but never reads it: no routing,
           validation or connection decision depends on it. It is required all the
           same, so that "where does this data live" has an answer for every
@@ -180,14 +180,14 @@ definitions:
           Empty means the system trust store, which carries only publicly trusted
           CAs, so a server using a private CA needs its root supplied here.
 
-          transx-ex also accepts a path to a CA file, but that path would name a
+          data-mig also accepts a path to a CA file, but that path would name a
           file on the centipede server rather than on the caller's machine, so it
           is deliberately not part of this API.
         type: string
       tlsMode:
         description: |-
           TLSMode selects transport security; the empty value is "disable". The
-          modes mean the same thing on every engine — see transx-ex's
+          modes mean the same thing on every engine — see data-mig's
           dbmsx/driver/base/tls.go for the table that defines them.
         enum:
         - disable
@@ -295,7 +295,7 @@ definitions:
       providerName:
         description: |-
           ProviderName decides the endpoint, region, TLS and bucket addressing style
-          (see ResolveS3Endpoint in core/migration). transxex.S3MinioConfig has no
+          (see ResolveS3Endpoint in core/migration). datamig.S3MinioConfig has no
           provider field: it receives the resolved values.
         enum:
         - aws
@@ -727,7 +727,7 @@ definitions:
         description: |-
           PgSchemas selects and renames PostgreSQL schemas within this database.
           Empty migrates every schema under its own name. The adapter splits the
-          name pairs into the two positional slices transx-ex expects.
+          name pairs into the two positional slices data-mig expects.
         items:
           $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.PgSchemaMapping'
         type: array
@@ -834,7 +834,7 @@ definitions:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
       strategy:
         description: |-
-          Strategy is the transx transfer strategy (auto/direct/relay). It only affects
+          Strategy is the data-mig transfer strategy (auto/direct/relay). It only affects
           SSH→SSH transfers; cross-storage always relays. Set by the plan layer.
         enum:
         - auto
@@ -874,7 +874,7 @@ definitions:
         $ref: '#/definitions/github_com_cloud-barista_cm-centipede_dmdl_common-model.ConnectionRef'
       strategy:
         description: |-
-          Strategy is the transx transfer strategy (auto/direct/relay). It only affects
+          Strategy is the data-mig transfer strategy (auto/direct/relay). It only affects
           S3→S3 transfers — direct streams each object, relay stages them locally —
           and objectstorage→filesystem cross-storage always relays. Set by the plan
           layer; empty runs as direct.
@@ -1078,7 +1078,7 @@ definitions:
           destination: a filesystem or object storage relay, a cross-storage
           transfer, a DBMS dump. Must be an absolute path; it is created if missing.
           Empty uses centipede.migration.stagingDir from the configuration, and when
-          that is empty too, $TMPDIR/transxex-staging or /tmp/transxex-staging.
+          that is empty too, $TMPDIR/datamig-staging or /tmp/datamig-staging.
         example: /data/centipede-staging
         type: string
     required:
@@ -1235,7 +1235,7 @@ definitions:
       appliedConcurrency:
         description: |-
           AppliedConcurrency is how many transfers this item ran at once, as
-          transx-ex settled on them, and ConcurrencyNote why that is not what the
+          data-mig settled on them, and ConcurrencyNote why that is not what the
           migration asked for, when it is not: "capped from 16: ssh MaxSessions", or
           a restore through a CLI over SSH, which runs one stream. Zero when the
           item did not report it — rows written before this field existed among them.
@@ -1250,10 +1250,10 @@ definitions:
         type: string
       failedObjectKind:
         description: |-
-          FailedObjectKind and FailedObjectName name the object transx-ex was
+          FailedObjectKind and FailedObjectName name the object data-mig was
           working on when the item failed — a table, view, routine, file or object —
           so the failure can be located without reading ErrorMsg. FailedObjectName
-          carries the enclosing database, schema or bucket when transx-ex knew it
+          carries the enclosing database, schema or bucket when data-mig knew it
           ("centipede_test.v_customer_stats").
 
           Both stay empty when the failure was not tied to a single object: a

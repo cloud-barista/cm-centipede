@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cloud-barista/cm-centipede/transx-ex"
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	"github.com/rs/zerolog/log"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
@@ -12,7 +12,7 @@ import (
 )
 
 // tlsModeAuto is the BeetleDBRef.TLSMode that leaves the choice to cm-beetle.
-// It never reaches transx-ex, which knows only the five modes it enforces:
+// It never reaches data-mig, which knows only the five modes it enforces:
 // resolveManagedTLS turns it into one of them first.
 const tlsModeAuto = "auto"
 
@@ -42,7 +42,7 @@ type tlsDecision struct {
 // uses.
 //
 // An explicit mode is the caller's, and is passed through with its CA exactly as
-// given: what the pair means, and whether it is consistent, is for transx-ex to
+// given: what the pair means, and whether it is consistent, is for data-mig to
 // judge, as on an inline db connection. An empty mode or "auto" is decided from
 // what cm-beetle reports on the instance (decideAutoTLS), asked again on every
 // connection so a rotated certificate is picked up, and logged.
@@ -76,7 +76,7 @@ func resolveManagedTLS(ref commonmodel.BeetleDBRef, acc *beetle.DBConfig) (tlsDe
 // warning that the caller's CA goes unused: a caller who wants their own CA
 // checked names the verify mode that checks it.
 //
-// The CA is cleared wherever the mode does not verify, since transx-ex refuses
+// The CA is cleared wherever the mode does not verify, since data-mig refuses
 // a CA it would not consult. now is the clock the collected CA's expiry is
 // judged against.
 func decideAutoTLS(st *beetle.SecureTransport, lookupErr error, userCAGiven bool, now time.Time) (tlsDecision, error) {
@@ -86,7 +86,7 @@ func decideAutoTLS(st *beetle.SecureTransport, lookupErr error, userCAGiven bool
 	case st == nil:
 		// Nothing to go on: encrypt if the server offers it, as cb-spider's own
 		// probe does, rather than fail a migration over a lookup.
-		d.Mode = transxex.TLSModePrefer
+		d.Mode = datamig.TLSModePrefer
 		d.Reason = "cm-beetle secure-transport lookup failed"
 		d.Warns = append(d.Warns, fmt.Sprintf(
 			"secure-transport lookup failed, connecting with tlsMode %s: %v", d.Mode, lookupErr))
@@ -96,15 +96,15 @@ func decideAutoTLS(st *beetle.SecureTransport, lookupErr error, userCAGiven bool
 		if st.CAPEM == "" {
 			// A managed instance's CA is rarely in the system trust store, so a
 			// verify mode without one would fail every time. Keep the encryption.
-			d.Mode = transxex.TLSModeRequire
+			d.Mode = datamig.TLSModeRequire
 			d.Warns = append(d.Warns, fmt.Sprintf(
 				"%s recommends certificate verification but no CA was collected, "+
 					"connecting with tlsMode %s (encrypted, unverified)", d.Reason, d.Mode))
 			break
 		}
-		d.Mode = transxex.TLSModeVerifyCA
+		d.Mode = datamig.TLSModeVerifyCA
 		if st.RecommendedSSLMode == sslModeVerifyIdentity {
-			d.Mode = transxex.TLSModeVerifyFull
+			d.Mode = datamig.TLSModeVerifyFull
 		}
 		d.CAPEM = st.CAPEM
 		if w := caExpiryWarn(st.CANotAfter, now); w != "" {
@@ -118,12 +118,12 @@ func decideAutoTLS(st *beetle.SecureTransport, lookupErr error, userCAGiven bool
 				"cm-beetle reports recommendedSSLMode=%s yet the server requires secure transport; "+
 					"set tlsMode explicitly", st.RecommendedSSLMode)
 		}
-		d.Mode = transxex.TLSModeDisable
+		d.Mode = datamig.TLSModeDisable
 		d.Reason = "cm-beetle recommendedSSLMode=" + st.RecommendedSSLMode
 
 	case st.RecommendedSSLMode == "":
 		// The server offers TLS, but its CA could not be collected.
-		d.Mode = transxex.TLSModePrefer
+		d.Mode = datamig.TLSModePrefer
 		d.Reason = "cm-beetle gave no recommendedSSLMode"
 		d.Warns = append(d.Warns, fmt.Sprintf(
 			"no recommendedSSLMode (caCertificateError: %q), connecting with tlsMode %s",

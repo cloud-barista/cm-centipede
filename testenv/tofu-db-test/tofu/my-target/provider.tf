@@ -19,7 +19,7 @@ terraform {
 # only runs CREATE DATABASE so the cell has somewhere to migrate into. Forcing
 # the experiment's condition onto the setup was a mistake: NCP Cloud DB for MySQL
 # offers no TLS at all, so demanding it failed the probe and SKIPped columns
-# whose migration would have run fine - transx-ex implements a real prefer and
+# whose migration would have run fine - data-mig implements a real prefer and
 # falls back to plaintext there. A false negative, and about setup rather than
 # about migrating.
 #

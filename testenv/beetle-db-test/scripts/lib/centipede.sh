@@ -12,11 +12,11 @@
 # ── A downgrade is refused here ─────────────────────────────────────────────
 # A cell going from a higher version to a lower one is refused by
 # POST /plans/target with a 400 (validateDBMSVersion in pkg/core/plan ->
-# transxex.CheckVersion). So a BLOCK verdict comes from the plan step rather than
+# datamig.CheckVersion). So a BLOCK verdict comes from the plan step rather than
 # the migration, and no migration is created at all.
 #
 # ⚠ The centipede API offers no way to skip that check. That is why the
-#   --skip-version-check option from the days of calling transx-ex directly does
+#   --skip-version-check option from the days of calling data-mig directly does
 #   not exist in this folder.
 #
 # ── The matrix creates the target database ──────────────────────────────────

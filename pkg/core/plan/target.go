@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cloud-barista/cm-centipede/transx-ex"
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	"github.com/rs/zerolog/log"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
@@ -101,7 +101,7 @@ func dbmsIdentityOf(ref commonmodel.ConnectionRef) (dbmsIdentity, error) {
 	return dbmsIdentity{}, fmt.Errorf("connection source %q is not a DBMS type", ref.Source)
 }
 
-// validateDBMSEngines rejects a heterogeneous pair up front. transx-ex refuses
+// validateDBMSEngines rejects a heterogeneous pair up front. data-mig refuses
 // one too, but saying so at plan time costs nothing and reads better.
 func validateDBMSEngines(srcRef, dstRef commonmodel.ConnectionRef) (string, error) {
 	srcID, err := dbmsIdentityOf(srcRef)
@@ -119,11 +119,11 @@ func validateDBMSEngines(srcRef, dstRef commonmodel.ConnectionRef) (string, erro
 	return srcID.dbType, nil
 }
 
-// validateDBMSVersion asks transx-ex whether the target can accept a dump taken
-// from the source. transx-ex runs the same check for itself just before a
+// validateDBMSVersion asks data-mig whether the target can accept a dump taken
+// from the source. data-mig runs the same check for itself just before a
 // migration starts; calling it here only moves the answer forward to plan time.
 //
-// A pair transx-ex cannot compare is reported rather than judged: a version it
+// A pair data-mig cannot compare is reported rather than judged: a version it
 // could not parse is not evidence of anything, so the plan proceeds.
 func validateDBMSVersion(srcRef, dstRef commonmodel.ConnectionRef, database, dbType string) error {
 	srcLoc, err := migration.ResolveDBMSLocation(srcRef, database, dbType)
@@ -135,7 +135,7 @@ func validateDBMSVersion(srcRef, dstRef commonmodel.ConnectionRef, database, dbT
 		return fmt.Errorf("resolve target DB location: %w", err)
 	}
 
-	vc, err := transxex.CheckVersion(srcLoc, dstLoc)
+	vc, err := datamig.CheckVersion(srcLoc, dstLoc)
 	if err != nil {
 		log.Warn().Err(err).Msg("cannot read both server versions; skipping the version check")
 		return nil
@@ -157,7 +157,7 @@ func validateDBMSVersion(srcRef, dstRef commonmodel.ConnectionRef, database, dbT
 // this plan needs either exists already or can be created (see
 // migration.EnsureTargetDatabase). Creation is centipede's responsibility, and
 // the conditions on it are knowable before the migration runs.
-func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transxex.DBMSLocation) error {
+func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc datamig.DBMSLocation) error {
 	switch dstRef.Source {
 	case commonmodel.ConnectionSourceBeetleDB, commonmodel.ConnectionSourceDB:
 	default:
@@ -178,12 +178,12 @@ func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transx
 	// ask for one. A MongoDB database begins to exist when its first collection is
 	// written, so it cannot be listed beforehand and cannot be "prepared on the
 	// provider first" - a managed MongoDB offers no create-database API (NCP has
-	// none), and neither does the wire protocol. transx-ex says the same thing
+	// none), and neither does the wire protocol. data-mig says the same thing
 	// from its own side: CreateDatabase for MongoDB logs "no-op without a
 	// collection to create" and returns, so even the onprem branch below would
 	// create nothing. The restore brings the database into existence by writing
 	// into it, which is the only way there is.
-	if dstLoc.DBMSType == transxex.DBMSTypeMongoDB {
+	if dstLoc.DBMSType == datamig.DBMSTypeMongoDB {
 		return nil
 	}
 
@@ -202,7 +202,7 @@ func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transx
 }
 
 // validateObjectStorageTargetReachable checks, at plan time, that the bucket an
-// object storage destination writes into exists. Neither centipede nor transx-ex
+// object storage destination writes into exists. Neither centipede nor data-mig
 // creates one — the bucket is prepared on the provider first, onprem and CSP
 // alike — so a missing bucket would otherwise surface only as NoSuchBucket once
 // the transfer had started.
@@ -224,7 +224,7 @@ func validateObjectStorageTargetReachable(dstRef commonmodel.ConnectionRef, dstP
 		return nil
 	}
 	if !exists {
-		bucket, _ := transxex.ParseBucketAndKey(dstPath)
+		bucket, _ := datamig.ParseBucketAndKey(dstPath)
 		return validationErr(
 			"target bucket %q does not exist; centipede does not create buckets — create it on the provider first", bucket)
 	}
@@ -259,7 +259,7 @@ func selectMigrationPath(scanRoot string, folders []string, tm *commonmodel.Targ
 // should carry, given the one the mapping produced.
 //
 // For a beetleObjectStorage destination the bucket is decided by osId, and the
-// first segment of DstPath is discarded: transx-ex builds its Tumblebug provider
+// first segment of DstPath is discarded: data-mig builds its Tumblebug provider
 // from the nsId/osId pair and never passes that segment to it (NewS3Provider
 // checks only that it is non-empty, then calls NewTumblebugProvider without it),
 // while the executor uses what follows it as the key prefix.
@@ -560,7 +560,7 @@ func validatePgSchemas(dbType, database string, pairs []commonmodel.PgSchemaMapp
 // caller meant to leave out, and say nothing.
 //
 // A name is matched the way the engine's dump matches it
-// (transxex.ObjectRuleMatches). A kind whose inventory the source model does not
+// (datamig.ObjectRuleMatches). A kind whose inventory the source model does not
 // carry is not checked: honeybee collects the inventory only on request, and an
 // absent list says nothing about what the database holds.
 func validateObjectRules(dbType string, info sourcemodel.DBMSInfo, rules []commonmodel.DBMSFilterRule) error {
@@ -595,7 +595,7 @@ func validateObjectRules(dbType string, info sourcemodel.DBMSInfo, rules []commo
 		}
 		matched := false
 		for _, n := range names {
-			if transxex.ObjectRuleMatches(dbType, r.Kind, r.Name, n) {
+			if datamig.ObjectRuleMatches(dbType, r.Kind, r.Name, n) {
 				matched = true
 				break
 			}

@@ -102,7 +102,7 @@ hb_source_group() {
 #   container. Either way db_name is stated: this container holds one seeded
 #   database, and naming it scopes the inspection to that one rather than every
 #   user database on the server. It is not the authentication database: that is
-#   db_auth_source, which this body leaves unset, so the URI transx-ex builds
+#   db_auth_source, which this body leaves unset, so the URI data-mig builds
 #   falls back to admin - where the account also exists.
 _hb_conn_body() {
 	local engine="$1" name="$2" db="${SRC_DB:-matrix_db}"

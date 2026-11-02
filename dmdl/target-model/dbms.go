@@ -7,7 +7,7 @@ import commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 // rather than paths, so it uses SrcName/DstName. The plan layer resolves the
 // request's TargetMapping, so DstName is always filled in here.
 //
-// Empty Rules migrate the database in full; otherwise the transx-ex
+// Empty Rules migrate the database in full; otherwise the data-mig
 // exclude-only pipeline removes the listed tables/columns/rows/objects
 // (commonmodel.DBMSFilterRule mirror).
 type DBMigrationInfo struct {
@@ -17,7 +17,7 @@ type DBMigrationInfo struct {
 
 	// PgSchemas selects and renames PostgreSQL schemas within this database.
 	// Empty migrates every schema under its own name. The adapter splits the
-	// name pairs into the two positional slices transx-ex expects.
+	// name pairs into the two positional slices data-mig expects.
 	PgSchemas []commonmodel.PgSchemaMapping `json:"pgSchemas,omitempty"`
 
 	Rules []commonmodel.DBMSFilterRule `json:"rules,omitempty"`

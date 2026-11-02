@@ -70,7 +70,7 @@ RUN printf 'MINIO_ROOT_USER="minioadmin"\nOS_SRC_BUCKETS="raw-data processed-dat
     && chmod +x /opt/matrix/init.sh
 
 # sshd is a unit, so nothing has to be started by hand. Object storage access is
-# always direct - honeybee inspects the endpoint itself and transx-ex has no
+# always direct - honeybee inspects the endpoint itself and data-mig has no
 # tunnelled storage path - so this is here for interactive debugging only. root
 # has no password, so only key login works; debug with `docker exec`.
 RUN mkdir -p /var/run/sshd /root/.ssh \

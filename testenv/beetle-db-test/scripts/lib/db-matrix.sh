@@ -15,7 +15,7 @@
 # systemd in it, so it is built once per version and cached (lib/source.sh).
 #
 # ── The migration and the verdict belong to someone else ────────────────────
-# This matrix does not call transx-ex. cm-honeybee collects the source and
+# This matrix does not call data-mig. cm-honeybee collects the source and
 # cm-centipede plans, migrates and validates; this file calls the two and turns
 # the answers into a table. So a verdict rests on centipede's validationStatus
 # rather than on a snapshot string comparison.
@@ -153,7 +153,7 @@ assert_tls_mode() {
 	fi
 
 	# MongoDB has no prefer: a client either negotiates TLS or it does not, with
-	# nowhere to fall back to, and transx-ex's ValidateDBMS rejects it for the same
+	# nowhere to fall back to, and data-mig's ValidateDBMS rejects it for the same
 	# reason. It does not stop the run: when one CSP is run with several engines,
 	# standing the other columns still over one mongodb costs too much. The mongodb
 	# cells alone drop, and the result records which mode they ran at.
@@ -299,9 +299,9 @@ run_cell() {
 	# looks: centipede's EnsureTargetDatabase reports whether it created the
 	# database, and that flag is what picks the undo path for a failed cell - a
 	# database centipede made is dropped whole, one it found is emptied by
-	# transx-ex's rollback and kept.
+	# data-mig's rollback and kept.
 	#
-	# Either way anything left from a previous cell goes first. transx-ex requires
+	# Either way anything left from a previous cell goes first. data-mig requires
 	# the target to exist and be empty, so a leftover fails as target-not-empty
 	# under "matrix", and under "centipede" it also makes centipede find a database
 	# it does not own - taking the wrong undo path for the rest of the cell.
@@ -840,7 +840,7 @@ matrix_main() {
 	if [ "$(target_tls_mode)" = "auto" ]; then
 		info "target TLS  : TARGET_TLS_MODE=auto   (centipede picks the migration's mode from cm-beetle)"
 	else
-		info "target TLS  : TARGET_TLS_MODE=$(target_tls_mode)   (transx-ex's connection setting for the migration)"
+		info "target TLS  : TARGET_TLS_MODE=$(target_tls_mode)   (data-mig's connection setting for the migration)"
 	fi
 	for engine in $engines; do
 		tls_mode_downgraded "$engine" \
@@ -888,7 +888,7 @@ matrix_main() {
 
 	assert_src_ports "$engines" || die "source port check failed. Nothing was created."
 
-	# MongoDB runs direct-only: transx-ex requires both sides to use the same
+	# MongoDB runs direct-only: data-mig requires both sides to use the same
 	# accessType, and a managed target has no shell, so it is always direct.
 	if [ "$MODE" = "ssh" ]; then
 		case " $engines " in
@@ -1019,7 +1019,7 @@ matrix_defaults() {
 	#
 	# "matrix" creates it first instead. centipede then finds a database it did not
 	# create, and that flag decides the undo path for a failed cell: a database
-	# centipede owns is dropped whole, one it merely found is emptied by transx-ex's
+	# centipede owns is dropped whole, one it merely found is emptied by data-mig's
 	# rollback and kept. Both are real situations - an operator who prepares the
 	# target ahead of time gets the second - so both are runnable.
 	TARGET_DB_CREATE="$(lower "${TARGET_DB_CREATE:-centipede}")"

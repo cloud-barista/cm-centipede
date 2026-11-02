@@ -3,7 +3,7 @@ package targetmodel
 import commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 
 // ObjectMigrationInfo represents a single bucket migration task unit.
-// Rules mirror the transx-ex filter pipeline applied to this bucket/prefix.
+// Rules mirror the data-mig filter pipeline applied to this bucket/prefix.
 type ObjectMigrationInfo struct {
 	Order   int                          `json:"order"`
 	SrcPath string                       `json:"srcPath"       validate:"required"`
@@ -27,7 +27,7 @@ type MigrationObjectStorageModel struct {
 	Buckets []ObjectMigrationInfo `json:"buckets,omitempty"`
 	Errors  []string              `json:"errors,omitempty"`
 
-	// Strategy is the transx transfer strategy (auto/direct/relay). It only affects
+	// Strategy is the data-mig transfer strategy (auto/direct/relay). It only affects
 	// S3→S3 transfers — direct streams each object, relay stages them locally —
 	// and objectstorage→filesystem cross-storage always relays. Set by the plan
 	// layer; empty runs as direct.

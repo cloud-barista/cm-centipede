@@ -3,8 +3,8 @@ module github.com/cloud-barista/cm-centipede
 go 1.26.3
 
 require (
+	github.com/cloud-barista/cm-centipede/data-mig v0.1.0
 	github.com/cloud-barista/cm-centipede/dmdl v0.1.0
-	github.com/cloud-barista/cm-centipede/transx-ex v0.1.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.16.1
@@ -92,9 +92,10 @@ require (
 	sigs.k8s.io/yaml v1.3.0 // indirect
 )
 
-// dmdl (shared data models) and transx-ex (transfer engine) are nested modules
-// inside this repository, so they resolve through their local paths.
+// dmdl (shared data models) and data-mig (common data migration module) are
+// nested modules inside this repository, so they resolve through their local
+// paths.
 replace (
+	github.com/cloud-barista/cm-centipede/data-mig => ./data-mig
 	github.com/cloud-barista/cm-centipede/dmdl => ./dmdl
-	github.com/cloud-barista/cm-centipede/transx-ex => ./transx-ex
 )

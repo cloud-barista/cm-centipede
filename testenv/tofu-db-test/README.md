@@ -361,7 +361,7 @@ libpq-style modes:
 | `verify-ca` | yes | yes | no | error |
 | `verify-full` | yes | yes | yes | error |
 
-It governs the migration — the `db.tlsMode` centipede carries into transx-ex —
+It governs the migration — the `db.tlsMode` centipede carries into data-mig —
 and nothing else. **Setting up a cell does not use it.** Creating the target
 database (`my-target`, `pg-target`) and the PostgreSQL privilege query connect on
 the best transport the server offers: TLS when it is available, plaintext when it
@@ -371,7 +371,7 @@ That separation was learned the hard way. The setup connections used to honour
 `TARGET_TLS_MODE` too, on the argument that one value everywhere means a column
 cannot migrate successfully and then fail its own preparation. But NCP Cloud DB
 for MySQL offers **no TLS at all**, so at the default `prefer` the probe could
-not connect and every NCP MySQL column SKIPped — while transx-ex, which
+not connect and every NCP MySQL column SKIPped — while data-mig, which
 implements a real `prefer`, would have migrated into it over plaintext quite
 happily. Setup failing on the experiment's own condition is a false negative, and
 it hides the result the run exists to produce.
@@ -384,7 +384,7 @@ configured.
 Three limits worth knowing:
 
 - **MongoDB has no `prefer`** — a client either negotiates TLS or it does not, and
-  transx-ex rejects it. Rather than refusing a whole run because one engine in it
+  data-mig rejects it. Rather than refusing a whole run because one engine in it
   is mongodb, the matrix runs **mongodb cells at `disable`** and leaves the other
   engines on the configured mode. The effective mode appears per engine in the
   result JSON (`engines[].tlsMode`).

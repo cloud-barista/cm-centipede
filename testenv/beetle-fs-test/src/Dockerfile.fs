@@ -27,7 +27,7 @@
 #   root        copyAgent.sh exits immediately when EUID is not 0
 #   sudo        step 2 invokes it by name
 #   curl        step 4, and every later inspect, runs curl ON THIS HOST
-#   rsync       not honeybee's — transx-ex rsyncs the data out over SSH
+#   rsync       not honeybee's — data-mig rsyncs the data out over SSH
 #
 # ⚠ The agent binary is downloaded from the internet at install time, from a
 #   URL hard-coded in honeybee's copyAgent.sh. This container therefore needs

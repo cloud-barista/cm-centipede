@@ -11,7 +11,7 @@
 #
 # ── The target node is created by cm-beetle, not by centipede ───────────────
 # Nothing in MigrateFileSystem creates anything: it resolves both ends and hands
-# them to transx-ex. A beetleSsh destination is a reference to a node that has to
+# them to data-mig. A beetleSsh destination is a reference to a node that has to
 # exist already, which is what create_node (lib/beetle.sh) is for and why it is
 # step 1 of a cell rather than step 2.
 #
@@ -23,7 +23,7 @@
 # Here the same "no filter" would resolve to dstPath == srcPath == "/testdata",
 # and resolveObjectStorageDstPath leaves a beetleSsh destination alone — so the
 # transfer would try to write the migrated tree to the target node's filesystem
-# ROOT. It does not get that far: before rsync runs, transx-ex opens an SSH
+# ROOT. It does not get that far: before rsync runs, data-mig opens an SSH
 # session and runs `mkdir -p /testdata` as the node's own user, with no sudo
 # (storagex/executor-rsync.go ensureRemoteDir). That is a permission denied on
 # every CSP image.
@@ -369,12 +369,12 @@ cp_migration_logs() {
 #   is reading leftovers from someone else's transfer.
 #
 #   That was found here, by this folder's first loopback run, and fixed in
-#   transx-ex: every relay now stages in a directory of its own and removes it
+#   data-mig: every relay now stages in a directory of its own and removes it
 #   when the pipeline ends. Before the fix the filesystem relay staged through the
 #   shared root and the push step sent everything in it.
 #
 #   Against an older build, clear the root first:
-#     docker exec cm-centipede rm -rf /tmp/transxex-staging/storage/*
+#     docker exec cm-centipede rm -rf /tmp/datamig-staging/storage/*
 #   See the README's "Known issues".
 cp_validate() {
 	local tmp code waited=0

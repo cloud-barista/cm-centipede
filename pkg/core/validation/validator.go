@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 	targetmodel "github.com/cloud-barista/cm-centipede/dmdl/target-model"
 	"github.com/cloud-barista/cm-centipede/pkg/api/rest/model"
 	"github.com/cloud-barista/cm-centipede/pkg/core/migration"
-	"github.com/cloud-barista/cm-centipede/transx-ex"
 )
 
 // ValidateFileSystem checks that each dst folder in m contains exactly the same files
@@ -32,7 +32,7 @@ func ValidateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMo
 	if err != nil {
 		return nil, fmt.Errorf("resolve src connection: %w", err)
 	}
-	var dstSSH *transxex.SSHConfig
+	var dstSSH *datamig.SSHConfig
 	if !cross {
 		if dstSSH, err = resolveSSHConfig(m.DstConnection); err != nil {
 			return nil, fmt.Errorf("resolve dst connection: %w", err)
@@ -80,7 +80,7 @@ func ValidateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMo
 // reading the WHOLE source listing — see the three outcomes in compareFileTrees.
 func validateSSHFolder(
 	ctx context.Context,
-	srcCfg, dstCfg *transxex.SSHConfig,
+	srcCfg, dstCfg *datamig.SSHConfig,
 	srcPath, dstPath string,
 	rules []commonmodel.PathFilterRule,
 	opt Options,
@@ -253,21 +253,21 @@ type remoteFile struct {
 	hash  string
 }
 
-// sshFolder is the folder at root on the SSH host cfg describes, as transx-ex
+// sshFolder is the folder at root on the SSH host cfg describes, as data-mig
 // takes a location.
-func sshFolder(cfg *transxex.SSHConfig, root string) transxex.StorageLocation {
-	return transxex.StorageLocation{
-		StorageType: transxex.StorageTypeFilesystem,
+func sshFolder(cfg *datamig.SSHConfig, root string) datamig.StorageLocation {
+	return datamig.StorageLocation{
+		StorageType: datamig.StorageTypeFilesystem,
 		Path:        root,
-		Filesystem:  &transxex.FilesystemAccess{AccessType: transxex.AccessTypeSSH, SSH: cfg},
+		Filesystem:  &datamig.FilesystemAccess{AccessType: datamig.AccessTypeSSH, SSH: cfg},
 	}
 }
 
 // listFiles reads every regular file under root on the host described by cfg,
-// keyed by its path relative to root. transx-ex reads the tree the way the
+// keyed by its path relative to root. data-mig reads the tree the way the
 // migration wrote it.
-func listFiles(ctx context.Context, cfg *transxex.SSHConfig, root string) (map[string]remoteFile, error) {
-	list, err := transxex.ListFiles(ctx, sshFolder(cfg, root))
+func listFiles(ctx context.Context, cfg *datamig.SSHConfig, root string) (map[string]remoteFile, error) {
+	list, err := datamig.ListFiles(ctx, sshFolder(cfg, root))
 	if err != nil {
 		return nil, err
 	}
@@ -281,15 +281,15 @@ func listFiles(ctx context.Context, cfg *transxex.SSHConfig, root string) (map[s
 // hashFiles returns the SHA256 of each of paths, relative to root, on the host
 // described by cfg. onFile is called once for every file hashed, as its hash
 // arrives.
-func hashFiles(ctx context.Context, cfg *transxex.SSHConfig, root string, paths []string, onFile func()) (map[string]string, error) {
-	return transxex.HashFiles(ctx, sshFolder(cfg, root), paths, func(string) { onFile() })
+func hashFiles(ctx context.Context, cfg *datamig.SSHConfig, root string, paths []string, onFile func()) (map[string]string, error) {
+	return datamig.HashFiles(ctx, sshFolder(cfg, root), paths, func(string) { onFile() })
 }
 
-// resolveSSHConfig maps a ConnectionRef to a transxex.SSHConfig.
+// resolveSSHConfig maps a ConnectionRef to a datamig.SSHConfig.
 // It delegates to the migration package so validation reaches a connection
 // exactly the way the migration did: a source the executor accepts must not be
 // rejected afterwards by the check that it worked.
-func resolveSSHConfig(ref commonmodel.ConnectionRef) (*transxex.SSHConfig, error) {
+func resolveSSHConfig(ref commonmodel.ConnectionRef) (*datamig.SSHConfig, error) {
 	return migration.ResolveSSHConfig(ref)
 }
 
@@ -306,7 +306,7 @@ func ValidateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectSto
 	// A bucket that landed on a file system (cross-storage) is compared by path
 	// and size only — see validateCrossStorage.
 	cross := m.DstType == commonmodel.StorageTypeFilesystem
-	var dstSSH *transxex.SSHConfig
+	var dstSSH *datamig.SSHConfig
 	if cross {
 		var err error
 		if dstSSH, err = resolveSSHConfig(m.DstConnection); err != nil {
@@ -364,23 +364,23 @@ func validateObjectBucket(srcRef, dstRef commonmodel.ConnectionRef, srcPath, dst
 		return nil, fmt.Errorf("resolve dst location: %w", err)
 	}
 
-	srcProvider, err := transxex.NewS3Provider(srcLoc)
+	srcProvider, err := datamig.NewS3Provider(srcLoc)
 	if err != nil {
 		return nil, fmt.Errorf("create src S3 provider: %w", err)
 	}
-	defer transxex.CloseS3Provider(srcProvider) //nolint:errcheck
-	dstProvider, err := transxex.NewS3Provider(dstLoc)
+	defer datamig.CloseS3Provider(srcProvider) //nolint:errcheck
+	dstProvider, err := datamig.NewS3Provider(dstLoc)
 	if err != nil {
 		return nil, fmt.Errorf("create dst S3 provider: %w", err)
 	}
-	defer transxex.CloseS3Provider(dstProvider) //nolint:errcheck
+	defer datamig.CloseS3Provider(dstProvider) //nolint:errcheck
 
-	_, srcPrefix := transxex.ParseBucketAndKey(srcPath)
-	_, dstPrefix := transxex.ParseBucketAndKey(dstPath)
+	_, srcPrefix := datamig.ParseBucketAndKey(srcPath)
+	_, dstPrefix := datamig.ParseBucketAndKey(dstPath)
 
 	// Both listings at once: they are different endpoints.
 	opt.report("listing objects")
-	var srcObjects, dstObjects []transxex.ObjectInfo
+	var srcObjects, dstObjects []datamig.ObjectInfo
 	err = bothSides(
 		func() (err error) {
 			if srcObjects, err = srcProvider.ListObjects(srcPrefix); err != nil {
@@ -477,7 +477,7 @@ type remoteObject struct {
 
 // buildObjectMap converts a ListObjects result into a map of relative-key → object.
 // prefix is stripped from each key so cross-bucket paths can be compared by relative path.
-func buildObjectMap(objects []transxex.ObjectInfo, prefix string) map[string]remoteObject {
+func buildObjectMap(objects []datamig.ObjectInfo, prefix string) map[string]remoteObject {
 	m := make(map[string]remoteObject, len(objects))
 	for _, obj := range objects {
 		relKey := strings.TrimPrefix(obj.Key, prefix)
@@ -490,11 +490,11 @@ func buildObjectMap(objects []transxex.ObjectInfo, prefix string) map[string]rem
 	return m
 }
 
-// resolveOSLoc maps a ConnectionRef to a transxex.StorageLocation for object
+// resolveOSLoc maps a ConnectionRef to a datamig.StorageLocation for object
 // storage validation. It delegates to the migration package, as resolveSSHConfig
 // does, so validation resolves a connection exactly the way the migration did
 // and covers every source the migration accepts.
-func resolveOSLoc(ref commonmodel.ConnectionRef, path string) (transxex.StorageLocation, error) {
+func resolveOSLoc(ref commonmodel.ConnectionRef, path string) (datamig.StorageLocation, error) {
 	return migration.ResolveObjectStorageLoc(ref, path, nil)
 }
 
@@ -613,7 +613,7 @@ func compareCrossTrees(
 
 // folderSizes lists every regular file under root on the host cfg describes,
 // by size, keyed by its path relative to root.
-func folderSizes(ctx context.Context, cfg *transxex.SSHConfig, root string) (map[string]int64, error) {
+func folderSizes(ctx context.Context, cfg *datamig.SSHConfig, root string) (map[string]int64, error) {
 	files, err := listFiles(ctx, cfg, root)
 	if err != nil {
 		return nil, err
@@ -626,7 +626,7 @@ func folderSizes(ctx context.Context, cfg *transxex.SSHConfig, root string) (map
 }
 
 // bucketSizes lists every object under the bucket path at ref, by size, keyed by
-// its key relative to the path's prefix — the same key transx-ex wrote a file
+// its key relative to the path's prefix — the same key data-mig wrote a file
 // to, or read an object from, so it lines up with a folder's relative paths.
 //
 // A key ending in "/" is a folder marker some tools write: it names a
@@ -636,13 +636,13 @@ func bucketSizes(ref commonmodel.ConnectionRef, bucketPath string) (map[string]i
 	if err != nil {
 		return nil, fmt.Errorf("resolve location: %w", err)
 	}
-	provider, err := transxex.NewS3Provider(loc)
+	provider, err := datamig.NewS3Provider(loc)
 	if err != nil {
 		return nil, fmt.Errorf("create S3 provider: %w", err)
 	}
-	defer transxex.CloseS3Provider(provider) //nolint:errcheck
+	defer datamig.CloseS3Provider(provider) //nolint:errcheck
 
-	_, prefix := transxex.ParseBucketAndKey(bucketPath)
+	_, prefix := datamig.ParseBucketAndKey(bucketPath)
 	objects, err := provider.ListObjects(prefix)
 	if err != nil {
 		return nil, err
@@ -742,7 +742,7 @@ func validateDatabase(
 	dstLoc.Metric = metric
 
 	// The source is inspected through the filter the migration dumped it with,
-	// so its schema-object lists name what the target should hold: transx-ex
+	// so its schema-object lists name what the target should hold: data-mig
 	// narrows them as the dump did, including what a rule removes without naming
 	// it — the foreign keys and triggers of an excluded table. The target is
 	// inspected as it is.
@@ -751,16 +751,16 @@ func validateDatabase(
 	}
 
 	opt.report("inspecting tables and schema objects")
-	var srcInfo, dstInfo *transxex.DBMSInfo
+	var srcInfo, dstInfo *datamig.DBMSInfo
 	err = bothSides(
 		func() (err error) {
-			if srcInfo, err = transxex.InspectDBMS(srcLoc); err != nil {
+			if srcInfo, err = datamig.InspectDBMS(srcLoc); err != nil {
 				return fmt.Errorf("inspect src database %q: %w", d.SrcName, err)
 			}
 			return nil
 		},
 		func() (err error) {
-			if dstInfo, err = transxex.InspectDBMS(dstLoc); err != nil {
+			if dstInfo, err = datamig.InspectDBMS(dstLoc); err != nil {
 				return fmt.Errorf("inspect dst database %q: %w", dstName, err)
 			}
 			return nil
@@ -786,11 +786,11 @@ func validateDatabase(
 // is to refuse them, which the operator should know before upgrading. A target
 // whose keys cannot be read is not reported on: this is a warning, and the
 // validation stands without it.
-func deprecatedForeignKeys(dstLoc transxex.DBMSLocation, dst *transxex.DBMSInfo) []model.ValidationDetailItem {
-	if !transxex.RestrictsNonStandardForeignKeys(dstLoc.DBMSType, dst.ServerVersion) {
+func deprecatedForeignKeys(dstLoc datamig.DBMSLocation, dst *datamig.DBMSInfo) []model.ValidationDetailItem {
+	if !datamig.RestrictsNonStandardForeignKeys(dstLoc.DBMSType, dst.ServerVersion) {
 		return nil
 	}
-	keys, err := transxex.NonStandardForeignKeys(dstLoc)
+	keys, err := datamig.NonStandardForeignKeys(dstLoc)
 	if err != nil {
 		return nil
 	}
@@ -820,9 +820,9 @@ const rowCountConcurrency = 4
 // listings, so an estimate never stands in for an exact count.
 func countRows(
 	ctx context.Context,
-	srcLoc, dstLoc transxex.DBMSLocation,
+	srcLoc, dstLoc datamig.DBMSLocation,
 	dbType commonmodel.DBMSType,
-	src, dst *transxex.DBMSInfo,
+	src, dst *datamig.DBMSInfo,
 	renamed bool,
 	rules []commonmodel.DBMSFilterRule,
 	opt Options,
@@ -907,12 +907,12 @@ func countRows(
 
 // exactRowCount counts t's rows at loc. A PostgreSQL table is looked up in its
 // own schema alone, so a name several schemas share is not ambiguous.
-func exactRowCount(loc transxex.DBMSLocation, metric *transxex.DBMSMetricOption, t transxex.TableInfo) (int64, error) {
+func exactRowCount(loc datamig.DBMSLocation, metric *datamig.DBMSMetricOption, t datamig.TableInfo) (int64, error) {
 	loc.Metric = metric
 	if t.PgSchema != "" {
 		loc.PgSchema = []string{t.PgSchema}
 	}
-	info, err := transxex.DescribeTable(loc, t.Name)
+	info, err := datamig.DescribeTable(loc, t.Name)
 	if err != nil {
 		return 0, err
 	}
@@ -920,11 +920,11 @@ func exactRowCount(loc transxex.DBMSLocation, metric *transxex.DBMSMetricOption,
 }
 
 // withoutTables returns tables less the entries whose index drop holds.
-func withoutTables(tables []transxex.TableInfo, drop map[int]bool) []transxex.TableInfo {
+func withoutTables(tables []datamig.TableInfo, drop map[int]bool) []datamig.TableInfo {
 	if len(drop) == 0 {
 		return tables
 	}
-	out := make([]transxex.TableInfo, 0, len(tables)-len(drop))
+	out := make([]datamig.TableInfo, 0, len(tables)-len(drop))
 	for i, t := range tables {
 		if !drop[i] {
 			out = append(out, t)
@@ -961,7 +961,7 @@ func splitPgSchemaPairs(pairs []commonmodel.PgSchemaMapping) (src, dst []string)
 // inventory that was not collected is nil on both sides and compared as absent,
 // which is why "not requested" and "empty" have to stay distinguishable: a nil
 // source list is skipped rather than read as "the target should hold nothing".
-func schemaObjectKinds(i *transxex.DBMSInfo) map[string][]string {
+func schemaObjectKinds(i *datamig.DBMSInfo) map[string][]string {
 	return map[string][]string{
 		"foreignKey":       i.ForeignKeys,
 		"view":             i.Views,
@@ -986,7 +986,7 @@ func schemaObjectKinds(i *transxex.DBMSInfo) map[string][]string {
 // migration's filter, which leaves out what the filtered dump left out. The
 // reverse direction needs no allowance either — the target is verified empty
 // before a migration starts, so anything in it came from this migration.
-func compareSchemaObjects(src, dst *transxex.DBMSInfo) []model.ValidationDetailItem {
+func compareSchemaObjects(src, dst *datamig.DBMSInfo) []model.ValidationDetailItem {
 	srcKinds := schemaObjectKinds(src)
 	dstKinds := schemaObjectKinds(dst)
 
@@ -1063,7 +1063,7 @@ func schemaObjectKey(kind, name string) string {
 // compareCharsets reports text-handling differences as warnings rather than
 // failures. A managed service can impose its own server defaults, so a
 // difference here is not on its own evidence that the migration went wrong.
-func compareCharsets(src, dst *transxex.DBMSInfo) []model.ValidationDetailItem {
+func compareCharsets(src, dst *datamig.DBMSInfo) []model.ValidationDetailItem {
 	var details []model.ValidationDetailItem
 	add := func(what, a, b string) {
 		if a == "" || b == "" || a == b {
@@ -1087,27 +1087,27 @@ func compareCharsets(src, dst *transxex.DBMSInfo) []model.ValidationDetailItem {
 // or event missing from the target passes as two empty lists.
 //
 // Row counts are left to rowCountMetric and countRows, table by table.
-func validationMetric(dbType commonmodel.DBMSType) *transxex.DBMSMetricOption {
+func validationMetric(dbType commonmodel.DBMSType) *datamig.DBMSMetricOption {
 	t := func() *bool { b := true; return &b }
 	switch dbType {
 	case commonmodel.DBMSTypeMySQL:
-		return &transxex.DBMSMetricOption{MySQL: &transxex.MySQLMetric{
+		return &datamig.DBMSMetricOption{MySQL: &datamig.MySQLMetric{
 			ForeignKeys: t(), Views: t(),
 			Functions: t(), Procedures: t(), Triggers: t(), Events: t(),
 		}}
 	case commonmodel.DBMSTypeMariaDB:
-		return &transxex.DBMSMetricOption{MariaDB: &transxex.MariaDBMetric{
+		return &datamig.DBMSMetricOption{MariaDB: &datamig.MariaDBMetric{
 			ForeignKeys: t(), Views: t(),
 			Functions: t(), Procedures: t(), Triggers: t(), Events: t(),
 		}}
 	case commonmodel.DBMSTypePostgreSQL:
-		return &transxex.DBMSMetricOption{PostgreSQL: &transxex.PostgreSQLMetric{
+		return &datamig.DBMSMetricOption{PostgreSQL: &datamig.PostgreSQLMetric{
 			ForeignKeys: t(), Views: t(), MaterializedViews: t(),
 			Functions: t(), Procedures: t(), Triggers: t(),
 			Sequences: t(), Types: t(), Extensions: t(), Rules: t(),
 		}}
 	case commonmodel.DBMSTypeMongoDB:
-		return &transxex.DBMSMetricOption{MongoDB: &transxex.MongoDBMetric{
+		return &datamig.DBMSMetricOption{MongoDB: &datamig.MongoDBMetric{
 			Views: t(), Validators: t(),
 		}}
 	default:
@@ -1121,17 +1121,17 @@ func validationMetric(dbType commonmodel.DBMSType) *transxex.DBMSMetricOption {
 // there is, which InnoDB gives as 0 for a table restored moments ago — read as a
 // row count that is every migrated table looking empty. MongoDB's DescribeTable
 // always counts exactly.
-func rowCountMetric(dbType commonmodel.DBMSType) *transxex.DBMSMetricOption {
+func rowCountMetric(dbType commonmodel.DBMSType) *datamig.DBMSMetricOption {
 	t := func() *bool { b := true; return &b }
 	switch dbType {
 	case commonmodel.DBMSTypeMySQL:
-		return &transxex.DBMSMetricOption{MySQL: &transxex.MySQLMetric{RowCountExact: t()}}
+		return &datamig.DBMSMetricOption{MySQL: &datamig.MySQLMetric{RowCountExact: t()}}
 	case commonmodel.DBMSTypeMariaDB:
-		return &transxex.DBMSMetricOption{MariaDB: &transxex.MariaDBMetric{RowCountExact: t()}}
+		return &datamig.DBMSMetricOption{MariaDB: &datamig.MariaDBMetric{RowCountExact: t()}}
 	case commonmodel.DBMSTypePostgreSQL:
-		return &transxex.DBMSMetricOption{PostgreSQL: &transxex.PostgreSQLMetric{RowCountExact: t()}}
+		return &datamig.DBMSMetricOption{PostgreSQL: &datamig.PostgreSQLMetric{RowCountExact: t()}}
 	case commonmodel.DBMSTypeMongoDB:
-		return &transxex.DBMSMetricOption{MongoDB: &transxex.MongoDBMetric{RowCountExact: t()}}
+		return &datamig.DBMSMetricOption{MongoDB: &datamig.MongoDBMetric{RowCountExact: t()}}
 	default:
 		return nil
 	}
@@ -1139,8 +1139,8 @@ func rowCountMetric(dbType commonmodel.DBMSType) *transxex.DBMSMetricOption {
 
 // tableKey says how a table is identified when the two sides are matched up —
 // see compareDBTables for why renamed decides it.
-func tableKey(renamed bool) func(transxex.TableInfo) string {
-	return func(t transxex.TableInfo) string {
+func tableKey(renamed bool) func(datamig.TableInfo) string {
+	return func(t datamig.TableInfo) string {
 		if renamed || t.PgSchema == "" {
 			return t.Name
 		}
@@ -1163,10 +1163,10 @@ func tableKey(renamed bool) func(transxex.TableInfo) string {
 // them a table the plan deliberately dropped reads as "missing in destination",
 // which is the same false positive compareSchemaObjects has always avoided on the
 // schema side.
-func compareDBTables(src, dst *transxex.DBMSInfo, renamed bool, rules []commonmodel.DBMSFilterRule) []model.ValidationDetailItem {
+func compareDBTables(src, dst *datamig.DBMSInfo, renamed bool, rules []commonmodel.DBMSFilterRule) []model.ValidationDetailItem {
 	key := tableKey(renamed)
 	srcMap := make(map[string]int64, len(src.Tables))
-	srcTables := make(map[string]transxex.TableInfo, len(src.Tables))
+	srcTables := make(map[string]datamig.TableInfo, len(src.Tables))
 	for _, t := range src.Tables {
 		srcMap[key(t)] = t.RowCount
 		srcTables[key(t)] = t
@@ -1259,16 +1259,16 @@ func filteredTables(rules []commonmodel.DBMSFilterRule) (dropped, rowFiltered ma
 
 // namesTable reports whether a set of rule table names (from filteredTables)
 // names the source table t. A rule may name a PostgreSQL table bare or as
-// schema.name, and transx-ex takes both: the bare form in every schema. The
+// schema.name, and data-mig takes both: the bare form in every schema. The
 // table's own source schema is used, so a rule still finds its table when the
 // migration renamed the schema on the target.
-func namesTable(set map[string]bool, t transxex.TableInfo) bool {
+func namesTable(set map[string]bool, t datamig.TableInfo) bool {
 	return set[t.Name] || (t.PgSchema != "" && set[t.PgSchema+"."+t.Name])
 }
 
-// resolveDBLoc maps a ConnectionRef to a transxex.DBMSLocation for DBMS validation.
+// resolveDBLoc maps a ConnectionRef to a datamig.DBMSLocation for DBMS validation.
 // Delegates to the migration package resolver so validation and execution share
 // one source-of-truth for every connection source (honeybee/beetleDb/db).
-func resolveDBLoc(ref commonmodel.ConnectionRef, database, dbType string) (transxex.DBMSLocation, error) {
+func resolveDBLoc(ref commonmodel.ConnectionRef, database, dbType string) (datamig.DBMSLocation, error) {
 	return migration.ResolveDBMSLocation(ref, database, dbType)
 }

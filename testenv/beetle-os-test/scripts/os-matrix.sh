@@ -24,7 +24,7 @@
 #   this folder to keep in step.
 #
 # ⚠ Access is direct on both sides. honeybee's ssh-tunnel object storage inspect
-#   needs an agent on the source host, and transx-ex has no tunnelled transfer
+#   needs an agent on the source host, and data-mig has no tunnelled transfer
 #   path for storage, so there is no --mode option.
 #
 # ⚠ Requires:

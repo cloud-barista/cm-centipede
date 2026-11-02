@@ -3,7 +3,7 @@ package targetmodel
 import commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 
 // FSMigrationInfo represents a single directory migration task unit.
-// Rules mirror the transx-ex filter pipeline applied to this folder.
+// Rules mirror the data-mig filter pipeline applied to this folder.
 type FSMigrationInfo struct {
 	Order   int                          `json:"order"`
 	SrcPath string                       `json:"srcPath"  validate:"required"`
@@ -38,7 +38,7 @@ type MigrationFileSystemModel struct {
 	// DstType is the destination storage type: empty/"filesystem" = SSH→SSH,
 	// "objectstorage" = filesystem→objectstorage cross-storage.
 	DstType string `json:"dstType,omitempty" validate:"omitempty,oneof=filesystem objectstorage"`
-	// Strategy is the transx transfer strategy (auto/direct/relay). It only affects
+	// Strategy is the data-mig transfer strategy (auto/direct/relay). It only affects
 	// SSH→SSH transfers; cross-storage always relays. Set by the plan layer.
 	Strategy string            `json:"strategy,omitempty" validate:"omitempty,oneof=auto direct relay"`
 	Folders  []FSMigrationInfo `json:"folders,omitempty"`

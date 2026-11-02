@@ -297,11 +297,11 @@ that flag picks the undo path for a failed cell.
 | | step 2 | `created` | a failed cell |
 |---|---|---|---|
 | `centipede` **(default)** | leftover dropped | `true` | the database is dropped whole |
-| `matrix` | leftover dropped, then created | `false` | transx-ex's rollback empties it and keeps it |
+| `matrix` | leftover dropped, then created | `false` | data-mig's rollback empties it and keeps it |
 
 Both are real situations — an operator who prepares the target ahead of time
 gets the second — so both are runnable, and the value is recorded with the result.
-Either way a leftover from a previous cell goes first: transx-ex requires the
+Either way a leftover from a previous cell goes first: data-mig requires the
 target to exist and be empty, and under `centipede` a leftover would also make
 centipede find a database it does not own.
 
@@ -352,7 +352,7 @@ five libpq-style modes:
 | `verify-full` | yes | yes | yes | error |
 
 It governs the migration — the `beetleDb.tlsMode` centipede resolves and carries
-into transx-ex's `DirectConfig` — and nothing else. **Setting up a cell does not
+into data-mig's `DirectConfig` — and nothing else. **Setting up a cell does not
 use it.** Creating the target database is cm-beetle's call, made through
 cb-spider's SQL fallback, and that picks its own transport, whether centipede or
 this script asks for it.
@@ -377,7 +377,7 @@ records `auto` as `auto`. Any other value is used as written — plaintext needs
 Three limits worth knowing:
 
 - **MongoDB has no `prefer`** — a client either negotiates TLS or it does not, and
-  transx-ex rejects it. The matrix drops **mongodb cells to `disable`** and leaves
+  data-mig rejects it. The matrix drops **mongodb cells to `disable`** and leaves
   the other engines on the configured mode, so one mongodb does not refuse a whole
   run. Unreachable on this path in any case: a `beetleDb` target accepts mysql and
   mariadb only. The effective mode appears per engine in the result JSON

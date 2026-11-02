@@ -13,7 +13,7 @@ import (
 // Azure Blob Storage does not speak the S3 API, so the MinIO client cannot reach
 // it: SigV4 signing and the S3 list calls have no counterpart there. It gets its
 // own Client implementation on the azblob SDK, ported from
-// transx-ex/storagex/s3-azure.go - only the parts gendata needs, which leaves out
+// data-mig/storagex/s3-azure.go - only the parts gendata needs, which leaves out
 // SAS pre-signing and downloads.
 //
 // The vocabulary maps as: bucket -> container, object key -> blob name.

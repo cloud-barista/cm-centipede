@@ -6,7 +6,7 @@
 #   docker build -t centipedetest/cm-centipede:0.0.0 .
 #
 # The server imports the nested modules github.com/cloud-barista/cm-centipede/dmdl
-# and .../transx-ex, which resolve through the local-path replace directives in
+# and .../data-mig, which resolve through the local-path replace directives in
 # go.mod. Both directories must therefore be present in the build context.
 
 # Keep this in sync with the go directive in go.mod.
@@ -20,7 +20,7 @@ WORKDIR /src
 # has no external requires and so has no go.sum.
 COPY go.mod go.sum ./
 COPY dmdl/go.mod ./dmdl/
-COPY transx-ex/go.mod transx-ex/go.sum ./transx-ex/
+COPY data-mig/go.mod data-mig/go.sum ./data-mig/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
 	go mod download
@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY cmd/ ./cmd/
 COPY pkg/ ./pkg/
 COPY dmdl/ ./dmdl/
-COPY transx-ex/ ./transx-ex/
+COPY data-mig/ ./data-mig/
 
 # CGO_ENABLED=0: the SQLite driver (glebarez/sqlite) is pure Go, so the binary
 # needs no C toolchain and stays static.
@@ -44,7 +44,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:3.21 AS prod
 
-# rsync + openssh-client: transx-ex shells out to `rsync -e ssh` for filesystem
+# rsync + openssh-client: data-mig shells out to `rsync -e ssh` for filesystem
 #   migrations that run through this container.
 # curl: used by the container healthcheck against /centipede/readyz.
 RUN apk add --no-cache ca-certificates tzdata rsync openssh-client curl

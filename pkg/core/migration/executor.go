@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/cloud-barista/cm-centipede/transx-ex"
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	"sync"
 	"time"
 
@@ -60,9 +60,9 @@ func (e *Executor) Execute(migrationID string) {
 
 	prop := m.Plan.TargetDataMigrationModel
 	stagingDir := ResolveStagingDir(m.StagingDir)
-	log.Info().Str("migrationID", migrationID).Str("stagingRoot", transxex.StagingRoot(stagingDir)).Msg("migration staging root")
+	log.Info().Str("migrationID", migrationID).Str("stagingRoot", datamig.StagingRoot(stagingDir)).Msg("migration staging root")
 	concurrency := ResolveConcurrency(m.Concurrency)
-	log.Info().Str("migrationID", migrationID).Int("concurrency", concurrency).Msg("migration concurrency (0 = transx-ex default)")
+	log.Info().Str("migrationID", migrationID).Int("concurrency", concurrency).Msg("migration concurrency (0 = data-mig default)")
 	var hasFailure bool
 
 	for i := range prop.FileSystems {
@@ -447,9 +447,9 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 
 	prop := m.Plan.TargetDataMigrationModel
 	stagingDir := ResolveStagingDir(m.StagingDir)
-	log.Info().Str("migrationID", migrationID).Str("stagingRoot", transxex.StagingRoot(stagingDir)).Msg("migration staging root")
+	log.Info().Str("migrationID", migrationID).Str("stagingRoot", datamig.StagingRoot(stagingDir)).Msg("migration staging root")
 	concurrency := ResolveConcurrency(m.Concurrency)
-	log.Info().Str("migrationID", migrationID).Int("concurrency", concurrency).Msg("migration concurrency (0 = transx-ex default)")
+	log.Info().Str("migrationID", migrationID).Int("concurrency", concurrency).Msg("migration concurrency (0 = data-mig default)")
 	var hasFailure bool
 
 	// ── File Systems ──────────────────────────────────────────────────────────
@@ -568,7 +568,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 				out.status = "failed"
 				out.errMsg = err.Error()
 			case exists:
-				if dropErr := transxex.RollbackDropDBMS(dstLoc); dropErr != nil {
+				if dropErr := datamig.RollbackDropDBMS(dstLoc); dropErr != nil {
 					out.status = "failed"
 					out.errMsg = dropErr.Error()
 					log.Warn().
@@ -659,19 +659,19 @@ func rollbackStatusFor(ev ProgressEvent, keep bool) string {
 	return "success"
 }
 
-// failedObject pulls the object transx-ex was working on out of a failed item's
+// failedObject pulls the object data-mig was working on out of a failed item's
 // error, so a MigrationLog can name it in its own fields instead of only inside
 // the message.
 //
 // The kind and the name are reported separately, but the name keeps its
-// enclosing database, schema or bucket when transx-ex knew one: a bare "orders"
+// enclosing database, schema or bucket when data-mig knew one: a bare "orders"
 // is ambiguous across the several databases one migration can touch.
 //
 // A failure with no single object behind it — a refused connection, a dump
 // command that failed whole — yields two empty strings, which is the honest
 // answer rather than a guess at the last object seen.
 func failedObject(err error) (kind, name string) {
-	var oe *transxex.ObjectError
+	var oe *datamig.ObjectError
 	if err == nil || !errors.As(err, &oe) {
 		return "", ""
 	}

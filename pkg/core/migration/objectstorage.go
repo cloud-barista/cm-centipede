@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloud-barista/cm-centipede/transx-ex"
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	"github.com/rs/zerolog/log"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
@@ -26,7 +26,7 @@ import (
 // Tumblebug that comes with them.
 const defaultObjectConcurrency = 1
 
-// ToMinioS3Config maps a honeybee ObjectStorage config to a transx S3MinioConfig.
+// ToMinioS3Config maps a honeybee ObjectStorage config to a data-mig S3MinioConfig.
 //
 // It goes through ResolveS3Endpoint rather than copying the connection's fields
 // across, because a honeybee connection carries only what its caller typed.
@@ -47,8 +47,8 @@ const defaultObjectConcurrency = 1
 // A connection with os_access_type = "ssh-tunnel" names an endpoint only its SSH
 // host can reach, so the host is passed on as the config's SSHTunnel and every
 // connection to the store is opened from there.
-func ToMinioS3Config(cfg honeybee.HoneybeeConnConfig) (*transxex.S3MinioConfig, error) {
-	var s3cfg *transxex.S3MinioConfig
+func ToMinioS3Config(cfg honeybee.HoneybeeConnConfig) (*datamig.S3MinioConfig, error) {
+	var s3cfg *datamig.S3MinioConfig
 	if strings.TrimSpace(cfg.ProviderName) == "" {
 		// cm-honeybee refuses such a group itself, so there is nothing of its to
 		// mirror here; the scheme rule is the one ResolveS3Endpoint applies.
@@ -60,7 +60,7 @@ func ToMinioS3Config(cfg honeybee.HoneybeeConnConfig) (*transxex.S3MinioConfig, 
 		if schemeGiven {
 			useSSL = schemeSSL
 		}
-		s3cfg = &transxex.S3MinioConfig{
+		s3cfg = &datamig.S3MinioConfig{
 			Endpoint:        endpoint,
 			AccessKeyId:     cfg.AccessKey,
 			SecretAccessKey: cfg.SecretKey,
@@ -83,7 +83,7 @@ func ToMinioS3Config(cfg honeybee.HoneybeeConnConfig) (*transxex.S3MinioConfig, 
 	}
 
 	if t := cfg.OSTunnel; t != nil {
-		s3cfg.SSHTunnel = &transxex.SSHConfig{
+		s3cfg.SSHTunnel = &datamig.SSHConfig{
 			Host:       t.Host,
 			Port:       t.Port,
 			Username:   t.User,
@@ -94,12 +94,12 @@ func ToMinioS3Config(cfg honeybee.HoneybeeConnConfig) (*transxex.S3MinioConfig, 
 }
 
 // tumblebugPathPrefix is the group every cb-tumblebug namespace route hangs off
-// ("/tumblebug/ns" in its server.go). It is spelled out here because transx-ex's
+// ("/tumblebug/ns" in its server.go). It is spelled out here because data-mig's
 // Tumblebug provider builds its URLs from "/ns/..." onwards and prepends nothing.
 const tumblebugPathPrefix = "/tumblebug"
 
 // tumblebugAPIBase turns a configured cb-tumblebug endpoint into the base
-// transx-ex expects: the one it can append "/ns/{nsId}/..." to.
+// data-mig expects: the one it can append "/ns/{nsId}/..." to.
 //
 // The prefix belongs here rather than in cm-centipede.yaml so that the two
 // external endpoints follow one rule: the beetle client likewise appends
@@ -115,22 +115,22 @@ func tumblebugAPIBase(endpoint string) string {
 	return base + tumblebugPathPrefix
 }
 
-// ToTumblebugOSConfig maps a BeetleOSRef to a transx TumblebugConfig.
+// ToTumblebugOSConfig maps a BeetleOSRef to a data-mig TumblebugConfig.
 //
-// transx-ex reaches a managed bucket through cb-tumblebug's ObjectStorage API,
+// data-mig reaches a managed bucket through cb-tumblebug's ObjectStorage API,
 // so a beetleObjectStorage connection resolves to that access type at transfer
 // time. cb-tumblebug is an internal detail here: it is not a selectable
 // connection source, and the nsId/osId pair comes from the beetle ref.
 //
 // The endpoint and Basic Auth credentials are sourced from cm-centipede.yaml.
-func ToTumblebugOSConfig(ref commonmodel.BeetleOSRef) *transxex.TumblebugConfig {
-	return &transxex.TumblebugConfig{
+func ToTumblebugOSConfig(ref commonmodel.BeetleOSRef) *datamig.TumblebugConfig {
+	return &datamig.TumblebugConfig{
 		Endpoint: tumblebugAPIBase(config.Conf.Tumblebug.Endpoint),
 		NsId:     ref.NsID,
 		OsId:     ref.OsID,
-		Auth: &transxex.AuthConfig{
-			AuthType: transxex.AuthTypeBasic,
-			Basic: &transxex.BasicAuthConfig{
+		Auth: &datamig.AuthConfig{
+			AuthType: datamig.AuthTypeBasic,
+			Basic: &datamig.BasicAuthConfig{
 				Username: config.Conf.Tumblebug.Username,
 				Password: config.Conf.Tumblebug.Password,
 			},
@@ -138,28 +138,28 @@ func ToTumblebugOSConfig(ref commonmodel.BeetleOSRef) *transxex.TumblebugConfig 
 	}
 }
 
-// MinioObjectStorageLoc builds a transxex.StorageLocation for a MinIO (honeybee) bucket path.
+// MinioObjectStorageLoc builds a datamig.StorageLocation for a MinIO (honeybee) bucket path.
 // bucketPath format: "bucket-name" or "bucket-name/prefix/".
 // Pass nil filter for no filtering.
-func MinioObjectStorageLoc(s3cfg *transxex.S3MinioConfig, bucketPath string, filter *transxex.PathFilterOption) transxex.StorageLocation {
-	return transxex.StorageLocation{
-		StorageType: transxex.StorageTypeObjectStorage,
+func MinioObjectStorageLoc(s3cfg *datamig.S3MinioConfig, bucketPath string, filter *datamig.PathFilterOption) datamig.StorageLocation {
+	return datamig.StorageLocation{
+		StorageType: datamig.StorageTypeObjectStorage,
 		Path:        bucketPath,
-		ObjectStorage: &transxex.ObjectStorageAccess{
-			AccessType: transxex.AccessTypeMinio,
+		ObjectStorage: &datamig.ObjectStorageAccess{
+			AccessType: datamig.AccessTypeMinio,
 			Minio:      s3cfg,
 		},
 		Filter: filter,
 	}
 }
 
-// TumblebugObjectStorageLoc builds a transxex.StorageLocation for a cb-tumblebug Object Storage bucket.
-func TumblebugObjectStorageLoc(tbCfg *transxex.TumblebugConfig, bucketPath string, filter *transxex.PathFilterOption) transxex.StorageLocation {
-	return transxex.StorageLocation{
-		StorageType: transxex.StorageTypeObjectStorage,
+// TumblebugObjectStorageLoc builds a datamig.StorageLocation for a cb-tumblebug Object Storage bucket.
+func TumblebugObjectStorageLoc(tbCfg *datamig.TumblebugConfig, bucketPath string, filter *datamig.PathFilterOption) datamig.StorageLocation {
+	return datamig.StorageLocation{
+		StorageType: datamig.StorageTypeObjectStorage,
 		Path:        bucketPath,
-		ObjectStorage: &transxex.ObjectStorageAccess{
-			AccessType: transxex.AccessTypeTumblebug,
+		ObjectStorage: &datamig.ObjectStorageAccess{
+			AccessType: datamig.AccessTypeTumblebug,
 			Tumblebug:  tbCfg,
 		},
 		Filter: filter,
@@ -278,7 +278,7 @@ func ResolveS3Endpoint(cfg commonmodel.MinioConnConfig) (endpoint, region string
 	case commonmodel.ProviderKT:
 		endpoint = "obj-e-1.ktcloud.com"
 	case commonmodel.ProviderAzure:
-		// Blob has no S3 API, but transx-ex recognises this host and switches to
+		// Blob has no S3 API, but data-mig recognises this host and switches to
 		// its azblob provider, so no other branch is needed. accessKeyId is the
 		// storage account name here, and the endpoint cannot be overridden.
 		account := strings.TrimSpace(cfg.AccessKeyId)
@@ -312,15 +312,15 @@ func ResolveS3Endpoint(cfg commonmodel.MinioConnConfig) (endpoint, region string
 	return endpoint, region, useSSL, bucketLookup, nil
 }
 
-// ToInlineMinioConfig builds a transxex.S3MinioConfig from an inline
+// ToInlineMinioConfig builds a datamig.S3MinioConfig from an inline
 // MinioConnConfig, resolving the provider into a concrete endpoint first —
-// transxex.S3MinioConfig has no provider field and expects resolved values.
-func ToInlineMinioConfig(cfg commonmodel.MinioConnConfig) (*transxex.S3MinioConfig, error) {
+// datamig.S3MinioConfig has no provider field and expects resolved values.
+func ToInlineMinioConfig(cfg commonmodel.MinioConnConfig) (*datamig.S3MinioConfig, error) {
 	endpoint, region, useSSL, bucketLookup, err := ResolveS3Endpoint(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &transxex.S3MinioConfig{
+	return &datamig.S3MinioConfig{
 		Endpoint:        endpoint,
 		AccessKeyId:     cfg.AccessKeyId,
 		SecretAccessKey: cfg.SecretAccessKey,
@@ -330,49 +330,49 @@ func ToInlineMinioConfig(cfg commonmodel.MinioConnConfig) (*transxex.S3MinioConf
 	}, nil
 }
 
-// ResolveObjectStorageLoc maps a ConnectionRef to a transx StorageLocation for
+// ResolveObjectStorageLoc maps a ConnectionRef to a data-mig StorageLocation for
 // object storage. Supports honeybee (MinIO direct), beetleObjectStorage (managed
-// bucket, reached through cb-tumblebug's API inside transx-ex) and minio (inline
+// bucket, reached through cb-tumblebug's API inside data-mig) and minio (inline
 // S3 credentials). Inline credentials are decrypted first.
-func ResolveObjectStorageLoc(ref commonmodel.ConnectionRef, bucketPath string, filter *transxex.PathFilterOption) (transxex.StorageLocation, error) {
+func ResolveObjectStorageLoc(ref commonmodel.ConnectionRef, bucketPath string, filter *datamig.PathFilterOption) (datamig.StorageLocation, error) {
 	ref, err := connsec.DecryptRef(ref)
 	if err != nil {
-		return transxex.StorageLocation{}, fmt.Errorf("decrypt connection ref: %w", err)
+		return datamig.StorageLocation{}, fmt.Errorf("decrypt connection ref: %w", err)
 	}
 
 	switch ref.Source {
 	case commonmodel.ConnectionSourceHoneybee:
 		if ref.Honeybee == nil {
-			return transxex.StorageLocation{}, fmt.Errorf("honeybee ref is nil")
+			return datamig.StorageLocation{}, fmt.Errorf("honeybee ref is nil")
 		}
 		cfg, err := honeybee.GetConnectionInfo(*ref.Honeybee)
 		if err != nil {
-			return transxex.StorageLocation{}, fmt.Errorf("get honeybee connection: %w", err)
+			return datamig.StorageLocation{}, fmt.Errorf("get honeybee connection: %w", err)
 		}
 		s3cfg, err := ToMinioS3Config(*cfg)
 		if err != nil {
-			return transxex.StorageLocation{}, err
+			return datamig.StorageLocation{}, err
 		}
 		return MinioObjectStorageLoc(s3cfg, bucketPath, filter), nil
 
 	case commonmodel.ConnectionSourceBeetleObjectStorage:
 		if ref.BeetleOS == nil {
-			return transxex.StorageLocation{}, fmt.Errorf("beetleObjectStorage ref is nil")
+			return datamig.StorageLocation{}, fmt.Errorf("beetleObjectStorage ref is nil")
 		}
 		return TumblebugObjectStorageLoc(ToTumblebugOSConfig(*ref.BeetleOS), bucketPath, filter), nil
 
 	case commonmodel.ConnectionSourceMinio:
 		if ref.Minio == nil {
-			return transxex.StorageLocation{}, fmt.Errorf("minio config is nil")
+			return datamig.StorageLocation{}, fmt.Errorf("minio config is nil")
 		}
 		s3cfg, err := ToInlineMinioConfig(*ref.Minio)
 		if err != nil {
-			return transxex.StorageLocation{}, err
+			return datamig.StorageLocation{}, err
 		}
 		return MinioObjectStorageLoc(s3cfg, bucketPath, filter), nil
 
 	default:
-		return transxex.StorageLocation{}, fmt.Errorf("unsupported source type for object storage migration: %s", ref.Source)
+		return datamig.StorageLocation{}, fmt.Errorf("unsupported source type for object storage migration: %s", ref.Source)
 	}
 }
 
@@ -380,7 +380,7 @@ func ResolveObjectStorageLoc(ref commonmodel.ConnectionRef, bucketPath string, f
 // writes into is already there. bucketPath is the DstPath: its first segment is
 // the bucket.
 //
-// Neither centipede nor transx-ex creates a bucket, so the bucket has to be made
+// Neither centipede nor data-mig creates a bucket, so the bucket has to be made
 // on the provider first. A false result with a nil error means the store said it
 // is not there; any other answer it could not give — a denied permission, an
 // unreachable endpoint, a provider with no way to ask — is an error.
@@ -389,19 +389,19 @@ func TargetBucketExists(dst commonmodel.ConnectionRef, bucketPath string) (bool,
 	if err != nil {
 		return false, err
 	}
-	return transxex.BucketExists(loc)
+	return datamig.BucketExists(loc)
 }
 
 // MigrateObjectStorage transfers each ObjectMigrationInfo bucket from an object-
 // storage source to the destination. The destination is another bucket (S3→S3) or,
 // when m.DstType is filesystem, an SSH filesystem path (objectstorage→filesystem
-// cross-storage; transx handles the S3→local→ssh relay). Processes buckets in
+// cross-storage; data-mig handles the S3→local→ssh relay). Processes buckets in
 // ascending Order, defaultObjectConcurrency (one) at a time. Emits a ProgressEvent per bucket. Returns ctx.Err() on
 // cancellation; per-bucket transfer errors are reported via ProgressEvent only.
 // stagingDir is the local staging root a relay or cross-storage transfer uses
-// (see ResolveStagingDir); empty leaves it to transx-ex's default. concurrency
+// (see ResolveStagingDir); empty leaves it to data-mig's default. concurrency
 // is how many objects, and parts of one, a bucket moves at once (see
-// ResolveConcurrency); zero leaves it to transx-ex's default.
+// ResolveConcurrency); zero leaves it to data-mig's default.
 func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStorageModel, stagingDir string, concurrency int, progressCh chan<- ProgressEvent) error {
 	dstType := m.DstType
 	if dstType == "" {
@@ -454,7 +454,7 @@ func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStor
 
 			start := time.Now()
 
-			filter, filterErr := ToTransxFilter(bucket.Rules)
+			filter, filterErr := ToDataMigFilter(bucket.Rules)
 			if filterErr != nil {
 				resultCh <- result{srcPath: bucket.SrcPath, durationMs: time.Since(start).Milliseconds(), err: fmt.Errorf("build filter: %w", filterErr)}
 				return
@@ -466,13 +466,13 @@ func MigrateObjectStorage(ctx context.Context, m targetmodel.MigrationObjectStor
 				return
 			}
 
-			dstLoc, err := resolveTransxLoc(m.DstConnection, dstType, bucket.DstPath, nil)
+			dstLoc, err := resolveDataMigLoc(m.DstConnection, dstType, bucket.DstPath, nil)
 			if err != nil {
 				resultCh <- result{srcPath: bucket.SrcPath, durationMs: time.Since(start).Milliseconds(), err: fmt.Errorf("resolve dst: %w", err)}
 				return
 			}
 
-			movedBytes, conc, transferErr := runStorageTransfer(ctx, transxex.StorageMigrationModel{
+			movedBytes, conc, transferErr := runStorageTransfer(ctx, datamig.StorageMigrationModel{
 				Source:      srcLoc,
 				Destination: dstLoc,
 				Strategy:    strategy,

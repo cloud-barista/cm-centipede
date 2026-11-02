@@ -1497,7 +1497,7 @@ logical_db_drop() {
 # target_db_clear CSP ENGINE "DB1 DB2 …" — remove anything a previous cell left
 #   under these names, so the next cell starts from nothing.
 #
-#   transx-ex requires the target to exist and be empty, so a leftover fails as
+#   data-mig requires the target to exist and be empty, so a leftover fails as
 #   target-not-empty. It matters just as much when centipede is the one creating
 #   the database: a leftover makes centipede find a database it does not own, and
 #   an unowned database takes the other undo path for the rest of the cell.
@@ -1720,7 +1720,7 @@ cleanup_namespace() {
 # spelled out instead.
 #
 # ⚠ TARGET_TLS_MODE does not help here. That value governs the migration
-#   transx-ex performs, not the connection cb-spider makes.
+#   data-mig performs, not the connection cb-spider makes.
 # explain_dbtype_mismatch ERROR ENGINE — the source and target engines disagree.
 #
 #   With a beetleDb target the two sides of this comparison come from different
@@ -1803,7 +1803,7 @@ explain_insecure_transport() {
 	fail "         (RDBMSManager.go openRDBMSSQLConn) and connects to every other CSP in"
 	fail "         plaintext. A constraint lower in the stack; nothing in this folder works"
 	fail "         around it."
-	fail "  Note : TARGET_TLS_MODE does not apply here. It governs the migration transx-ex"
+	fail "  Note : TARGET_TLS_MODE does not apply here. It governs the migration data-mig"
 	fail "         performs, not the connection cb-spider makes."
 	fail "  What you can do:"
 	fail "    1) Target a version whose managed instance is created with the value off."
@@ -1814,12 +1814,12 @@ explain_insecure_transport() {
 	fail "    3) Run cb-spider v0.13.10 or later, which connects with tls=preferred to every CSP."
 }
 
-# explain_pg_maintenance_db ERROR — the "postgres" database transx-ex insists on.
+# explain_pg_maintenance_db ERROR — the "postgres" database data-mig insists on.
 #
-#   transx-ex reaches PostgreSQL server-level operations through the maintenance
+#   data-mig reaches PostgreSQL server-level operations through the maintenance
 #   database, and the name is a constant, not a setting:
 #
-#     transx-ex/dbmsx/driver/postgresql/postgresql.go
+#     data-mig/dbmsx/driver/postgresql/postgresql.go
 #       const pgMaintenanceDB = "postgres"
 #
 #   Listing the target databases, reading the server version, creating and
@@ -1839,11 +1839,11 @@ explain_pg_maintenance_db() {
 	*) return 0 ;;
 	esac
 	fail ""
-	fail "  Cause: transx-ex connects to the \"postgres\" maintenance database for every"
+	fail "  Cause: data-mig connects to the \"postgres\" maintenance database for every"
 	fail "         server-level PostgreSQL operation, and this instance does not allow"
 	fail "         $RDBMS_USER to connect to it. The target database itself was created"
 	fail "         and is reachable - only that one connection is refused."
-	fail "  Where: transx-ex/dbmsx/driver/postgresql/postgresql.go, const pgMaintenanceDB"
+	fail "  Where: data-mig/dbmsx/driver/postgresql/postgresql.go, const pgMaintenanceDB"
 	fail "  What you can do:"
 	fail "    Nothing from this folder. The name is a constant, not a connection setting,"
 	fail "    so no .env value or CLI option changes it."

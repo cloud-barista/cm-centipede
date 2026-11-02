@@ -58,7 +58,7 @@ type ProgressEvent struct {
 	TargetCreated bool
 	// Concurrency is how many transfers the item ran at once and
 	// ConcurrencyNote why that is not what the migration asked for, as
-	// transx-ex reported them. Zero when it did not. Outcomes only.
+	// data-mig reported them. Zero when it did not. Outcomes only.
 	Concurrency     int
 	ConcurrencyNote string
 	Err             error

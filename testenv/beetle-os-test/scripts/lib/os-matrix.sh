@@ -15,7 +15,7 @@
 # managed database: a bucket is made in seconds and costs nothing while empty.
 #
 # ── The migration and the verdict belong to someone else ────────────────────
-# This matrix does not call transx-ex. cm-honeybee inspects the source and
+# This matrix does not call data-mig. cm-honeybee inspects the source and
 # cm-centipede plans, migrates and validates; this file calls the two and turns
 # the answers into a table. So a verdict rests on centipede's validationStatus
 # rather than on a listing this folder made itself.
@@ -89,7 +89,7 @@ Options:
 
 Options that do not exist, and why:
   --mode ssh       object storage access is always direct. honeybee's ssh-tunnel
-                   inspect needs an agent on the source host, and transx-ex has no
+                   inspect needs an agent on the source host, and data-mig has no
                    tunnelled transfer path for storage at all.
   --prefix         whole buckets are what this folder migrates. A sub-prefix would
                    be flattened onto the target bucket root, because a
@@ -188,7 +188,7 @@ run_cell() {
 	# The bucket and the scan root, not a URL. "<endpoint>/<bucket>" would be a
 	# path-style S3 address and is not wrong, but nothing here addresses the bucket
 	# that way - honeybee is handed os_endpoint and bucket as separate fields, and
-	# transx-ex takes a resolved endpoint plus the path "<bucket>/". Printing a URL
+	# data-mig takes a resolved endpoint plus the path "<bucket>/". Printing a URL
 	# invites someone to fetch it, and a plain GET against an S3 API endpoint
 	# answers AccessDenied. The scan root is what matters: it is the srcPath the
 	# plan will carry, so this line and the plan summary two steps later can be
@@ -197,7 +197,7 @@ run_cell() {
 
 	# ── 1) Target bucket ────────────────────────────────────────────────────
 	# centipede creates no bucket of its own — MigrateObjectStorage resolves both
-	# ends and hands them to transx-ex — so this comes first.
+	# ends and hands them to data-mig — so this comes first.
 	sub "1) target bucket — cm-beetle"
 	if ! create_bucket "$csp" "$bucket" "${SRC_OBJECTS[$bucket]:-0}" "${SRC_BYTES[$bucket]:-0}"; then
 		ended="$(date +%s)"; elapsed=$((ended - started))

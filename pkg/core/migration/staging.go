@@ -9,8 +9,8 @@ import (
 
 // ResolveStagingDir returns the staging root a migration runs with: the one its
 // request named, else the server's configured default. Empty means neither was
-// set, and transx-ex then picks its own default ($TMPDIR/transxex-staging, or
-// /tmp/transxex-staging when TMPDIR is unset).
+// set, and data-mig then picks its own default ($TMPDIR/datamig-staging, or
+// /tmp/datamig-staging when TMPDIR is unset).
 //
 // It is resolved at execution rather than stored at creation, so a retry of a
 // migration that named no directory follows the configuration in effect when

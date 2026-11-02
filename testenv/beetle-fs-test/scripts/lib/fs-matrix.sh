@@ -19,7 +19,7 @@
 # where "create the bucket" was.
 #
 # ── The migration and the verdict belong to someone else ────────────────────
-# This matrix does not call transx-ex. cm-honeybee inspects the source and
+# This matrix does not call data-mig. cm-honeybee inspects the source and
 # cm-centipede plans, migrates and validates; this file calls the two and turns
 # the answers into a table. So a verdict rests on centipede's validationStatus
 # rather than on a listing this folder made itself.
@@ -212,7 +212,7 @@ run_cell() {
 
 	# ── 1) Node ─────────────────────────────────────────────────────────────
 	# centipede creates nothing of its own — MigrateFileSystem resolves both ends
-	# and hands them to transx-ex — so this comes first.
+	# and hands them to data-mig — so this comes first.
 	sub "1) target node — cm-beetle"
 	if ! create_node "$csp"; then
 		ended="$(date +%s)"; elapsed=$((ended - started))

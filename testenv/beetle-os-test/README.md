@@ -234,12 +234,12 @@ bucket the matrix would then report as empty.
 | 6 | Delete the target bucket, record the result |
 
 **Step 1 comes first for a reason.** centipede creates no bucket of its own:
-`MigrateObjectStorage` resolves both ends and hands them to transx-ex. The bucket
+`MigrateObjectStorage` resolves both ends and hands them to data-mig. The bucket
 has to be there before the plan runs.
 
 **One `osId` is one bucket.** For a `beetleObjectStorage` destination the plan
 rewrites `dstPath`'s first segment to the `osId`
-(`pkg/core/plan/target.go`, `resolveObjectStorageDstPath`), because transx-ex
+(`pkg/core/plan/target.go`, `resolveObjectStorageDstPath`), because data-mig
 builds its Tumblebug provider from the `nsId`/`osId` pair and never sees that
 segment. Two source buckets in one plan would therefore both land in the same
 bucket — which is why a cell carries exactly one, and gets a bucket of its own.

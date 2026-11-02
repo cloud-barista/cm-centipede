@@ -134,10 +134,10 @@ type MigrationLog struct {
 	SizeBytes  int64  `gorm:"column:size_bytes"         json:"sizeBytes,omitempty"`
 	DurationMs int64  `gorm:"column:duration_ms"        json:"durationMs"`
 
-	// FailedObjectKind and FailedObjectName name the object transx-ex was
+	// FailedObjectKind and FailedObjectName name the object data-mig was
 	// working on when the item failed — a table, view, routine, file or object —
 	// so the failure can be located without reading ErrorMsg. FailedObjectName
-	// carries the enclosing database, schema or bucket when transx-ex knew it
+	// carries the enclosing database, schema or bucket when data-mig knew it
 	// ("centipede_test.v_customer_stats").
 	//
 	// Both stay empty when the failure was not tied to a single object: a
@@ -162,7 +162,7 @@ type MigrationLog struct {
 	RollbackErrorMsg string `gorm:"column:rollback_error_msg" json:"rollbackErrorMsg,omitempty"`
 
 	// AppliedConcurrency is how many transfers this item ran at once, as
-	// transx-ex settled on them, and ConcurrencyNote why that is not what the
+	// data-mig settled on them, and ConcurrencyNote why that is not what the
 	// migration asked for, when it is not: "capped from 16: ssh MaxSessions", or
 	// a restore through a CLI over SSH, which runs one stream. Zero when the
 	// item did not report it — rows written before this field existed among them.
@@ -178,7 +178,7 @@ type MigrationLog struct {
 // Migration.DBMSOnFailure. Empty is read as DBMSOnFailureCleanup.
 const (
 	// DBMSOnFailureCleanup undoes a failed database item: one centipede created
-	// is dropped whole, one that already existed is emptied by transx-ex.
+	// is dropped whole, one that already existed is emptied by data-mig.
 	DBMSOnFailureCleanup = "cleanup"
 
 	// DBMSOnFailureKeep leaves a failed database exactly as the failure left it,
@@ -210,7 +210,7 @@ type CreateMigrationReq struct {
 	// destination: a filesystem or object storage relay, a cross-storage
 	// transfer, a DBMS dump. Must be an absolute path; it is created if missing.
 	// Empty uses centipede.migration.stagingDir from the configuration, and when
-	// that is empty too, $TMPDIR/transxex-staging or /tmp/transxex-staging.
+	// that is empty too, $TMPDIR/datamig-staging or /tmp/datamig-staging.
 	StagingDir string `json:"stagingDir,omitempty" example:"/data/centipede-staging"`
 
 	// Concurrency is how many transfers each item runs at once: rsync processes

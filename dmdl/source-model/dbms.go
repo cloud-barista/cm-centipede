@@ -122,7 +122,7 @@ type DBMSInfo struct {
 // Databases is a list because a connection names a server, and a server holds as
 // many databases as the inspection covered. It is a list even for a single
 // database, so a consumer never has to handle two shapes — the same rule
-// transx-ex's InspectDBMSAll follows — and it lines up 1:1 with
+// data-mig's InspectDBMSAll follows — and it lines up 1:1 with
 // targetmodel.MigrationDBModel, which pairs one connection with the databases
 // migrated under it.
 type SourceDBModel struct {

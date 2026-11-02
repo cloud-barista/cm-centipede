@@ -144,7 +144,7 @@ load_env_file() {
 # ---------------------------------------------------------------------------
 # Target TLS — TARGET_TLS_MODE
 # ---------------------------------------------------------------------------
-# The same `tlsMode` values transx-ex's DirectConfig.TLSMode takes. Everywhere
+# The same `tlsMode` values data-mig's DirectConfig.TLSMode takes. Everywhere
 # the matrix connects to the target itself (creating and dropping cell databases,
 # the creation probe, the PostgreSQL privilege query) uses the same value, so a
 # column cannot migrate successfully and then fail its own preparation.
@@ -168,14 +168,14 @@ TLS_MODES="disable prefer require verify-ca verify-full"
 # MONGODB_PREFER_FALLBACK — what stands in for prefer on MongoDB.
 #
 #   MongoDB has no prefer: a client either negotiates TLS or it does not, with
-#   nowhere to fall back to, and transx-ex's ValidateDBMS rejects it for the same
+#   nowhere to fall back to, and data-mig's ValidateDBMS rejects it for the same
 #   reason. Refusing a whole run because one engine in it is mongodb would stand
 #   the mysql and postgresql columns still - a common case when one CSP is run
 #   with several engines. So mongodb cells alone drop to this value.
 MONGODB_PREFER_FALLBACK="disable"
 
 # target_tls_mode [ENGINE] — the mode this connection actually uses. An empty
-#   setting means disable, as it does in transx-ex.
+#   setting means disable, as it does in data-mig.
 #
 #   Given an ENGINE, a value that engine cannot use is substituted - today that is
 #   MongoDB's prefer alone, which drops to MONGODB_PREFER_FALLBACK. Called without

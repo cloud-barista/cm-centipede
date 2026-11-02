@@ -186,7 +186,7 @@ compared within one run, so that changes nothing about the verdict.
 | 6 | `GET /migration/{id}/logs`, delete the node, release the network |
 
 **Step 1 comes first for a reason.** centipede creates nothing of its own:
-`MigrateFileSystem` resolves both ends and hands them to transx-ex. The node has
+`MigrateFileSystem` resolves both ends and hands them to data-mig. The node has
 to be there before the plan runs.
 
 **The network has to exist before the node.** This is the main structural
@@ -209,7 +209,7 @@ The probe opens one SSH session to the node and answers three questions with it.
 
 **Where the data goes.** A plan with no filter resolves `dstPath` to the scan
 root — `/testdata` — because `resolveObjectStorageDstPath` leaves a `beetleSsh`
-destination alone. The transfer never gets that far: before rsync runs, transx-ex
+destination alone. The transfer never gets that far: before rsync runs, data-mig
 opens an SSH session and runs `mkdir -p /testdata` **as the node's own user, with
 no sudo** (`storagex/executor-rsync.go` `ensureRemoteDir`). That is a permission
 denied on every CSP image.
@@ -219,7 +219,7 @@ itself. Building it from beetle's `nodeUserName` instead would assume the home
 directory follows the user name, and CSP images disagree about that often enough
 to matter.
 
-**Whether rsync is there.** transx-ex shells out to `rsync -e ssh`, which needs
+**Whether rsync is there.** data-mig shells out to `rsync -e ssh`, which needs
 rsync on *both* ends. Without this check a missing rsync fails every cell
 identically, minutes into a transfer, with an error about a closed connection.
 
