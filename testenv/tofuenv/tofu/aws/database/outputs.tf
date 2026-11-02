@@ -13,7 +13,7 @@ output "db_password" {
 }
 
 # An engine left out of var.aws_db_engines has no instance, and its outputs are
-# null. gen-data.sh and conn-info.sh read a null host as "not provisioned".
+# null. gen-data.sh and conn-info.sh read a null host as "not prepared".
 
 # --- MySQL ---
 output "mysql_host" {

@@ -4,7 +4,7 @@ Create and destroy **object storage buckets, databases and VMs** on **AWS** and
 **NCP (Naver Cloud Platform)** using OpenTofu, with credentials held in OpenBao.
 
 These resources exist to give cm-centipede something real to migrate. Each resource
-type is provisioned and destroyed **independently** — you can create just a bucket,
+type is prepared and destroyed **independently** — you can create just a bucket,
 just a VM, or just the databases.
 
 ---
@@ -19,7 +19,7 @@ just a VM, or just the databases.
 Every database is a managed service. Each CSP is left with the engines it offers:
 AWS has no managed MongoDB and NCP has no managed MariaDB, so those two cells are empty.
 The AWS VM can also mount an EFS file system over NFS, as an option of the `vm`
-resource rather than a resource of its own — see [Step 3](#step-3--provision-resources).
+resource rather than a resource of its own — see [Step 3](#step-3--prepare-resources).
 
 ---
 
@@ -29,10 +29,10 @@ resource rather than a resource of its own — see [Step 3](#step-3--provision-r
 cd tofuenv
 cp .env.example .env && chmod 600 .env    # then change every ChangeMe: AWS keys, a DB password, a bucket name
 ./scripts/up.sh               # start OpenBao, store credentials, start the tofu runner
-./scripts/provision.sh aws bucket
+./scripts/prepare.sh aws bucket
 ./scripts/conn-info.sh aws bucket
 ./scripts/gen-data.sh --provider aws --target bucket
-./scripts/deprovision.sh aws bucket    # always clean up - these resources cost money
+./scripts/teardown.sh aws bucket       # always clean up - these resources cost money
 ./scripts/down.sh
 ```
 
@@ -51,7 +51,7 @@ and the [AWS vs NCP](#aws-vs-ncp-at-a-glance) table.
  Step 2  Start             ./scripts/up.sh
             |                └ start OpenBao -> store credentials -> blank .env keys -> start runner
             |
- Step 3  Provision         ./scripts/provision.sh aws bucket      (or vm / database)
+ Step 3  Prepare           ./scripts/prepare.sh aws bucket        (or vm / database)
             |                └ prints connection info when it finishes
             |                └ for NCP, the network module is created first (automatically)
             |
@@ -62,9 +62,9 @@ and the [AWS vs NCP](#aws-vs-ncp-at-a-glance) table.
             |
  Step 6  Connect           ./scripts/conn-info.sh                  (every environment; --prefix for one)
             |
- Step 7  Destroy           ./scripts/deprovision.sh aws bucket
+ Step 7  Destroy           ./scripts/teardown.sh aws bucket
             |                └ for NCP, the network module is removed once nothing needs it
-            |                └ ./scripts/list.sh shows what is still provisioned, under every prefix
+            |                └ ./scripts/list.sh shows what is still prepared, under every prefix
             |
  Step 8  Shut down         ./scripts/down.sh
 ```
@@ -82,12 +82,12 @@ the `vault` provider.
 | Bucket | S3 | Object Storage |
 | VM login account | `ubuntu` | **`root`** |
 | MySQL / PostgreSQL | RDS | Managed Cloud DB |
-| MongoDB | **not provisioned** | Managed Cloud DB (STAND_ALONE) |
-| MariaDB | RDS | **not provisioned** |
+| MongoDB | **not prepared** | Managed Cloud DB (STAND_ALONE) |
+| MariaDB | RDS | **not prepared** |
 | Network | default VPC, nothing to do | **a VPC is required — created and destroyed automatically** |
 | Reaching a DB from outside | works immediately | **a public domain must be requested once, in the console** |
 | DB engine version format | major.minor (`8.0`) | **full version (`8.0.36`)** |
-| Managed DB provisioning time | a few minutes | **about 30 minutes** |
+| Managed DB preparation time | a few minutes | **about 30 minutes** |
 
 ---
 
@@ -204,7 +204,7 @@ and hyphens only, 3-63 characters. NCP bucket names must be unique within the re
 default.
 
 **The NCP DB password rules are enforced.** A violation is rejected by `up.sh` before
-anything is provisioned:
+anything is prepared:
 
 - 8 to 20 characters
 - at least one letter, one digit and one special character
@@ -228,7 +228,7 @@ plaintext, or connect with TLS instead.
 
 The value is **fixed at creation time** — the parameter group is attached as the
 instance boots, so no reboot is ever needed. Changing it afterwards means
-`deprovision.sh aws database` followed by `provision.sh aws database`; a plain
+`teardown.sh aws database` followed by `prepare.sh aws database`; a plain
 `--force` re-apply would attach the group to a running instance and leave PostgreSQL
 waiting for a reboot that never comes.
 
@@ -261,7 +261,7 @@ On success:
 
 ```
 === Ready ===
-  Provision  :  ./scripts/provision.sh <csp> <resource>
+  Prepare    :  ./scripts/prepare.sh <csp> <resource>
 ```
 
 | Flag | Effect |
@@ -275,10 +275,10 @@ re-running `up.sh` is safe.
 
 ---
 
-## Step 3 — Provision resources
+## Step 3 — Prepare resources
 
 ```
-./scripts/provision.sh <csp> <resource> [--engine e1,e2] [--force]
+./scripts/prepare.sh <csp> <resource> [--engine e1,e2] [--force]
 ```
 
 | CSP | Valid resources |
@@ -290,12 +290,12 @@ re-running `up.sh` is safe.
 reported and skipped, so nothing is created and nothing is charged:
 
 ```
-=== aws/bucket (prefix cptf) is already provisioned - nothing to do ===
+=== aws/bucket (prefix cptf) is already prepared - nothing to do ===
   bucket_name = "cptf-aws-bucket-test"
   ...
   Connection info  :  ./scripts/conn-info.sh aws bucket --prefix cptf
-  Re-apply anyway  :  ./scripts/provision.sh aws bucket --force
-  Destroy          :  ./scripts/deprovision.sh aws bucket
+  Re-apply anyway  :  ./scripts/prepare.sh aws bucket --force
+  Destroy          :  ./scripts/teardown.sh aws bucket
 ```
 
 Use `--force` to apply anyway. That is what you want when a previous apply stopped
@@ -304,7 +304,7 @@ on NCP, remember that changing a managed DB variable re-creates the database.
 `TF_VAR_aws_secure_transport` is the one AWS value `--force` cannot apply properly —
 see [Step 1](#step-1--create-env).
 
-**One database engine at a time** — `--engine` (database only) provisions just the
+**One database engine at a time** — `--engine` (database only) prepares just the
 engines named, comma-separated, using the same names as `gen-data.sh --engine`:
 
 | CSP | Engines |
@@ -313,9 +313,9 @@ engines named, comma-separated, using the same names as `gen-data.sh --engine`:
 | `ncp` | `mysql`, `postgresql`, `mongodb` |
 
 ```bash
-./scripts/provision.sh aws database --engine postgresql        # PostgreSQL only
-./scripts/provision.sh aws database --engine mysql             # adds MySQL; PostgreSQL stays
-./scripts/provision.sh ncp database --engine mysql,mongodb
+./scripts/prepare.sh aws database --engine postgresql          # PostgreSQL only
+./scripts/prepare.sh aws database --engine mysql               # adds MySQL; PostgreSQL stays
+./scripts/prepare.sh ncp database --engine mysql,mongodb
 ```
 
 - Engines already running are always kept: `--engine` only ever adds.
@@ -323,7 +323,7 @@ engines named, comma-separated, using the same names as `gen-data.sh --engine`:
 - The skip check is per engine: the run is a no-op only when every engine named is
   already there.
 - `--force` without `--engine` re-applies the engines the prefix already runs, so one
-  you removed with `deprovision.sh --engine` does not come back.
+  you removed with `teardown.sh --engine` does not come back.
 - The engine list is worked out by the script and handed to tofu as
   `TF_VAR_<csp>_db_engines`. It is not a `.env` setting.
 
@@ -331,12 +331,12 @@ engines named, comma-separated, using the same names as `gen-data.sh --engine`:
 
 ```bash
 ./scripts/aws-db-versions.sh           # optional: list engine versions, instance classes, AMI
-./scripts/provision.sh aws bucket
-./scripts/provision.sh aws vm          # Ubuntu 22.04, for filesystem migration tests
-./scripts/provision.sh aws database    # RDS: MySQL + MariaDB + PostgreSQL (or --engine)
+./scripts/prepare.sh aws bucket
+./scripts/prepare.sh aws vm            # Ubuntu 22.04, for filesystem migration tests
+./scripts/prepare.sh aws database      # RDS: MySQL + MariaDB + PostgreSQL (or --engine)
 ```
 
-**AWS vm with NFS (EFS)** — set `TF_VAR_aws_nfs_enabled=true` before `provision.sh aws vm`
+**AWS vm with NFS (EFS)** — set `TF_VAR_aws_nfs_enabled=true` before `prepare.sh aws vm`
 and the VM comes with an EFS file system, mounted over NFS (v4.1) on first boot:
 
 ```dotenv
@@ -354,24 +354,24 @@ elsewhere and the data stays on the local disk while EFS is mounted on its own.
   A violation is rejected at plan time.
 - EFS is reachable from inside the VPC only. A mount target goes into every default
   subnet, and its security group accepts NFS (2049) from the VM alone.
-- The mount happens in cloud-init, **after** `provision.sh` returns — give it a couple of
+- The mount happens in cloud-init, **after** `prepare.sh` returns — give it a couple of
   minutes before Step 5. Check it with `ssh ... cloud-init status --wait` and
   `ssh ... mountpoint <mount path>`.
-- **Fixed at creation time.** Changing either `aws_nfs_*` value on a provisioned VM
-  takes `provision.sh aws vm --force`, which **re-creates the VM** — anything on its local
-  disk is lost. EFS and everything on it are destroyed with `deprovision.sh aws vm`.
+- **Fixed at creation time.** Changing either `aws_nfs_*` value on a prepared VM
+  takes `prepare.sh aws vm --force`, which **re-creates the VM** — anything on its local
+  disk is lost. EFS and everything on it are destroyed with `teardown.sh aws vm`.
 
 **NCP** — the same three resources, in any order:
 
 ```bash
 ./scripts/ncp-db-versions.sh           # optional: list engine versions, images and specs
-./scripts/provision.sh ncp bucket
-./scripts/provision.sh ncp vm
-./scripts/provision.sh ncp database    # managed: MySQL + PostgreSQL + MongoDB (or --engine)
+./scripts/prepare.sh ncp bucket
+./scripts/prepare.sh ncp vm
+./scripts/prepare.sh ncp database      # managed: MySQL + PostgreSQL + MongoDB (or --engine)
 ```
 
 **Sizing on NCP** — all set in `.env`, and all fixed at creation (changing one on a
-provisioned resource re-creates it):
+prepared resource re-creates it):
 
 | What | Variable | Default |
 |---|---|---|
@@ -385,7 +385,7 @@ storage grows by itself as data is written, so `gen-data.sh` does not cap the bu
 on NCP.
 
 NCP has no default VPC, so `vm` and `database` resolve a VPC, PUBLIC subnet and ACG
-**by name** from the `network` module. You never provision that module yourself:
+**by name** from the `network` module. You never prepare that module yourself:
 whichever of the two you run first creates it, and Step 7 removes it once nothing
 needs it any more. Each prefix gets a network of its own.
 
@@ -417,7 +417,7 @@ nothing outside the VPC can connect.
 
 ```
 NCP console > Database > Cloud DB for <engine> > select the DB server
-  > DB Management > Public Domain Management > Request      (once per provisioned engine)
+  > DB Management > Public Domain Management > Request      (once per prepared engine)
 ```
 
 Then pull it into the tofu state and verify:
@@ -431,14 +431,14 @@ Then pull it into the tofu state and verify:
 - If you destroy and re-create a database, you must **request the domain again**.
 - All three NCP engines are managed, so **none of them is exempt** — each needs its own
   public domain request.
-- Only the engines you provisioned are checked. One left out with `--engine` is listed
-  as `(not provisioned)` and not waited on.
+- Only the engines you prepared are checked. One left out with `--engine` is listed
+  as `(not prepared)` and not waited on.
 
 ---
 
 ## Step 5 — Load test data (optional)
 
-Fills the provisioned resources with dummy and seed data by building and running
+Fills the prepared resources with dummy and seed data by building and running
 [`gendata`](gendata/).
 
 | Target | What it does |
@@ -482,7 +482,7 @@ what lets gendata have a single input path.
 | Option | Default | Values |
 |---|---|---|
 | `--target` | `all` | `bucket`, `filesystem`, `database`, `all` |
-| `--engine` | `all` | `mysql`, `mariadb`, `postgresql`, `mongodb`, `all`. An engine the provider does not serve, or one not provisioned (`provision.sh --engine`), has no host output and is skipped |
+| `--engine` | `all` | `mysql`, `mariadb`, `postgresql`, `mongodb`, `all`. An engine the provider does not serve, or one not prepared (`prepare.sh --engine`), has no host output and is skipped |
 | `--provider` | `aws` | `aws`, `ncp` |
 | `--dry-run` | off | Generate dummy files only; skip upload, transfer and load |
 | `--force` | off | Skip the existing-data check (allows overwrite and `DROP`) |
@@ -649,32 +649,32 @@ done; `<engine>_private_domain` only resolves inside the VPC.
 
 ## Step 7 — Destroy resources
 
-**Destroy what you provisioned. RDS instances, servers and public IPs are billed.**
+**Destroy what you prepared. RDS instances, servers and public IPs are billed.**
 
 ```
-./scripts/deprovision.sh <csp> <resource> [--engine e1,e2]
+./scripts/teardown.sh <csp> <resource> [--engine e1,e2]
 ```
 
 ```bash
-./scripts/deprovision.sh aws database
-./scripts/deprovision.sh aws vm
-./scripts/deprovision.sh aws bucket
+./scripts/teardown.sh aws database
+./scripts/teardown.sh aws vm
+./scripts/teardown.sh aws bucket
 ```
 
 On NCP, the same three resources — the `network` module is not one of them:
 
 ```bash
-./scripts/deprovision.sh ncp database
-./scripts/deprovision.sh ncp vm
-./scripts/deprovision.sh ncp bucket
+./scripts/teardown.sh ncp database
+./scripts/teardown.sh ncp vm
+./scripts/teardown.sh ncp bucket
 ```
 
 **One database engine at a time** — `--engine` destroys just the engines named; the
 others keep running:
 
 ```bash
-./scripts/deprovision.sh aws database --engine postgresql
-./scripts/deprovision.sh ncp database --engine mongodb
+./scripts/teardown.sh aws database --engine postgresql
+./scripts/teardown.sh ncp database --engine mongodb
 ```
 
 - It is a targeted destroy of those engines' own resources (the instance, plus its
@@ -722,7 +722,7 @@ Because only `vm` and `database` reference the VPC, the script destroys the pref
 `network` module for you as soon as **neither of them is left in that prefix** (a
 database with even one engine left still counts). Destroy them in either order;
 whichever goes last takes the VPC, subnet and ACG with it. While one of them is still
-provisioned, you will see `Keeping ncp/network: another module still uses it.`
+prepared, you will see `Keeping ncp/network: another module still uses it.`
 
 If NCP has not finished releasing the servers, that final network destroy can fail.
 It is reported as a **warning**, not an error — the resource you asked for is already
@@ -749,7 +749,7 @@ key belonged to is still being released — but it has been observed **unchanged
 minutes of retries**, and calling `deleteLoginKeys` directly returns the same thing, so
 it is not something the scripts can wait out.
 
-So they do not try. This is the one failure `deprovision.sh` does **not** retry: once the
+So they do not try. This is the one failure `teardown.sh` does **not** retry: once the
 login key is all that is left, the 60-second retry would only spend a minute to fail
 identically. Recovery is immediate, in two reported steps:
 
@@ -761,7 +761,7 @@ identically. Recovery is immediate, in two reported steps:
 
 **Forgetting the key is safe because the names are unique.** The login key is named
 `<prefix>-vm-<random>` (a `random_id` resource in `tofu/ncp/vm`), so a key left behind at
-NCP cannot collide with the one the next provisioning asks for. That is the whole reason for the suffix: `ncloud_login_key`
+NCP cannot collide with the one the next preparation asks for. That is the whole reason for the suffix: `ncloud_login_key`
 refuses to create a name that already exists, and without the suffix one undeletable key
 would block the module forever.
 
@@ -797,8 +797,8 @@ prefix is an environment of its own. Every module — `bucket`, `vm`, `database`
 tofu/<csp>/<module>/terraform.tfstate.d/<prefix>/terraform.tfstate
 ```
 
-**Every script acts on the prefix `.env` sets, and only on it** — `provision.sh`,
-`deprovision.sh`, `gen-data.sh` and `ncp-db-domain.sh` alike. The read-only ones look at
+**Every script acts on the prefix `.env` sets, and only on it** — `prepare.sh`,
+`teardown.sh`, `gen-data.sh` and `ncp-db-domain.sh` alike. The read-only ones look at
 all of them: `list.sh` lists every environment, and `conn-info.sh` shows every
 environment's connection info (`--prefix <name>` for one). The rest of
 `.env` (bucket name, engine versions, NFS, ...) describes that one environment too.
@@ -807,9 +807,9 @@ So changing a prefix does not rename, replace or break anything:
 
 ```bash
 # .env: TF_VAR_aws_name_prefix=cptf
-./scripts/provision.sh aws vm         # cptf-vm, key in ssh_keys/aws-cptf-vm.pem
+./scripts/prepare.sh aws vm           # cptf-vm, key in ssh_keys/aws-cptf-vm.pem
 # .env: TF_VAR_aws_name_prefix=cptf2
-./scripts/provision.sh aws vm         # a second VM, cptf2-vm - cptf-vm keeps running
+./scripts/prepare.sh aws vm           # a second VM, cptf2-vm - cptf-vm keeps running
 ```
 
 **See every environment** — the one command that looks past `.env`:
@@ -819,7 +819,7 @@ So changing a prefix does not rename, replace or break anything:
 ```
 
 ```
-=== provisioned environments ===
+=== prepared environments ===
   CSP   PREFIX        bucket  vm   database  network
   aws   cptf          yes     yes  -
   aws   cptf2 *       -       yes  yes

@@ -14,7 +14,7 @@ Three systems each do one thing:
         └────────────────────── ──▶ :8085               move it, then check it
                                          │
    AWS bucket                            │              cm-beetle
-   cpbt-aws-bucket         ◀─────────────┘              :8056  provisions the bucket
+   cpbt-aws-bucket         ◀─────────────┘              :8056  prepares the bucket
 ```
 
 cm-honeybee reads the source. cm-centipede moves the objects and verifies them.
@@ -106,7 +106,7 @@ cd ../beetleenv
 cp .env.example .env && chmod 600 .env    # fill in region and zones
 
 ./scripts/up.sh                           # check the stack, create the namespace
-./scripts/provision.sh aws bucket         # seconds
+./scripts/prepare.sh aws bucket           # seconds
 ./scripts/conn-info.sh aws --ids
 ```
 
@@ -506,7 +506,7 @@ curl -s -X DELETE http://localhost:8081/honeybee/source_group/$SG_ID
 
 ```bash
 cd ../../beetleenv
-./scripts/deprovision.sh aws bucket
+./scripts/teardown.sh aws bucket
 
 cd ../dockerenv
 ./dockerenv-down.sh
@@ -515,7 +515,7 @@ cd ../..                            # repo root
 make down
 ```
 
-The namespace is kept by `deprovision.sh`, so another `provision.sh aws bucket`
+The namespace is kept by `teardown.sh`, so another `prepare.sh aws bucket`
 can follow straight on. `./scripts/status.sh` in `beetleenv` shows what is still
 up.
 

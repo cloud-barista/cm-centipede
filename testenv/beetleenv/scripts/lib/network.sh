@@ -206,7 +206,7 @@ assert_vm_zone() {
 
        A vNet that already exists keeps the zones it was built with, so remove it
        too if there is one:
-         ./scripts/deprovision.sh ${csp} all"
+         ./scripts/teardown.sh ${csp} all"
 }
 
 # ------------------------------------------------------------------------------

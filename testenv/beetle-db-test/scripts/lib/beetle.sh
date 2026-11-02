@@ -2,10 +2,10 @@
 #
 # lib/beetle.sh — the cm-beetle client (written for this folder)
 #
-# The provisioner, whole and entire: everything that creates, reads and deletes a
+# The preparer, whole and entire: everything that creates, reads and deletes a
 # managed instance, its network and its logical databases lives here. db-matrix.sh
 # calls the functions below and knows nothing about cm-beetle itself, which is
-# what keeps the matrix body, its verdicts and its table free of provisioner
+# what keeps the matrix body, its verdicts and its table free of preparer
 # detail.
 #
 # ── Which server answers which call ─────────────────────────────────────────

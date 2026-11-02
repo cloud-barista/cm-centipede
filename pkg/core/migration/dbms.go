@@ -225,7 +225,7 @@ func ResolveDBMSLocation(ref commonmodel.ConnectionRef, database, dbType string)
 }
 
 // validateManagedEngine rejects an engine cm-beetle cannot be holding.
-// cb-tumblebug provisions MySQL and MariaDB only, so a beetleDb reference to a
+// cb-tumblebug prepares MySQL and MariaDB only, so a beetleDb reference to a
 // PostgreSQL or MongoDB server is a mistake worth naming rather than a
 // connection to attempt.
 func validateManagedEngine(engine string) error {
@@ -236,7 +236,7 @@ func validateManagedEngine(engine string) error {
 		return fmt.Errorf("beetleDb: cm-beetle reported no database engine")
 	default:
 		return fmt.Errorf(
-			"beetleDb: engine %q is not available as a managed instance (cm-beetle provisions %s and %s only); "+
+			"beetleDb: engine %q is not available as a managed instance (cm-beetle prepares %s and %s only); "+
 				"use an inline db connection instead",
 			engine, commonmodel.DBMSTypeMySQL, commonmodel.DBMSTypeMariaDB)
 	}
@@ -382,7 +382,7 @@ func EnsureTargetDatabase(
 		if !strings.EqualFold(dst.DB.ProviderName, commonmodel.ProviderOnPrem) {
 			return false, fmt.Errorf(
 				"db target: database %q does not exist; centipede creates one only for "+
-					"providerName %q (got %q) — provision it on the provider first",
+					"providerName %q (got %q) — prepare it on the provider first",
 				dstLoc.Database, commonmodel.ProviderOnPrem, dst.DB.ProviderName)
 		}
 		opt := createOptionFrom(dstLoc.DBMSType, srcInfo)

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# deprovision.sh — delete what provision.sh created
+# teardown.sh — delete what prepare.sh created
 # ------------------------------------------------------------------------------
-#   ./scripts/deprovision.sh <csp|all> <database|bucket|vm|all> [options]
+#   ./scripts/teardown.sh <csp|all> <database|bucket|vm|all> [options]
 #
 #   Everything beetleenv deletes, it deletes from here. status.sh only reports
-#   and provision.sh only creates.
+#   and prepare.sh only creates.
 #
 #   THE NETWORK IS NOT A RESOURCE HERE EITHER. It is not created by name and it
 #   is not deleted by name: every run ends by checking whether anything of ours
@@ -14,7 +14,7 @@
 #   refused by the CSP or strand the database.
 #
 #   THE NAMESPACE IS NEVER DELETED. up.sh creates it once and it outlives every
-#   resource in it, so a teardown can be followed straight by another provision -
+#   resource in it, so a teardown can be followed straight by another prepare -
 #   and anything else sharing the namespace is unaffected either way.
 #
 #   What exists is read from the list APIs, not from state/. cb-tumblebug is the
@@ -39,7 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/deprovision.sh <csp|all> <resource> [options]
+Usage: ./scripts/teardown.sh <csp|all> <resource> [options]
 
 CSP:
   <csp>       one CSP
@@ -72,9 +72,9 @@ The namespace is never deleted, whatever is passed here.
 These resources cost money. Deleting them is the normal end of a session.
 
 Examples:
-  ./scripts/deprovision.sh aws database --engine mysql
-  ./scripts/deprovision.sh aws all
-  ./scripts/deprovision.sh all all
+  ./scripts/teardown.sh aws database --engine mysql
+  ./scripts/teardown.sh aws all
+  ./scripts/teardown.sh all all
 EOF
 }
 
@@ -113,7 +113,7 @@ case "$RESOURCE" in
        The vNet and its security group are removed automatically once no database
        and no VM of ours is left inside them, at the end of every run here.
        To clear a vNet that outlived everything else:
-         ./scripts/deprovision.sh ${CSP_ARG} all" ;;
+         ./scripts/teardown.sh ${CSP_ARG} all" ;;
     *) usage >&2; die "unknown resource: ${RESOURCE}" ;;
 esac
 
@@ -162,7 +162,7 @@ INFRA_Q="?option=terminate"
 if [ "$FORCE" -eq 1 ]; then INFRA_Q="$FORCE_Q"; fi
 
 # CSP and OUR_PREFIX are set per iteration by the loop at the bottom; the
-# deprovision_* functions read them as globals.
+# teardown_* functions read them as globals.
 CSP=""
 OUR_PREFIX=""
 
@@ -211,7 +211,7 @@ delete_one() {
 
 # ------------------------------------------------------------------------------
 
-deprovision_database() {
+teardown_database() {
     local ids id engine_of count=0
     local strip="${OUR_PREFIX}db-"
 
@@ -284,7 +284,7 @@ delete_bucket() {
     return 0
 }
 
-deprovision_bucket() {
+teardown_bucket() {
     local ids id count=0
 
     if ! bt_get "/migration/middleware/ns/${NS_PATH}/objectStorage"; then
@@ -306,7 +306,7 @@ deprovision_bucket() {
     fi
 }
 
-deprovision_vm() {
+teardown_vm() {
     local ids id count=0 stuck=0
 
     if ! bt_get "/migration/ns/${NS_PATH}/infra"; then
@@ -333,7 +333,7 @@ deprovision_vm() {
     fi
 
     # The SSH key outlives the infrastructure it was made for, and a later
-    # provision would reuse it - so it goes with the VM rather than with the
+    # prepare would reuse it - so it goes with the VM rather than with the
     # network, which nothing else references.
     #
     # Not attempted while an infrastructure is still standing. cb-tumblebug
@@ -354,7 +354,7 @@ deprovision_vm() {
     fi
 
     # A key file conn-info.sh --ssh saved opens nothing now, and leaving it would
-    # have the next provision's ssh command silently offer the old key. It goes
+    # have the next prepare's ssh command silently offer the old key. It goes
     # here rather than with the network because it is the key pair's own copy.
     #
     # Only this setup's key: the file is named after the sshKeyId, which carries
@@ -472,27 +472,27 @@ for CSP in $CSPS; do
     fi
 
     case "$RESOURCE" in
-        database) deprovision_database ;;
-        bucket)   deprovision_bucket ;;
-        vm)       deprovision_vm ;;
+        database) teardown_database ;;
+        bucket)   teardown_bucket ;;
+        vm)       teardown_vm ;;
         all)
             # Order matters: everything that sits in the vNet has to go before
             # the network sweep below, and the bucket is independent of both.
-            deprovision_vm
-            deprovision_database
-            deprovision_bucket
+            teardown_vm
+            teardown_database
+            teardown_bucket
             ;;
     esac
 
     # Every path ends here, including "bucket" and a run that deleted nothing:
-    # that is what makes "no orphaned vNet after a deprovision" true in general,
+    # that is what makes "no orphaned vNet after a teardown" true in general,
     # and what lets an already-empty "all" clean up a stranded one.
     release_network_if_unused
 done
 
 printf '\n'
 if report_delete_failures; then
-    log_ok "${CSP_ARG} ${RESOURCE} deprovisioned. Namespace ${BEETLEENV_NS} is unchanged."
+    log_ok "${CSP_ARG} ${RESOURCE} torn down. Namespace ${BEETLEENV_NS} is unchanged."
 else
     exit 1
 fi

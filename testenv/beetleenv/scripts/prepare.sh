@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# provision.sh — create test resources through the cm-beetle API
+# prepare.sh — create test resources through the cm-beetle API
 # ------------------------------------------------------------------------------
-#   ./scripts/provision.sh <csp> <database|bucket|vm> [--engine <engine>]
+#   ./scripts/prepare.sh <csp> <database|bucket|vm> [--engine <engine>]
 #
 #   Only the three things worth asking for by name. The vNet, its subnets and the
 #   security group are a means to those, not a goal in themselves: database and
@@ -57,7 +57,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/provision.sh <csp> <resource> [options]
+Usage: ./scripts/prepare.sh <csp> <resource> [options]
 
 Resources:
   database    one managed RDBMS instance per engine
@@ -75,9 +75,9 @@ Options:
                       something between here and beetle rewrites headers.
 
 Examples:
-  ./scripts/provision.sh aws database
-  ./scripts/provision.sh aws database --engine mariadb
-  ./scripts/provision.sh ncp vm
+  ./scripts/prepare.sh aws database
+  ./scripts/prepare.sh aws database --engine mariadb
+  ./scripts/prepare.sh ncp vm
 EOF
 }
 
@@ -110,11 +110,11 @@ fi
 case "$RESOURCE" in
     database|bucket|vm) ;;
     network)
-        die "'network' is not a resource you provision directly.
+        die "'network' is not a resource you prepare directly.
        The vNet, its subnets and the security group are created on the way into
        'database' and 'vm', and shared between them.
        On their own there would be nothing to create them for, and
-       ./scripts/deprovision.sh removes them once nothing is left inside." ;;
+       ./scripts/teardown.sh removes them once nothing is left inside." ;;
     *) usage >&2; die "unknown resource: ${RESOURCE}" ;;
 esac
 if [ -n "$ENGINE" ] && [ "$RESOURCE" != "database" ]; then
@@ -163,7 +163,7 @@ migrate() {
 # skip_if_present <label> <path> <jq program> — true when the resource is already
 #   there, in which case it is left exactly as it is.
 #
-#   Re-running provision.sh is the normal way to add the one thing that failed
+#   Re-running prepare.sh is the normal way to add the one thing that failed
 #   last time, so it has to be a no-op for everything that succeeded. Without
 #   this it is the opposite: cb-tumblebug rejects every create on a name it
 #   already holds - "already exists, RDBMS", "already exists, object storage",
@@ -173,7 +173,7 @@ migrate() {
 #
 #   This is the same create-if-absent rule ensure_network already follows, and
 #   there is deliberately no --force beside it: replacing a resource is
-#   deprovision.sh followed by provision.sh, which is explicit about the delete.
+#   teardown.sh followed by prepare.sh, which is explicit about the delete.
 #
 #   A lookup that fails for any other reason returns 1 and the create is
 #   attempted, which is what happened before this existed.
@@ -200,9 +200,9 @@ skip_if_present() {
             log_error "${label} already exists, but its status is ${status}"
             bt_payload | jq -r "$program" 2>/dev/null || true
             die "this ${RESOURCE} cannot be used, and nothing can be created over it
-       while the name is taken. Remove it and provision again:
-         ./scripts/deprovision.sh ${CSP} ${RESOURCE}
-         ./scripts/provision.sh ${CSP} ${RESOURCE}
+       while the name is taken. Remove it and prepare again:
+         ./scripts/teardown.sh ${CSP} ${RESOURCE}
+         ./scripts/prepare.sh ${CSP} ${RESOURCE}
        ./scripts/conn-info.sh ${CSP} shows what is still there in the meantime."
             ;;
     esac
@@ -240,7 +240,7 @@ ensure_shared_network() {
 
 rdbms_name() { resource_name "$CSP" "db-$1"; }
 
-provision_database_engine() {
+prepare_database_engine() {
     local engine="$1" name rec body
 
     name="$(rdbms_name "$engine")"
@@ -275,7 +275,7 @@ provision_database_engine() {
     #
     # Also before the create rather than after it, on purpose. state/ is a record
     # of what was asked for, not a cache of what exists - nothing reads it back,
-    # and deprovision.sh only deletes from it. The case that decides the order is
+    # and teardown.sh only deletes from it. The case that decides the order is
     # an async create that outlives its timeout: migrate() dies saying the
     # resource may still be on its way, and a write placed after it would leave
     # no trace of the one resource most likely to turn up unlisted. Re-running
@@ -298,7 +298,7 @@ provision_database_engine() {
     fi
 }
 
-provision_database() {
+prepare_database() {
     local engines engine
 
     assert_rdbms_supported "$CSP"
@@ -320,7 +320,7 @@ provision_database() {
     ensure_shared_network
 
     for engine in $engines; do
-        provision_database_engine "$(csp_lower "$engine")"
+        prepare_database_engine "$(csp_lower "$engine")"
     done
 }
 
@@ -328,7 +328,7 @@ provision_database() {
 # bucket
 # ------------------------------------------------------------------------------
 
-provision_bucket() {
+prepare_bucket() {
     local name rec body
 
     name="$(resource_name "$CSP" bucket)"
@@ -382,7 +382,7 @@ ssh_ready_probe() {
     esac
 }
 
-provision_vm() {
+prepare_vm() {
     local name rec body
 
     name="$(resource_name "$CSP" infra)"
@@ -442,9 +442,9 @@ provision_vm() {
 # ------------------------------------------------------------------------------
 
 case "$RESOURCE" in
-    database) provision_database ;;
-    bucket)   provision_bucket ;;
-    vm)       provision_vm ;;
+    database) prepare_database ;;
+    bucket)   prepare_bucket ;;
+    vm)       prepare_vm ;;
 esac
 
 printf '\n'

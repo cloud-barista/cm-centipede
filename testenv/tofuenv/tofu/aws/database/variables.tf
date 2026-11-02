@@ -55,7 +55,7 @@ variable "aws_db_storage_type" {
   }
 }
 
-# Which engines this module runs. Not set in .env: provision.sh and deprovision.sh
+# Which engines this module runs. Not set in .env: prepare.sh and teardown.sh
 # work it out from --engine and from what the state already holds, and export it
 # for each apply. The default - every engine - is what a plain apply gets.
 variable "aws_db_engines" {
@@ -110,7 +110,7 @@ variable "aws_postgres_version" {
 # is the escape hatch for seeing what changes when TLS is not available at all.
 #
 # This value is fixed at creation time: see the note on the parameter groups in
-# main.tf. Changing it on a provisioned module means destroy + provision.
+# main.tf. Changing it on a prepared module means destroy + prepare.
 variable "aws_secure_transport" {
   description = "csp-default = leave the RDS default alone; off = attach a parameter group allowing plaintext"
   type        = string

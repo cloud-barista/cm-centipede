@@ -24,8 +24,8 @@ locals {
   # accepts it is confirmed by the first apply.
   mongodb_port = 27017
 
-  # Each engine exists only when var.ncp_db_engines names it, so provision.sh /
-  # deprovision.sh --engine can add or remove one without touching the others.
+  # Each engine exists only when var.ncp_db_engines names it, so prepare.sh /
+  # teardown.sh --engine can add or remove one without touching the others.
   want_mysql    = contains(var.ncp_db_engines, "mysql")
   want_postgres = contains(var.ncp_db_engines, "postgres")
   want_mongodb  = contains(var.ncp_db_engines, "mongodb")
@@ -352,7 +352,7 @@ resource "ncloud_access_control_group_rule" "mongodb" {
 }
 
 # The engines were single resources before they took a count. These carry an
-# environment provisioned back then over to index [0]; without them every managed
+# environment prepared back then over to index [0]; without them every managed
 # DB would be planned for a 30-minute re-creation.
 moved {
   from = ncloud_mysql.this

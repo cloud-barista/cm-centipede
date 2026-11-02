@@ -107,7 +107,7 @@ func (e *TargetDatabaseExistsError) Error() string {
 
 // TargetDatabaseNotFoundError is returned by PrepareTarget when the target
 // database does not exist. dbmsx does not create it implicitly; it must be
-// provisioned beforehand — with CreateDatabase, or out of band.
+// prepared beforehand — with CreateDatabase, or out of band.
 // DropDatabase returns it too, for the database it was asked to drop, unless the
 // caller passed IfExists.
 type TargetDatabaseNotFoundError struct {

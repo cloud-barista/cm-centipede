@@ -7,7 +7,7 @@
 # NCP sometimes refuses to delete a login key (500 / returnCode 1300) long after the
 # server it belonged to is gone, and ncloud_login_key cannot create a name that already
 # exists. A per-key random suffix means a key that could not be deleted never blocks the
-# next provisioning. random_id rather than timestamp(): the value is kept in state, so
+# next preparation. random_id rather than timestamp(): the value is kept in state, so
 # plans stay stable instead of scheduling a replacement every run.
 resource "random_id" "key" {
   byte_length = 3

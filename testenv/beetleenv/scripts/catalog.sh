@@ -4,7 +4,7 @@
 # ------------------------------------------------------------------------------
 #   Creates nothing and changes nothing. This is the answer to "which engines
 #   does ncp have", "what versions can I ask for" and "why did my mariadb request
-#   stop", asked before a provision rather than after one fails.
+#   stop", asked before a prepare rather than after one fails.
 #
 #   Everything here comes from cb-tumblebug through cm-beetle, so it reflects the
 #   live catalogue rather than a list kept in beetleenv.
@@ -30,7 +30,7 @@ Kinds:
                    and the osType values the catalogue does hold
   connection       the connection name beetle will use, and whether it resolves
 
-vmspec and vmimage are the two halves of what "provision.sh <csp> vm" needs. An
+vmspec and vmimage are the two halves of what "prepare.sh <csp> vm" needs. An
 empty answer from either is why a VM recommendation can come back with nothing.
 
 Examples:
@@ -114,7 +114,7 @@ show_rdbms() {
 
     # cm-beetle's capability endpoint takes a connection name and no engine, so
     # what comes back describes the connection's default engine. Versions and
-    # specs per engine are what the recommendation resolves at provision time.
+    # specs per engine are what the recommendation resolves at prepare time.
     if ! bt_get "/recommendation/middleware/rdbms/capability?connectionName=$(urlq "$CONN")"; then
         log_warn "no live capability for ${CONN} - $(bt_message)"
         printf '\n'
@@ -230,7 +230,7 @@ show_vm_candidates() {
 
     # "none" is beetle's NothingRecommended: the search ran and matched nothing.
     # That is not the same as an empty list, and it is the answer that stops a VM
-    # provision, so it gets the same treatment.
+    # prepare, so it gets the same treatment.
     if [ "$(bt_payload | jq -r --arg f "$field" '[.[$f][]? | select(.status == "none")] | length')" != "0" ] \
        || [ "$(bt_payload | jq -r --arg f "$field" '[.[$f][]?] | length')" = "0" ]; then
         printf '\n'
@@ -334,7 +334,7 @@ report_search_failure() {
             printf '  SearchImage filters on image_infos.deletion_requested_at, and on this\n'
             printf '  server the column was never created - so every image search fails and\n'
             printf '  cm-beetle sees no VM image at all. Databases and buckets are unaffected,\n'
-            printf '  which is why only "provision.sh %s vm" breaks.\n' "$CSP"
+            printf '  which is why only "prepare.sh %s vm" breaks.\n' "$CSP"
             printf '\n'
             printf '  Upgrade cb-tumblebug past the fix (2026-08-28) and restart. AutoMigrate\n'
             printf '  adds the column on start-up; no image asset needs reloading. Check the\n'

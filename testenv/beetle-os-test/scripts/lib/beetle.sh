@@ -2,10 +2,10 @@
 #
 # lib/beetle.sh — the cm-beetle client (written for this folder)
 #
-# The provisioner, whole and entire: everything that creates, reads and deletes a
+# The preparer, whole and entire: everything that creates, reads and deletes a
 # managed bucket lives here. os-matrix.sh calls the functions below and knows
 # nothing about cm-beetle itself, which is what keeps the matrix body, its
-# verdicts and its table free of provisioner detail.
+# verdicts and its table free of preparer detail.
 #
 # ── Which server answers which call ─────────────────────────────────────────
 # Every call about a resource goes through cm-beetle. cb-tumblebug is addressed

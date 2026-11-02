@@ -19,7 +19,7 @@
 #          dataset already there; --large-file-mb / --large-files override .env)
 #     ./scripts/gen-data.sh --provider ncp --target bucket --cleanup
 #         (the reverse: empties the whole bucket instead of filling it. NCP has no
-#          force_destroy on its bucket resource, so deprovision.sh runs this before
+#          force_destroy on its bucket resource, so teardown.sh runs this before
 #          destroying ncp/bucket - see gendata/README.md)
 #     ./scripts/gen-data.sh -h                                 # the full gendata option list
 #
@@ -37,7 +37,7 @@
 #     "gendata test data size" block in .env.example.
 #
 #     Only the modules the requested --target needs are read, so asking for one
-#     target does not require the other two to be provisioned.
+#     target does not require the other two to be prepared.
 #
 #     The resources are those of the prefix .env sets (TF_VAR_<provider>_name_prefix),
 #     and the run summary is written per environment:
@@ -53,7 +53,7 @@
 #   Prerequisites:
 #     - ./scripts/up.sh has run (the tofuenv-runner container, and OpenBao holds
 #       the credentials)
-#     - the target resources are provisioned (./scripts/provision.sh <csp> <resource>)
+#     - the target resources are prepared (./scripts/prepare.sh <csp> <resource>)
 #     - go, jq and curl on the host
 # ==============================================================================
 set -euo pipefail
@@ -195,11 +195,11 @@ tofu_output() {
     if ! out="$(ws_exec bash -c "cd /work/tofu/${PROVIDER}/${module} && tofu output -json" 2>&1)"; then
         die "cannot read ${PROVIDER}/${module} outputs:
   ${out}
-  Is ${RUNNER} running (./scripts/up.sh) and ${PROVIDER}/${module} provisioned?"
+  Is ${RUNNER} running (./scripts/up.sh) and ${PROVIDER}/${module} prepared?"
     fi
     compact="${out//[[:space:]]/}"
     if [ -z "$compact" ] || [ "$compact" = "{}" ]; then
-        die "${PROVIDER}/${module} (prefix ${WS_PREFIX}) has no outputs - run ./scripts/provision.sh ${PROVIDER} ${module} first"
+        die "${PROVIDER}/${module} (prefix ${WS_PREFIX}) has no outputs - run ./scripts/prepare.sh ${PROVIDER} ${module} first"
     fi
     printf '%s' "$out"
 }
@@ -321,7 +321,7 @@ if want database; then
     # The storage each instance was given, so gendata can refuse a bulk size that
     # would not fit. This matters more than it sounds: a managed instance that
     # fills its volume goes read-only, and on both CSPs the way back is
-    # deprovision + provision, not a delete.
+    # teardown + prepare, not a delete.
     #
     #   aws  var.aws_db_allocated_storage, 20 GB unless .env overrides it
     #   ncp  none - Cloud DB storage starts small and grows on its own as data is
@@ -367,7 +367,7 @@ if want filesystem; then
 fi
 if want database; then
     # Only the engines the provider actually serves: AWS has no MongoDB and NCP has
-    # no MariaDB, so listing them would print a "-" for something never provisioned.
+    # no MariaDB, so listing them would print a "-" for something never prepared.
     printf '%s' "$INPUTS" | jq -r '
         "  mysql      : " + (if .MySQLHost == "" then "-" else .MySQLHost end),
         "  postgresql : " + (if .PostgresHost == "" then "-" else .PostgresHost end)'

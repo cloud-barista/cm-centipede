@@ -15,7 +15,7 @@ Three systems each do one thing:
         └────────────────────── ──▶ :8085               move it, then check it
                                          │
    AWS RDS for MySQL                     │              cm-beetle
-   cpbt-aws-db-mysql       ◀─────────────┘              :8056  provisions the instance
+   cpbt-aws-db-mysql       ◀─────────────┘              :8056  prepares the instance
 ```
 
 cm-honeybee reads the source. cm-centipede moves the data and verifies it.
@@ -82,7 +82,7 @@ cd ../../tofuenv
 cp .env.example .env && chmod 600 .env    # NCP keys, region, DB password
 
 ./scripts/up.sh                           # OpenBao + the tofu runner
-./scripts/provision.sh ncp database       # ~30 minutes
+./scripts/prepare.sh ncp database         # ~30 minutes
 ```
 
 > **Issue a public domain before going further.** A managed NCP DB is not
@@ -132,11 +132,11 @@ cp .env.example .env && chmod 600 .env    # region, zones, and the DB password
 
 ./scripts/up.sh                           # check the stack, create the namespace
 ./scripts/catalog.sh aws rdbms            # what MySQL versions this region offers
-./scripts/provision.sh aws database --engine mysql
+./scripts/prepare.sh aws database --engine mysql
 ./scripts/conn-info.sh aws --ids
 ```
 
-**The MySQL version is a `.env` key, not a flag.** `provision.sh` takes only
+**The MySQL version is a `.env` key, not a flag.** `prepare.sh` takes only
 `--engine`; the version travels in the recommendation request cm-beetle answers:
 
 ```dotenv
@@ -592,10 +592,10 @@ Both clouds, then the stack:
 
 ```bash
 cd ../../beetleenv
-./scripts/deprovision.sh aws database     # ← the one that costs money
+./scripts/teardown.sh aws database        # ← the one that costs money
 
 cd ../tofuenv
-./scripts/deprovision.sh ncp database     # ← so does this one, three times over
+./scripts/teardown.sh ncp database        # ← so does this one, three times over
 ./scripts/down.sh
 
 cd ../..                                  # repo root
@@ -603,12 +603,12 @@ make down
 ```
 
 **Two providers now bill you, so clean up both.** The NCP side is the more
-expensive half: `provision.sh ncp database` created MySQL, PostgreSQL and MongoDB
-together, and all three have been running since step 2. `deprovision.sh ncp
+expensive half: `prepare.sh ncp database` created MySQL, PostgreSQL and MongoDB
+together, and all three have been running since step 2. `teardown.sh ncp
 database` destroys the module as a whole, and `tofu/ncp/network` goes with it
 once neither the VM nor the database module is left.
 
-In `beetleenv` the namespace is kept, so another `provision.sh aws database` can
+In `beetleenv` the namespace is kept, so another `prepare.sh aws database` can
 follow straight on. `./scripts/status.sh` there shows what is still up.
 
 ---

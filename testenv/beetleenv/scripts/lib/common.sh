@@ -14,7 +14,7 @@
 #   Sourced, not executed. Callers set `set -euo pipefail` themselves.
 # ==============================================================================
 
-# Guard against double sourcing (provision.sh sources several libs, each of
+# Guard against double sourcing (prepare.sh sources several libs, each of
 # which sources this one).
 if [ -n "${BEETLEENV_COMMON_SH:-}" ]; then return 0; fi
 BEETLEENV_COMMON_SH=1
@@ -261,7 +261,7 @@ resource_name() {
 }
 
 # name_prefix_of <csp> — what every resource of ours on this CSP starts with.
-#   deprovision and conn-info select on it, so anything else in the namespace is
+#   teardown and conn-info select on it, so anything else in the namespace is
 #   left alone.
 name_prefix_of() {
     printf '%s-%s-' "$BEETLEENV_NAME_PREFIX" "$(csp_lower "$1")"
@@ -337,7 +337,7 @@ preflight_env() {
 #   from before the namespace and prefix were part of the path.
 #
 #   Nothing reads them any more, so they are harmless - but a key there is the
-#   only saved copy, and a deprovision no longer cleans them up. Warned about
+#   only saved copy, and a teardown no longer cleans them up. Warned about
 #   rather than moved: the files say which prefix made them but not which
 #   namespace, and a guess would file them under the wrong one.
 #
@@ -491,7 +491,7 @@ preflight() {
 #   - No secrets. The admin password comes from .env only, so a leaked state file
 #     grants nothing - which is why the password is injected at the last moment
 #     rather than stored in the recommendation on disk.
-#   - Advisory only. A missing state file never blocks a deprovision; the list
+#   - Advisory only. A missing state file never blocks a teardown; the list
 #     APIs are the source of truth for what exists.
 #
 # The namespace and the prefix are in the path because the file names are not
@@ -561,7 +561,7 @@ state_list() {
 # It is kept out of state/ deliberately: state/ is documented as holding no
 # secrets, and a private key sitting there would quietly break that.
 #
-# Written by conn-info.sh --ssh and removed by deprovision.sh along with the
+# Written by conn-info.sh --ssh and removed by teardown.sh along with the
 # infrastructure the key opens.
 #
 # Laid out as keys/<ns>/<prefix>/<csp>/, the same as state/. The file name is
@@ -674,7 +674,7 @@ DELETE_FAILURES=()
 record_delete_failure() { DELETE_FAILURES+=("$1 - $2"); }
 
 # report_delete_failures — reprint everything that would otherwise have scrolled
-#   past during a long deprovision. Returns non-zero when anything failed.
+#   past during a long teardown. Returns non-zero when anything failed.
 report_delete_failures() {
     if [ "${#DELETE_FAILURES[@]}" -eq 0 ]; then return 0; fi
     log_error "${#DELETE_FAILURES[@]} resource(s) could not be deleted:"

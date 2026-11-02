@@ -98,7 +98,7 @@ type DBDriver interface {
 
 	// DropAllObjects removes every object inside loc.Database (collections for
 	// MongoDB) but never drops the database itself — the target database is
-	// assumed to be pre-provisioned and must survive rollback. Used by the
+	// assumed to be prepared beforehand and must survive rollback. Used by the
 	// rollback-before-retry flow for engines whose dump format has no
 	// per-table/collection SQL DROP equivalent (currently only MongoDB; SQL
 	// engines roll back via a generated DROP script instead and implement this

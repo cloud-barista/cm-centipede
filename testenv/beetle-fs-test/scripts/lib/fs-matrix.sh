@@ -369,7 +369,7 @@ write_result_json() {
 	jq -n --arg prefix "$MATRIX_NAME_PREFIX" --arg ns "$MATRIX_NS" \
 		--arg root "$SRC_SCANROOT" --argjson files "${SRC_FILES:-0}" --argjson bytes "${SRC_BYTES:-0}" \
 		--arg ts "$(date '+%F %T')" --argjson c "$csps" \
-		'{namePrefix:$prefix, nsId:$ns, provisioner:"cm-beetle",
+		'{namePrefix:$prefix, nsId:$ns, preparer:"cm-beetle",
 		  migrator:"cm-centipede", collector:"cm-honeybee",
 		  srcType:"filesystem", dstType:"beetleSsh",
 		  srcScanRoot:$root, srcFileCount:$files, srcSizeBytes:$bytes,
@@ -502,7 +502,7 @@ matrix_main() {
 
 	banner "0. pre-flight — filesystem migration matrix"
 	info "name prefix : $MATRIX_NAME_PREFIX   namespace: $MATRIX_NS"
-	info "provision   : beetle $BEETLE_URL   tumblebug $TUMBLEBUG_URL"
+	info "prepare     : beetle $BEETLE_URL   tumblebug $TUMBLEBUG_URL"
 	info "collect/move: honeybee $HB_BASE   centipede $CP_BASE"
 	info "CSPs        : $csps"
 	for csp in $csps; do
@@ -540,7 +540,7 @@ matrix_main() {
 	hb_preflight || die "honeybee check failed. Nothing was created."
 	cp_preflight || die "centipede check failed. Nothing was created."
 
-	sub "2) provisioner — cm-beetle / cb-tumblebug"
+	sub "2) preparer — cm-beetle / cb-tumblebug"
 	beetle_preflight
 	local conn_error=0
 	for csp in $csps; do

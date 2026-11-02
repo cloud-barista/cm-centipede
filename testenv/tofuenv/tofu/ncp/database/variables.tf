@@ -33,7 +33,7 @@ variable "allowed_cidr" {
   default     = "0.0.0.0/0"
 }
 
-# Which engines this module runs. Not set in .env: provision.sh and deprovision.sh
+# Which engines this module runs. Not set in .env: prepare.sh and teardown.sh
 # work it out from --engine and from what the state already holds, and export it
 # for each apply. The default - every engine - is what a plain apply gets.
 variable "ncp_db_engines" {
@@ -97,7 +97,7 @@ variable "ncp_mongodb_version" {
 #   ./scripts/ncp-db-versions.sh <engine>, which lists the specs available for
 #   the engine version set above.
 #   Like every managed DB attribute it is RequiresReplace: setting or changing it
-#   on a provisioned engine re-creates that DB (about 30 minutes, data lost).
+#   on a prepared engine re-creates that DB (about 30 minutes, data lost).
 # ---------------------------------------------------------------------------
 variable "ncp_mysql_product_code" {
   description = "Managed MySQL server spec (product code); empty = NCP default"

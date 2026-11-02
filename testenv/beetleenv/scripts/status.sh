@@ -6,7 +6,7 @@
 #   ./scripts/status.sh aws      one CSP
 #
 #   READ-ONLY. Deletes nothing, creates nothing, and does not touch the
-#   namespace. Deleting is deprovision.sh's job and only its job.
+#   namespace. Deleting is teardown.sh's job and only its job.
 #
 #   Everything here costs money while it runs, so "what is still up" is the
 #   question worth being able to ask cheaply at the end of a day.
@@ -45,7 +45,7 @@ Usage: ./scripts/status.sh [csp]
   (no argument)  every CSP in BEETLEENV_CSPS
   <csp>          just that one
 
-Read-only. To delete anything, use ./scripts/deprovision.sh
+Read-only. To delete anything, use ./scripts/teardown.sh
 EOF
 }
 
@@ -154,7 +154,7 @@ done
 # Other prefixes
 # ------------------------------------------------------------------------------
 # Resources in the namespace named <x>-<csp>-* for some other prefix x. Nothing
-# above shows them and deprovision.sh never touches them, so after a prefix
+# above shows them and teardown.sh never touches them, so after a prefix
 # change this is the only place the old setup is still visible - and it is still
 # running, and still billing.
 #
@@ -185,7 +185,7 @@ OTHERS="$(jq -rn \
 
 if [ -n "$OTHERS" ]; then
     printf '\n'
-    log_step "other prefixes in ${BEETLEENV_NS} - not shown above, never touched by deprovision.sh"
+    log_step "other prefixes in ${BEETLEENV_NS} - not shown above, never touched by teardown.sh"
     printf '%s\n' "$OTHERS"
     printf '  set BEETLEENV_NAME_PREFIX to one of these - in .env, or in a copy passed as\n'
     printf '  ENV_FILE=... - to see them in full or delete them.\n'
@@ -194,9 +194,9 @@ fi
 printf '\n'
 if [ "$TOTAL" -eq 0 ]; then
     printf '  nothing of ours is running.\n'
-    printf '  ./scripts/provision.sh <csp> database   creates some\n\n'
+    printf '  ./scripts/prepare.sh <csp> database     creates some\n\n'
 else
     printf '  %s resource(s) named %s-<csp>-* are up.\n' "$TOTAL" "$BEETLEENV_NAME_PREFIX"
     printf '  ./scripts/conn-info.sh <csp>            how to reach them\n'
-    printf '  ./scripts/deprovision.sh <csp> all      delete them (the namespace stays)\n\n'
+    printf '  ./scripts/teardown.sh <csp> all         delete them (the namespace stays)\n\n'
 fi

@@ -17,7 +17,7 @@
 #   window it opens is not one you can close after the fact.
 #
 #   It also holds assert_no_placeholder, which up.sh, register-creds.sh and
-#   provision.sh run. A ChangeMe left in .env would otherwise be registered into
+#   prepare.sh run. A ChangeMe left in .env would otherwise be registered into
 #   OpenBao as if it were a real key, or name a bucket.
 # ==============================================================================
 

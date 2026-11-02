@@ -19,7 +19,7 @@
 #   A managed RDBMS takes 5 to 30 minutes to build, so any fixed --max-time is a
 #   bet on the slowest CSP being faster than the number - and losing that bet
 #   reads as a failure while the instance is still on its way. The wait is
-#   bounded where it can be judged instead: the polling loops in provision.sh can
+#   bounded where it can be judged instead: the polling loops in prepare.sh can
 #   tell "not ready yet" from "gone wrong". --connect-timeout stays, because
 #   reaching beetle at all is a different question from how long it then takes.
 #   BEETLEENV_HTTP_TIMEOUT imposes a response timeout if you want one.

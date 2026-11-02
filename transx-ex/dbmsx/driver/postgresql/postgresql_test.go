@@ -1306,7 +1306,7 @@ func TestPgExtractMatViewIdent(t *testing.T) {
 }
 
 // =============================================================================
-// PrepareTarget — role provisioning and schema-level grants
+// PrepareTarget — role preparation and schema-level grants
 // =============================================================================
 
 // PostgreSQL has no CREATE ROLE ... IF NOT EXISTS. The statement builder must

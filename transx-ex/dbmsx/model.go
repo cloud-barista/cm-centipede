@@ -201,7 +201,7 @@ type DBMSMigrationModel struct {
 	// TargetGrant, when non-nil, causes PrepareTarget to run before the migration
 	// starts: it requires the target database to already exist and be empty
 	// (otherwise TargetDatabaseNotFoundError / TargetNotEmptyError), then
-	// provisions the specified user with full privileges on that database.
+	// prepares the specified user with full privileges on that database.
 	// The target database is never created automatically.
 	TargetGrant *TargetGrant `json:"targetGrant,omitempty"`
 

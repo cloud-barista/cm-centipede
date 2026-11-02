@@ -2381,7 +2381,7 @@ func (d *MongoDBDriver) ListSchemas(ctx context.Context, loc base.DBMSLocation) 
 }
 
 // DropAllObjects empties loc.Database by dropping every collection in it, while
-// leaving the database itself intact (the target is assumed pre-provisioned).
+// leaving the database itself intact (the target is assumed prepared beforehand).
 // mongorestore's archive format has no per-collection SQL DROP equivalent for
 // rollbackDrop to generate, but collections can still be dropped directly via
 // the driver or mongosh. Collections are dropped one at a time rather than via
@@ -2418,7 +2418,7 @@ func (d *MongoDBDriver) DropAllObjects(ctx context.Context, loc base.DBMSLocatio
 
 // PrepareTarget creates the target database user before migration.
 // MongoDB creates databases implicitly on first document insert; this method
-// only provisions the user with readWrite access to the target database.
+// only prepares the user with readWrite access to the target database.
 func (d *MongoDBDriver) PrepareTarget(ctx context.Context, loc base.DBMSLocation, grant *base.TargetGrant) error {
 	if loc.IsDirect() {
 		return d.prepareTargetViaDriver(ctx, loc, grant)

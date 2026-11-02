@@ -364,7 +364,7 @@ write_result_json() {
 	done
 	jq -n --arg prefix "$MATRIX_NAME_PREFIX" --arg ns "$MATRIX_NS" \
 		--arg ts "$(date '+%F %T')" --argjson c "$csps" \
-		'{namePrefix:$prefix, nsId:$ns, provisioner:"cm-beetle",
+		'{namePrefix:$prefix, nsId:$ns, preparer:"cm-beetle",
 		  migrator:"cm-centipede", collector:"cm-honeybee",
 		  srcMode:"direct", dstMode:"direct",
 		  srcType:"minio", dstType:"beetleObjectStorage",
@@ -485,7 +485,7 @@ matrix_main() {
 
 	banner "0. pre-flight — object storage migration matrix"
 	info "name prefix : $MATRIX_NAME_PREFIX   namespace: $MATRIX_NS"
-	info "provision   : beetle $BEETLE_URL   tumblebug $TUMBLEBUG_URL"
+	info "prepare     : beetle $BEETLE_URL   tumblebug $TUMBLEBUG_URL"
 	info "collect/move: honeybee $HB_BASE   centipede $CP_BASE"
 	info "CSPs        : $csps"
 	for csp in $csps; do
@@ -523,7 +523,7 @@ matrix_main() {
 	hb_preflight || die "honeybee check failed. Nothing was created."
 	cp_preflight || die "centipede check failed. Nothing was created."
 
-	sub "2) provisioner — cm-beetle / cb-tumblebug"
+	sub "2) preparer — cm-beetle / cb-tumblebug"
 	beetle_preflight
 	assert_os_support "$csps" || die "object storage support check failed. Nothing was created."
 	local conn_error=0
@@ -646,7 +646,7 @@ matrix_defaults() {
 	MATRIX_NAME_PREFIX="${MATRIX_NAME_PREFIX:-cpbos}"
 	MATRIX_NS="${MATRIX_NS:-cpbos01}"
 
-	# The provisioner. Every resource call goes to beetle; tumblebug answers the
+	# The preparer. Every resource call goes to beetle; tumblebug answers the
 	# namespace and the connection catalogue only.
 	# None of the credentials has a default: they are PLACEHOLDER_VARS, which the
 	# operator sets in .env (see assert_no_placeholder).

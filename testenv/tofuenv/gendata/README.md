@@ -1,6 +1,6 @@
 # gendata — test data generator
 
-Fills the resources provisioned by OpenTofu with test data, so cm-centipede has
+Fills the resources prepared by OpenTofu with test data, so cm-centipede has
 something real to migrate:
 
 | Target | What lands there |
@@ -24,7 +24,7 @@ Works against **AWS** and **NCP**, selected with `--provider`.
 # 1. The infrastructure must already exist - see ../README.md
 cd tofuenv
 ./scripts/up.sh
-./scripts/provision.sh aws bucket
+./scripts/prepare.sh aws bucket
 
 # 2. Build and run - through the wrapper, which assembles the connection info
 ./scripts/gen-data.sh --target bucket --provider aws
@@ -32,7 +32,7 @@ cd tofuenv
 
 gendata is told where the resources are; it looks nothing up itself. The
 connection info arrives as JSON on stdin, assembled by whichever environment
-provisioned them — [`../scripts/gen-data.sh`](../scripts/gen-data.sh) reads it
+prepared them — [`../scripts/gen-data.sh`](../scripts/gen-data.sh) reads it
 from `tofu output` and OpenBao. Running the binary directly means assembling
 that yourself:
 
@@ -51,12 +51,12 @@ put no secrets in one.
 
 ## Prerequisites
 
-1. **The runner container is up and the target is provisioned.**
+1. **The runner container is up and the target is prepared.**
 
    ```bash
    cd tofuenv
    ./scripts/up.sh
-   ./scripts/provision.sh <aws|ncp> <bucket|vm|database>
+   ./scripts/prepare.sh <aws|ncp> <bucket|vm|database>
    ```
 
    `../scripts/gen-data.sh` reads `tofu output` through the `tofuenv-runner`
@@ -116,7 +116,7 @@ is deleted. `--dry-run` alongside it reports the count without deleting anything
 
 It exists for one caller. `ncloud_objectstorage_bucket` has no `force_destroy` — the one
 `tofu/aws/bucket` sets on `aws_s3_bucket` — so NCP answers `DeleteBucket` with **409
-`BucketNotEmpty`** while a single object is left, and `../scripts/deprovision.sh ncp
+`BucketNotEmpty`** while a single object is left, and `../scripts/teardown.sh ncp
 bucket` cannot finish. It empties the bucket through gendata first, because gendata is
 the only thing in tofuenv that speaks S3.
 
@@ -150,7 +150,7 @@ make clean
    variables on top of it, and the connection info from `--inputs-file` (the
    wrapper pipes it in). Ports, `DBUser` and `DBName` left empty get gendata's
    defaults: `3306`/`5432`/`27017`, `dbadmin`, `testdb`.
-2. **Pre-flight capacity check** — a size that would not fit on the provisioned
+2. **Pre-flight capacity check** — a size that would not fit on the prepared
    volume or DB storage stops the run here. `--force` overrides it.
 3. **Pre-flight existing-data check** — if the target already holds data, gendata
    stops. This matters because paths are fixed and reloading a fixture on top of an
@@ -159,7 +159,7 @@ make clean
 4. **Run each target:**
    - `bucket` → generate, then upload to `s3://<bucket>/<basePrefix><leaf>/<type>/<file>`
    - `filesystem` → generate, then SFTP to `<basePath>/<leaf>/<type>/<file>`
-   - `database` → load the `shop_db` fixture for each engine into the **provisioned**
+   - `database` → load the `shop_db` fixture for each engine into the **prepared**
      database (`tofu output db_name`, default `testdb`), then add the bulk rows if
      `GENDATA_DB_SIZE_MB` asks for any
 5. **Write the run manifest** — a summary of the last run, with no secrets, plus a
@@ -264,7 +264,7 @@ the run manifest records the same under `origins`.
 
 ### Capacity
 
-The sizes have to fit on what was provisioned, so `gen-data.sh` sends the limits
+The sizes have to fit on what was prepared, so `gen-data.sh` sends the limits
 it knows along with the connection info and gendata refuses a request over **80%**
 of one:
 
@@ -274,7 +274,7 @@ of one:
 | database | instance storage | AWS `TF_VAR_aws_db_allocated_storage` (20 GB); NCP not checked - Cloud DB storage grows by itself |
 
 This is not tidiness. A managed instance that fills its volume goes read-only or
-into `STORAGE_FULL`, and on both CSPs the way back is deprovision and provision
+into `STORAGE_FULL`, and on both CSPs the way back is teardown and prepare
 again. `--force` skips the check along with the existing-data one.
 
 ---
@@ -454,7 +454,7 @@ PostgreSQL is loaded with `COPY FROM STDIN` and MongoDB with unordered
 `InsertMany`. MySQL and MariaDB get batched multi-row `INSERT`s rather than
 `LOAD DATA LOCAL INFILE`, which would be faster but needs `local_infile=ON` on the
 server — and both RDS and NCP ship it off, so the fast path would be refused on
-every instance this environment provisions and the fallback would do all the work
+every instance this environment prepares and the fallback would do all the work
 anyway.
 
 > Database TLS has no config knob: every engine negotiates **opportunistically**.

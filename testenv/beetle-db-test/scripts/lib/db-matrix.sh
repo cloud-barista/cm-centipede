@@ -199,7 +199,7 @@ assert_target_db_create() {
 #
 #   This folder names its target as a beetleDb reference, and centipede's
 #   validateManagedEngine (core/migration/dbms.go) rejects any engine but mysql
-#   and mariadb there - cb-tumblebug provisions no other kind. That is the same
+#   and mariadb there - cb-tumblebug prepares no other kind. That is the same
 #   set beetle_engines already allows, so this refuses nothing that would
 #   otherwise have run; it exists so the day BEETLE_ENGINES_<CSP> is widened, the
 #   second wall is named here rather than found at plan time.
@@ -211,7 +211,7 @@ assert_managed_engines() {
 		esac
 		fail "$engine cannot be a target behind a beetleDb connection."
 		fail "  cm-centipede's validateManagedEngine accepts mysql and mariadb only there,"
-		fail "  because cb-tumblebug provisions no other managed engine. This folder always"
+		fail "  because cb-tumblebug prepares no other managed engine. This folder always"
 		fail "  names its target as a beetleDb reference, so there is no inline-db path to"
 		fail "  fall back to."
 		fail "  If cm-beetle has since gained this engine, widen validateManagedEngine in"
@@ -684,7 +684,7 @@ write_result_json() {
 		--arg gp "$COLUMN_GRANT_PUBLIC" --arg pgs "$COLUMN_PG_SCHEMA" \
 		--arg tls "$(target_tls_mode)" --arg onfail "${DBMS_ON_FAILURE:-cleanup}" \
 		--arg tdc "$TARGET_DB_CREATE" \
-		'{csp:$csp, namePrefix:$prefix, nsId:$ns, provisioner:"cm-beetle",
+		'{csp:$csp, namePrefix:$prefix, nsId:$ns, preparer:"cm-beetle",
 		  migrator:"cm-centipede", collector:"cm-honeybee", srcMode:$sm, dstMode:"direct",
 		  dstConnection:"beetleDb", targetDbCreate:$tdc,
 		  targetTLSMode:$tls, dbmsOnFailure:$onfail,
@@ -818,7 +818,7 @@ matrix_main() {
 	banner "0. pre-flight — $CSP_TITLE managed-RDBMS version matrix"
 	info "name prefix : $MATRIX_NAME_PREFIX   namespace: $MATRIX_NS"
 	info "region/zones: $(csp_env "$CSP" REGION)   $(csp_env "$CSP" ZONE) / $(csp_env "$CSP" ZONE2)   connection: $(connection_name "$CSP")"
-	info "provision   : beetle $BEETLE_URL   tumblebug $TUMBLEBUG_URL"
+	info "prepare     : beetle $BEETLE_URL   tumblebug $TUMBLEBUG_URL"
 	info "collect/move: honeybee $HB_BASE   centipede $CP_BASE"
 	info "engines     : $engines"
 	info "              managed by this CSP: $(csp_engines "$CSP")   creatable by beetle: $(beetle_engines "$CSP")"
@@ -917,7 +917,7 @@ matrix_main() {
 		|| die "could not obtain the honeybee SourceGroup. Nothing was created."
 	info "honeybee SourceGroup: ${HB_SOURCE_GROUP:-cpbdb-matrix} ($HB_SG_ID)"
 
-	sub "2) provisioner — cm-beetle / cb-tumblebug"
+	sub "2) preparer — cm-beetle / cb-tumblebug"
 	beetle_preflight
 	assert_connection "$CSP" || die "connection check failed. Nothing was created."
 	assert_src_passwords || die "credential check failed. Nothing was created."
@@ -975,7 +975,7 @@ matrix_defaults() {
 	MATRIX_ALLOWED_CIDR="${MATRIX_ALLOWED_CIDR:-0.0.0.0/0}"
 	MATRIX_NS="${MATRIX_NS:-cpbdb01}"
 
-	# The provisioner. Every resource call goes to beetle; tumblebug answers the
+	# The preparer. Every resource call goes to beetle; tumblebug answers the
 	# namespace, the connection catalogue and the engine version lists only.
 	# None of the credentials has a default: they are PLACEHOLDER_VARS, which the
 	# operator sets in .env (see assert_no_placeholder).
@@ -1020,7 +1020,7 @@ matrix_defaults() {
 	# "matrix" creates it first instead. centipede then finds a database it did not
 	# create, and that flag decides the undo path for a failed cell: a database
 	# centipede owns is dropped whole, one it merely found is emptied by transx-ex's
-	# rollback and kept. Both are real situations - an operator who provisions the
+	# rollback and kept. Both are real situations - an operator who prepares the
 	# target ahead of time gets the second - so both are runnable.
 	TARGET_DB_CREATE="$(lower "${TARGET_DB_CREATE:-centipede}")"
 

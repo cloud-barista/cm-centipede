@@ -54,7 +54,7 @@ func dial(p Params) (*ssh.Client, *sftp.Client, error) {
 	cfg := &ssh.ClientConfig{
 		User:            p.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // POC: ephemeral, freshly provisioned VM
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // POC: ephemeral, freshly prepared VM
 		Timeout:         15 * time.Second,
 	}
 	addr := fmt.Sprintf("%s:%d", p.Host, port)

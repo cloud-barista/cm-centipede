@@ -250,7 +250,7 @@ func (e *RsyncExecutor) executeAgentForward(ctx context.Context, source, destina
 	// The forwarded agent is what rsync on the source server logs in to the
 	// destination with, so it has to hold the DESTINATION's key: the source's
 	// alone works only where the destination happens to accept it, and a target
-	// VM provisioned with its own key pair answers "Permission denied
+	// VM prepared with its own key pair answers "Permission denied
 	// (publickey)". The source key stays for those that do. With no destination
 	// key there is nothing to add, and the source key is all there is to try.
 	if dstSSH.PrivateKey != "" || dstSSH.PrivateKeyPath != "" {

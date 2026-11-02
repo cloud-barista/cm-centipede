@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# provision.sh — create resources (tofu init + validate + apply)
+# prepare.sh — create resources (tofu init + validate + apply)
 # ------------------------------------------------------------------------------
-#   ./scripts/provision.sh <csp> <resource> [--engine e1,e2] [--force]
+#   ./scripts/prepare.sh <csp> <resource> [--engine e1,e2] [--force]
 #     aws : bucket | vm | database
 #     ncp : bucket | vm | database
 #
 #   Examples:
-#     ./scripts/provision.sh aws bucket
-#     ./scripts/provision.sh aws database
-#     ./scripts/provision.sh aws database --engine postgresql
-#     ./scripts/provision.sh ncp database --engine mysql,mongodb
+#     ./scripts/prepare.sh aws bucket
+#     ./scripts/prepare.sh aws database
+#     ./scripts/prepare.sh aws database --engine postgresql
+#     ./scripts/prepare.sh ncp database --engine mysql,mongodb
 #
 #   One engine at a time (database only):
 #     --engine adds the engines named to the ones the prefix already runs; those keep
@@ -30,7 +30,7 @@
 #     see scripts/lib/workspace.sh), and this script only ever applies the prefix
 #     .env sets. Changing the prefix starts a new environment next to the old one;
 #     the old one is not touched and keeps costing money - ./scripts/list.sh shows
-#     what is still provisioned. The bucket name is not derived from the prefix,
+#     what is still prepared. The bucket name is not derived from the prefix,
 #     so it is checked against every other prefix's bucket before the apply.
 #
 #   Repeated runs:
@@ -40,14 +40,14 @@
 #     changed .env values. With --engine, the check is per engine: the run is skipped
 #     only when every engine named is already there. --force on a database module
 #     without --engine re-applies the engines it already runs, so one removed with
-#     deprovision.sh --engine does not come back.
+#     teardown.sh --engine does not come back.
 #
 #   NCP notes:
 #     - NCP has no default VPC, so tofu/ncp/vm and tofu/ncp/database resolve the
 #       VPC/subnet/ACG by name from tofu/ncp/network. That module is handled
 #       automatically here and is not a resource you pass on the command line:
 #       it is applied first whenever vm or database needs it and the prefix has
-#       none yet. deprovision.sh destroys it once no module of the prefix needs it.
+#       none yet. teardown.sh destroys it once no module of the prefix needs it.
 #     - Managed databases take roughly 30 minutes to create.
 #     - The tofu/ncp/versions module only holds data sources for looking up engine
 #       versions, images and specs. Use ./scripts/ncp-db-versions.sh for that.
@@ -59,7 +59,7 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC
 
 usage() {
     cat >&2 <<'EOF'
-Usage: provision.sh <csp> <resource> [--engine e1,e2] [--force]
+Usage: prepare.sh <csp> <resource> [--engine e1,e2] [--force]
   aws : bucket | vm | database
   ncp : bucket | vm | database
 
@@ -149,7 +149,7 @@ APPLY_EXPORTS=""
 # has_managed_state <module> — true when the prefix's workspace of the module tracks a
 #   real resource. Data sources are filtered out, and outputs are ignored: a module whose
 #   resources were removed from state can keep stale outputs, which would otherwise read
-#   as "already provisioned".
+#   as "already prepared".
 has_managed_state() {
     local mod="$1" out
     out="$(ws_exec bash -c '
@@ -207,7 +207,7 @@ check_bucket_name() {
     name="$( set -a; . "$ROOT_DIR/.env" 2>/dev/null; set +a; printf %s "${!var:-}" )"
     if [ -z "$name" ]; then
         echo -e "${RED}=== ${var} is empty ===${NC}" >&2
-        echo "  Set a bucket name of your own in .env before provisioning the bucket." >&2
+        echo "  Set a bucket name of your own in .env before preparing the bucket." >&2
         exit 1
     fi
     while read -r owner other; do
@@ -221,21 +221,21 @@ check_bucket_name() {
     done <<< "$(bucket_owners)"
 }
 
-# Already provisioned? Report it and stop, so a repeated command is a no-op instead of
+# Already prepared? Report it and stop, so a repeated command is a no-op instead of
 # a fresh apply. Tracking a resource is the signal; it does not prove the module applied
 # cleanly to the end, which is why --force exists to re-apply and converge one that
 # stopped halfway.
-# already_provisioned <what> <hint-args> — report a no-op run and stop.
-already_provisioned() {
-    echo -e "${YELLOW}=== ${1} (prefix ${WS_PREFIX}) is already provisioned - nothing to do ===${NC}"
+# already_prepared <what> <hint-args> — report a no-op run and stop.
+already_prepared() {
+    echo -e "${YELLOW}=== ${1} (prefix ${WS_PREFIX}) is already prepared - nothing to do ===${NC}"
     ws_exec bash -c '
         cd "/work/'"$MODULE"'"
         tofu output 2>/dev/null || true
     ' | sed 's/^/  /'
     echo
     echo "  Connection info  :  ./scripts/conn-info.sh ${CSP} ${RESOURCE} --prefix ${WS_PREFIX}"
-    echo "  Re-apply anyway  :  ./scripts/provision.sh ${CSP} ${RESOURCE}${2} --force"
-    echo "  Destroy          :  ./scripts/deprovision.sh ${CSP} ${RESOURCE}${2}"
+    echo "  Re-apply anyway  :  ./scripts/prepare.sh ${CSP} ${RESOURCE}${2} --force"
+    echo "  Destroy          :  ./scripts/teardown.sh ${CSP} ${RESOURCE}${2}"
     exit 0
 }
 
@@ -245,7 +245,7 @@ if [ "$RESOURCE" = "database" ]; then
     CURRENT="$(db_state_engines "$MODULE")"
     if [ -n "$ENGINE_REQ" ]; then
         if [ "$FORCE" -eq 0 ] && [ -z "$(db_minus "$ENGINE_REQ" "$CURRENT")" ]; then
-            already_provisioned "${CSP}/database $(db_cli_names "$ENGINE_REQ")" \
+            already_prepared "${CSP}/database $(db_cli_names "$ENGINE_REQ")" \
                 " --engine $(db_cli_names "$ENGINE_REQ" | tr ' ' ',')"
         fi
         TARGET="$(db_union "$CURRENT" "$ENGINE_REQ")"
@@ -258,7 +258,7 @@ if [ "$RESOURCE" = "database" ]; then
 fi
 
 if [ "$FORCE" -eq 0 ] && [ -z "$ENGINE_REQ" ] && has_managed_state "$MODULE"; then
-    already_provisioned "${CSP}/${RESOURCE}" ""
+    already_prepared "${CSP}/${RESOURCE}" ""
 fi
 
 if [ "$RESOURCE" = "bucket" ]; then
@@ -278,7 +278,7 @@ if [ "$CSP" = "ncp" ] && { [ "$RESOURCE" = "vm" ] || [ "$RESOURCE" = "database" 
     fi
 fi
 
-echo -e "${CYAN}=== provision: ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
+echo -e "${CYAN}=== prepare: ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
 if [ "$RESOURCE" = "database" ]; then
     echo "  engines : $(db_cli_names "$TARGET")"
     if [ -n "$CURRENT" ]; then
@@ -293,7 +293,7 @@ apply_module "$MODULE"
 echo -e "${GREEN}=== done: ${CSP}/${RESOURCE} (prefix ${WS_PREFIX}) ===${NC}"
 echo "  Reveal a sensitive output (password, connection_uri, ...):"
 echo "    docker exec -e TF_WORKSPACE=${WS_PREFIX} ${RUNNER} bash -c 'cd /work/${MODULE} && tofu output -raw <output_name>'"
-echo "  Every provisioned environment, all prefixes:  ./scripts/list.sh"
+echo "  Every prepared environment, all prefixes:  ./scripts/list.sh"
 
 if [ "$CSP" = "ncp" ] && [ "$RESOURCE" = "database" ]; then
     echo

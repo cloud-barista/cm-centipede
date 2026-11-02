@@ -580,7 +580,7 @@ write_result_json() {
 		--arg st "$AWS_TARGET_SECURE_TRANSPORT" --arg gp "$COLUMN_GRANT_PUBLIC" \
 		--arg pgs "$COLUMN_PG_SCHEMA" \
 		--arg tls "$(target_tls_mode)" --arg onfail "${DBMS_ON_FAILURE:-cleanup}" \
-		'{csp:$csp, namePrefix:$prefix, provisioner:"opentofu", migrator:"cm-centipede",
+		'{csp:$csp, namePrefix:$prefix, preparer:"opentofu", migrator:"cm-centipede",
 		  collector:"cm-honeybee", srcMode:$sm, dstMode:"direct",
 		  targetTLSMode:$tls, dbmsOnFailure:$onfail,
 		  secureTransport:(if $csp == "aws" then $st else "csp-default" end),

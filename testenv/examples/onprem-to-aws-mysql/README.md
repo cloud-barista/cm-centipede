@@ -15,7 +15,7 @@ Three systems each do one thing:
         └────────────────────── ──▶ :8085               move it, then check it
                                          │
    AWS RDS for MySQL                     │              cm-beetle
-   cpbt-aws-db-mysql       ◀─────────────┘              :8056  provisions the instance
+   cpbt-aws-db-mysql       ◀─────────────┘              :8056  prepares the instance
 ```
 
 cm-honeybee reads the source. cm-centipede moves the data and verifies it.
@@ -67,7 +67,7 @@ curl -s -u "$CP_USER:$CP_PASS" http://localhost:8085/centipede/readyz
 > **cm-centipede has to reach the same cm-beetle.** The target is named as a
 > cm-beetle reference, so cm-centipede calls cm-beetle itself — its
 > `centipede.beetle.endpoint` (in `conf/cm-centipede.yaml`, or
-> `CENTIPEDE_BEETLE_ENDPOINT`) must point at the beetle that provisions the
+> `CENTIPEDE_BEETLE_ENDPOINT`) must point at the beetle that prepares the
 > instance in step 3. A mismatch fails at `POST /plans/target`.
 
 ---
@@ -113,11 +113,11 @@ cp .env.example .env && chmod 600 .env    # region, zones, and the DB password
 
 ./scripts/up.sh                           # check the stack, create the namespace
 ./scripts/catalog.sh aws rdbms            # what MySQL versions this region offers
-./scripts/provision.sh aws database --engine mysql
+./scripts/prepare.sh aws database --engine mysql
 ./scripts/conn-info.sh aws --ids
 ```
 
-**The MySQL version is a `.env` key, not a flag.** `provision.sh` takes only
+**The MySQL version is a `.env` key, not a flag.** `prepare.sh` takes only
 `--engine`; the version travels in the recommendation request cm-beetle answers:
 
 ```dotenv
@@ -542,7 +542,7 @@ curl -s -X DELETE http://localhost:8081/honeybee/source_group/$SG_ID
 
 ```bash
 cd ../../beetleenv
-./scripts/deprovision.sh aws database     # ← the one that costs money
+./scripts/teardown.sh aws database        # ← the one that costs money
 
 cd ../dockerenv
 ./dockerenv-down.sh
@@ -552,7 +552,7 @@ make down
 ```
 
 **Delete the instance even if you skip the rest.** The namespace is kept by
-`deprovision.sh`, so another `provision.sh aws database` can follow straight on.
+`teardown.sh`, so another `prepare.sh aws database` can follow straight on.
 `./scripts/status.sh` in `beetleenv` shows what is still up.
 
 ---

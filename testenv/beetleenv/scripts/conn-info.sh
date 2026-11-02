@@ -303,7 +303,7 @@ if [ "$AS_SSH" -eq 1 ]; then
 
     if [ -z "$NODE_ROWS" ]; then
         printf '\n  (no VM node in this namespace)\n\n'
-        log_info "create one with: ./scripts/provision.sh ${CSP} vm"
+        log_info "create one with: ./scripts/prepare.sh ${CSP} vm"
         exit 0
     fi
 
@@ -359,7 +359,7 @@ if [ "$AS_SSH" -eq 1 ]; then
         #   connection, so this command and centipede log in as one user.
         #
         #   The fallbacks are for a CSP that reports none even singly. cb-tumblebug
-        #   creates every VM it provisions with cb-user, and BEETLEENV_<CSP>_VM_USER
+        #   creates every VM it prepares with cb-user, and BEETLEENV_<CSP>_VM_USER
         #   overrides that for an image shipping a different account.
         USER_SRC="nodeUserName"
         if [ -z "$NODE_USER" ]; then
@@ -397,7 +397,7 @@ if [ "$AS_SSH" -eq 1 ]; then
     done <<< "$NODE_ROWS"
 
     printf '\n'
-    log_info "keys are removed by: ./scripts/deprovision.sh ${CSP} vm"
+    log_info "keys are removed by: ./scripts/teardown.sh ${CSP} vm"
     printf '\n'
     exit 0
 fi

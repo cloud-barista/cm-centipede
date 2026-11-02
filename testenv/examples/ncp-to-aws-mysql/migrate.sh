@@ -13,10 +13,10 @@
 #
 # Three things have to exist first (README steps 1-3):
 #   the stack            make up                    (from the repo root)
-#   the source database  testenv/tofuenv: provision.sh ncp database, then a
+#   the source database  testenv/tofuenv: prepare.sh ncp database, then a
 #                        PUBLIC DOMAIN issued in the NCP console, then
 #                        ncp-db-domain.sh + gen-data.sh
-#   the target instance  testenv/beetleenv/scripts/provision.sh aws database --engine mysql
+#   the target instance  testenv/beetleenv/scripts/prepare.sh aws database --engine mysql
 #
 # Cleanup is the README's step 8, not this script's job.
 

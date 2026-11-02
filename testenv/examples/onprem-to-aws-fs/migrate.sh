@@ -14,7 +14,7 @@
 # Three things have to exist first (README steps 1-3):
 #   the stack          make up                    (from the repo root)
 #   the source         testenv/dockerenv/dockerenv-up.sh
-#   the target VM      testenv/beetleenv/scripts/provision.sh aws vm
+#   the target VM      testenv/beetleenv/scripts/prepare.sh aws vm
 #
 # Cleanup is the README's step 8, not this script's job.
 

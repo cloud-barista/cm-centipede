@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# list.sh — every provisioned environment, across all prefixes
+# list.sh — every prepared environment, across all prefixes
 # ------------------------------------------------------------------------------
 #   ./scripts/list.sh
 #
@@ -14,7 +14,7 @@
 #   How it works:
 #     Read-only. The state files are read directly rather than through tofu,
 #     which can only look at one workspace at a time. A module counts as
-#     provisioned when its state tracks a managed resource; data sources and
+#     prepared when its state tracks a managed resource; data sources and
 #     leftover outputs do not count.
 # ==============================================================================
 set -euo pipefail
@@ -38,11 +38,11 @@ fi
 # shellcheck source=./lib/workspace.sh
 . "$SCRIPT_DIR/lib/workspace.sh"
 
-ROWS="$(ws_provisioned)"
+ROWS="$(ws_prepared)"
 
-echo -e "${CYAN}=== provisioned environments ===${NC}"
+echo -e "${CYAN}=== prepared environments ===${NC}"
 if [ -z "$ROWS" ]; then
-    echo "  Nothing is provisioned, under any prefix."
+    echo "  Nothing is prepared, under any prefix."
     exit 0
 fi
 

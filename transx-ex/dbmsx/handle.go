@@ -241,7 +241,7 @@ func (h *MigrationHandle) migrateViaPipe(dmm DBMSMigrationModel) error {
 //
 // dbmsx never creates the target database: naming, character set and privileges
 // stay under the operator's control, so a missing target is an error rather than
-// something to provision silently. PrepareTarget enforces this for every other
+// something to prepare silently. PrepareTarget enforces this for every other
 // path; the direct-pipe path has no PrepareTarget step when TargetGrant is nil,
 // which is why the check is repeated here. Without it, the restore CLI would
 // fail with an opaque exit status instead of naming the missing database.

@@ -1,7 +1,7 @@
 # The RDBMS admin password lives here.
 .env
 
-# Recommendation payloads recorded per provision. No secrets, but they name the
+# Recommendation payloads recorded per prepare. No secrets, but they name the
 # resources of whoever ran it.
 state/
 

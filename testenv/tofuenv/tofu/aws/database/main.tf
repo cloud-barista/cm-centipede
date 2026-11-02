@@ -86,7 +86,7 @@ resource "aws_security_group" "rds" {
 # ⚠ The group is attached at creation time, so the instance boots with it and no
 #   reboot is ever needed. Attaching one to an instance that is already running
 #   would leave postgres pending-reboot, which is why flipping this value means
-#   destroying and re-provisioning the module rather than re-applying it.
+#   destroying and re-preparing the module rather than re-applying it.
 # ---------------------------------------------------------------------------
 data "aws_rds_engine_version" "mysql" {
   count   = local.want_parameter_group && local.want_mysql ? 1 : 0
@@ -168,12 +168,12 @@ resource "aws_db_parameter_group" "postgres" {
 #   engine_version comes from .env (TF_VAR_aws_*_version); the defaults match testenv.
 #   Requesting a version the region does not offer fails at apply time; pick another
 #   version from the supported list in .env.
-#   (An in-place downgrade is not possible, so a version change means re-provisioning
+#   (An in-place downgrade is not possible, so a version change means re-preparing
 #   the database module.)
 #   TF_VAR_aws_secure_transport is fixed at creation time for the same reason: a
 #   parameter group attached later would leave postgres pending-reboot.
-#   Each engine exists only when var.aws_db_engines names it, so provision.sh /
-#   deprovision.sh --engine can add or remove one without touching the others. The
+#   Each engine exists only when var.aws_db_engines names it, so prepare.sh /
+#   teardown.sh --engine can add or remove one without touching the others. The
 #   subnet group and security group stay while any engine is left.
 # ---------------------------------------------------------------------------
 resource "aws_db_instance" "mysql" {
@@ -246,7 +246,7 @@ resource "aws_db_instance" "postgres" {
 }
 
 # The instances were single resources before they took a count. These carry an
-# environment provisioned back then over to index [0], instead of planning to
+# environment prepared back then over to index [0], instead of planning to
 # destroy and recreate a database that is already there.
 moved {
   from = aws_db_instance.mysql

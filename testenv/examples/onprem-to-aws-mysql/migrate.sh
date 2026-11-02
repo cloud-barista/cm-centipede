@@ -14,7 +14,7 @@
 # Three things have to exist first (README steps 1-3):
 #   the stack            make up                  (from the repo root)
 #   the source           testenv/dockerenv/dockerenv-up.sh
-#   the target instance  testenv/beetleenv/scripts/provision.sh aws database --engine mysql
+#   the target instance  testenv/beetleenv/scripts/prepare.sh aws database --engine mysql
 #
 # Cleanup is the README's step 8, not this script's job.
 

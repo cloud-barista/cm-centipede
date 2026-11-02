@@ -171,12 +171,12 @@ func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transx
 		return nil
 	}
 	if exists {
-		return nil // already provisioned — nothing to create
+		return nil // already prepared — nothing to create
 	}
 
-	// MongoDB is exempt: there is no empty database to provision, and no way to
+	// MongoDB is exempt: there is no empty database to prepare, and no way to
 	// ask for one. A MongoDB database begins to exist when its first collection is
-	// written, so it cannot be listed beforehand and cannot be "provisioned on the
+	// written, so it cannot be listed beforehand and cannot be "prepared on the
 	// provider first" - a managed MongoDB offers no create-database API (NCP has
 	// none), and neither does the wire protocol. transx-ex says the same thing
 	// from its own side: CreateDatabase for MongoDB logs "no-op without a
@@ -194,7 +194,7 @@ func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transx
 	case commonmodel.ConnectionSourceDB:
 		if dstRef.DB == nil || !strings.EqualFold(dstRef.DB.ProviderName, commonmodel.ProviderOnPrem) {
 			return validationErr(
-				"target database %q does not exist; centipede creates one only for providerName %q — provision it on the provider first",
+				"target database %q does not exist; centipede creates one only for providerName %q — prepare it on the provider first",
 				dstLoc.Database, commonmodel.ProviderOnPrem)
 		}
 	}
@@ -203,7 +203,7 @@ func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transx
 
 // validateObjectStorageTargetReachable checks, at plan time, that the bucket an
 // object storage destination writes into exists. Neither centipede nor transx-ex
-// creates one — the bucket is provisioned on the provider first, onprem and CSP
+// creates one — the bucket is prepared on the provider first, onprem and CSP
 // alike — so a missing bucket would otherwise surface only as NoSuchBucket once
 // the transfer had started.
 //

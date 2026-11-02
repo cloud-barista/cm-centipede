@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# deprovision.sh — delete resources (tofu destroy)
+# teardown.sh — delete resources (tofu destroy)
 # ------------------------------------------------------------------------------
-#   ./scripts/deprovision.sh <csp> <resource> [--engine e1,e2]
+#   ./scripts/teardown.sh <csp> <resource> [--engine e1,e2]
 #     aws : bucket | vm | database
 #     ncp : bucket | vm | database
 #
 #   Examples:
-#     ./scripts/deprovision.sh aws database
-#     ./scripts/deprovision.sh aws database --engine postgresql
-#     ./scripts/deprovision.sh ncp database --engine mongodb
+#     ./scripts/teardown.sh aws database
+#     ./scripts/teardown.sh aws database --engine postgresql
+#     ./scripts/teardown.sh ncp database --engine mongodb
 #
 #   One engine at a time (database only):
 #     --engine destroys just the engines named; the others keep running untouched.
@@ -47,14 +47,14 @@
 #     outputs.
 #     Forgetting a key that may still exist is safe here because login key names carry
 #     a random suffix (see random_id in tofu/ncp/vm and tofu/ncp/database): the next
-#     provisioning asks for a different name, so a leftover cannot collide with it.
+#     preparation asks for a different name, so a leftover cannot collide with it.
 #
 #   NCP notes:
 #     - ncp/bucket is emptied before it is destroyed. ncloud_objectstorage_bucket
 #       has no force_destroy the way aws_s3_bucket does, and DeleteBucket fails
 #       with 409 BucketNotEmpty while any object is left, so gendata deletes them
 #       first (./scripts/gen-data.sh --target bucket --cleanup, needs go).
-#     - tofu/ncp/network is handled automatically, mirroring provision.sh. Only
+#     - tofu/ncp/network is handled automatically, mirroring prepare.sh. Only
 #       tofu/ncp/vm and tofu/ncp/database resolve it by name, so once neither of
 #       them holds state in the prefix any more this script destroys its network too.
 #     - A module that tracks no resource is skipped rather than destroyed: the
@@ -75,7 +75,7 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC
 
 usage() {
     cat >&2 <<'EOF'
-Usage: deprovision.sh <csp> <resource> [--engine e1,e2]
+Usage: teardown.sh <csp> <resource> [--engine e1,e2]
   aws : bucket | vm | database
   ncp : bucket | vm | database
 
@@ -255,7 +255,7 @@ manual_empty_hint() {
 }
 
 # DESTROY_TARGETS — -target flags destroy_module passes to tofu destroy. Empty
-#   destroys the whole module; deprovision --engine narrows it to those engines.
+#   destroys the whole module; teardown --engine narrows it to those engines.
 DESTROY_TARGETS=""
 
 # destroy_module <module> — init + destroy inside the runner
@@ -273,7 +273,7 @@ destroy_module() {
 }
 
 # refresh_outputs <module> — bring the module's outputs back in line with its state.
-#   A targeted destroy (deprovision --engine) leaves outputs it did not re-evaluate,
+#   A targeted destroy (teardown --engine) leaves outputs it did not re-evaluate,
 #   so the removed engine's *_host / *_port could keep pointing at a database that is
 #   gone - conn-info.sh would list it and gen-data.sh would try to load into it. A
 #   refresh-only apply re-reads what exists and recomputes every output, and it
@@ -357,7 +357,7 @@ if [ -n "$ENGINE_REQ" ]; then
     fi
 fi
 
-echo -e "${CYAN}=== deprovision(destroy): ${WHAT} (prefix ${WS_PREFIX}) ===${NC}"
+echo -e "${CYAN}=== teardown(destroy): ${WHAT} (prefix ${WS_PREFIX}) ===${NC}"
 if [ -n "$ENGINE_REQ" ]; then
     if [ "$PARTIAL" -eq 1 ]; then
         echo "  keeping : $(db_cli_names "$KEEP")"
@@ -398,7 +398,7 @@ if has_managed_state "$MODULE"; then
         echo
 
         # Nothing is left to destroy; this run only clears the module's outputs so the
-        # next provision.sh does not read them as a provisioned resource.
+        # next prepare.sh does not read them as a prepared resource.
         echo -e "${YELLOW}[2/2] re-running destroy to clear the module's outputs${NC}"
         RC=0
         destroy_with_retry "$MODULE" || RC=$?
@@ -443,10 +443,10 @@ if [ "$CSP" = "ncp" ] && { [ "$RESOURCE" = "vm" ] || [ "$RESOURCE" = "database" 
             # Guarded with if, not `cmd && echo`: under set -e a false AND-list is the
             # statement's exit status and would end the script here.
             if has_csp_state "tofu/ncp/vm"; then
-                echo "  - ncp/vm is still provisioned"
+                echo "  - ncp/vm is still prepared"
             fi
             if has_csp_state "tofu/ncp/database"; then
-                echo "  - ncp/database is still provisioned"
+                echo "  - ncp/database is still prepared"
             fi
         else
             echo
@@ -460,7 +460,7 @@ if [ "$CSP" = "ncp" ] && { [ "$RESOURCE" = "vm" ] || [ "$RESOURCE" = "database" 
             else
                 echo -e "${YELLOW}Warning: ncp/network could not be destroyed yet.${NC}" >&2
                 echo "  NCP may still be releasing the servers. Re-run this command in a few minutes:" >&2
-                echo "    ./scripts/deprovision.sh ncp ${RESOURCE}" >&2
+                echo "    ./scripts/teardown.sh ncp ${RESOURCE}" >&2
             fi
         fi
     fi

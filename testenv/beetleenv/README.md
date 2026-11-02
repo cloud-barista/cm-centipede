@@ -4,7 +4,7 @@ Create and destroy **VMs, object storage buckets and managed databases** on any
 CSP cb-tumblebug has a connection for, by calling the **cm-beetle REST API**.
 
 These resources exist to give cm-centipede something real to migrate. Each
-resource type is provisioned and destroyed **independently** — just a bucket,
+resource type is prepared and destroyed **independently** — just a bucket,
 just a VM, or just the databases.
 
 > **cm-beetle, cb-tumblebug and cb-spider must already be running**, with the CSP
@@ -75,21 +75,21 @@ cp .env.example .env && chmod 600 .env    # change every ChangeMe, fill in regio
 ./scripts/up.sh                           # check the stack, create the namespace
 ./scripts/catalog.sh aws rdbms            # what aws actually offers
 
-./scripts/provision.sh aws database       # every engine in BEETLEENV_AWS_DB_ENGINES
-./scripts/provision.sh aws vm             # lands in the same vNet as the database
-./scripts/provision.sh aws bucket
+./scripts/prepare.sh aws database         # every engine in BEETLEENV_AWS_DB_ENGINES
+./scripts/prepare.sh aws vm               # lands in the same vNet as the database
+./scripts/prepare.sh aws bucket
 
 ./scripts/conn-info.sh aws                # endpoints and accounts, secrets masked
 ./scripts/conn-info.sh aws --reveal       # password and SSH private key
 ./scripts/conn-info.sh aws --ssh          # save the key, print the ssh command
 
 ./scripts/status.sh                       # what is still running
-./scripts/deprovision.sh aws database     # always clean up - these cost money
-./scripts/deprovision.sh all all          # tear everything down, every CSP
+./scripts/teardown.sh aws database        # always clean up - these cost money
+./scripts/teardown.sh all all             # tear everything down, every CSP
 ```
 
 The namespace is created once by `up.sh` and never deleted, so a teardown can be
-followed straight by another `provision.sh`.
+followed straight by another `prepare.sh`.
 
 Swap `aws` for `ncp` and the same sequence runs against NCP — `.env.example`
 ships both, and every resource is named per CSP, so the two never touch each
@@ -110,7 +110,7 @@ other even though they share one namespace.
  Step 3  Look up         ./scripts/catalog.sh aws rdbms | engines | objectstorage
             |              └ read-only; the live catalogue, not a list in here
             |
- Step 4  Provision       ./scripts/provision.sh aws database   (or vm / bucket)
+ Step 4  Prepare         ./scripts/prepare.sh aws database     (or vm / bucket)
             |              └ recommend -> check -> inject -> migrate -> wait
             |              └ the shared vNet is created on the way if absent
             |
@@ -119,8 +119,8 @@ other even though they share one namespace.
             |
  Step 6  Check           ./scripts/status.sh   -> what is up. Deletes nothing.
             |
- Step 7  Destroy         ./scripts/deprovision.sh aws all
-                           ./scripts/deprovision.sh all all  -> every CSP
+ Step 7  Destroy         ./scripts/teardown.sh aws all
+                           ./scripts/teardown.sh all all     -> every CSP
                            └ the namespace is kept, always
 ```
 
@@ -170,7 +170,7 @@ builds exactly that string and resolves nothing else, so a connection registered
 under any other name is invisible to beetle.
 `./scripts/catalog.sh <csp> connection` says whether yours resolves.
 
-**Everything else is resolved at provision time.** Engine versions, instance
+**Everything else is resolved at prepare time.** Engine versions, instance
 specs, storage types and sizes, VM specs and VM images all come out of
 cm-beetle's recommendation APIs, which ask cb-tumblebug for the live catalogue.
 That is why there is no VM image or VM spec key anywhere in `.env`, and why
@@ -228,7 +228,7 @@ Everything is `<prefix>-<csp>-<what>`:
 **The CSP is in the name because the namespace is shared.** A cb-tumblebug
 resource id is unique per namespace and resource type, not per connection, so a
 plain `cpbt-vnet` would mean the AWS vNet and the NCP vNet at once — and
-`deprovision.sh ncp` would delete the AWS one. Names are matched on
+`teardown.sh ncp` would delete the AWS one. Names are matched on
 `<prefix>-<csp>-` exactly so that a per-CSP teardown is safe.
 
 **These are cb-tumblebug ids, not CSP resource names.** tumblebug generates what
@@ -281,10 +281,10 @@ Read-only. Creates nothing.
 
 `--json` gives the raw payloads.
 
-This is where "why did my mariadb request stop" gets answered before a provision
+This is where "why did my mariadb request stop" gets answered before a prepare
 rather than after one fails.
 
-`vmspec` and `vmimage` are the two halves of what `provision.sh <csp> vm` needs:
+`vmspec` and `vmimage` are the two halves of what `prepare.sh <csp> vm` needs:
 beetle recommends an infrastructure only where it can pair a spec with an image,
 and it reports **no candidates at all** when it can pair neither — a 200 with an
 empty list, not an error. Asking for the halves separately says which one is
@@ -342,10 +342,10 @@ read-only.
 
 ---
 
-## Step 4 — `provision.sh`
+## Step 4 — `prepare.sh`
 
 ```bash
-./scripts/provision.sh <csp> <database|bucket|vm> [--engine <engine>]
+./scripts/prepare.sh <csp> <database|bucket|vm> [--engine <engine>]
 ```
 
 Three resources, and only the three worth asking for by name. The vNet, its two
@@ -393,7 +393,7 @@ between them, and a VM that cannot reach the database is not a test environment.
 its own it would be an empty network nobody asked for, and offering it as a step
 invites the two callers to end up with one each. It is created on demand by
 whichever of `database` and `vm` runs first, found by the other, and removed by
-`deprovision.sh` once neither is left — see
+`teardown.sh` once neither is left — see
 [the last one out](#the-last-one-out-takes-the-network).
 
 The VM adopts the vNet rather than making its own because
@@ -451,7 +451,7 @@ way, a few lines above.
 
 For a recommendation engine that is right: the caller asked for somewhere to put
 their data, and MySQL is closer than nothing. For beetleenv it is not.
-`provision.sh aws database --engine mariadb` that quietly builds a MySQL instance
+`prepare.sh aws database --engine mariadb` that quietly builds a MySQL instance
 gives cm-centipede the wrong thing to migrate, and the mistake surfaces much
 later, somewhere else.
 
@@ -517,8 +517,8 @@ differs — a second run says `unchanged`.
 
 **`keys/` is not `state/`.** `state/` is documented as holding no secrets, and a
 private key sitting there would quietly end that. `keys/` is its own directory,
-gitignored, and `deprovision.sh <csp> vm` removes this setup's key file along
-with the key pair it came from — a leftover file would otherwise have the next provision's `ssh`
+gitignored, and `teardown.sh <csp> vm` removes this setup's key file along
+with the key pair it came from — a leftover file would otherwise have the next prepare's `ssh`
 command offering a key that opens nothing.
 
 **One call per key, matched per node.** The key is fetched from each node's own
@@ -626,7 +626,7 @@ A managed database on NCP answers on a **private** domain until a public one is
 issued, and issuing it is a console action with no API behind it. `publicAccess`
 cannot ask for it: cb-spider v0.13.16+ refuses an NCP create with
 `publicAccess=true`, so `BEETLEENV_NCP_DB_PUBLIC_ACCESS` must be `false`, and
-`up.sh` / `provision.sh` stop before anything is created when it is not.
+`up.sh` / `prepare.sh` stop before anything is created when it is not.
 
 The ACG rule goes through cm-beetle's `ncpDBACGToAllowAllInbound` (cb-spider
 `NCPAutoOpenACG`): once the instance is running, cb-spider adds
@@ -634,7 +634,7 @@ The ACG rule goes through cm-beetle's `ncpDBACGToAllowAllInbound` (cb-spider
 beetleenv creates plays no part — NCP Cloud DB ignores `securityGroupIds`.
 
 > ⚠ **That rule opens the DB port to the whole internet**, and it stays open
-> until `./scripts/deprovision.sh` deletes the instance. Test instances only.
+> until `./scripts/teardown.sh` deletes the instance. Test instances only.
 
 cb-spider treats a failed ACG rule as a warning and still reports the create as
 a success, so `ncp-db-domain.sh` checks the rule as well as the domain:
@@ -722,7 +722,7 @@ out of every script's view while it keeps running. `status.sh` ends with what
 other prefixes still hold in the namespace:
 
 ```
-==> other prefixes in cpbt01 - not shown above, never touched by deprovision.sh
+==> other prefixes in cpbt01 - not shown above, never touched by teardown.sh
     cpbt       aws: 1 infraId, 1 osId, 1 vNetId
   set BEETLEENV_NAME_PREFIX to one of these - in .env, or in a copy passed as
   ENV_FILE=... - to see them in full or delete them.
@@ -743,21 +743,21 @@ anyway.
 
 ---
 
-## Step 7 — `deprovision.sh`
+## Step 7 — `teardown.sh`
 
 ```bash
-./scripts/deprovision.sh aws database [--engine mysql]
-./scripts/deprovision.sh aws all           # one CSP: vm, then database, then bucket
-./scripts/deprovision.sh all all           # every CSP in BEETLEENV_CSPS
-./scripts/deprovision.sh aws all --force
+./scripts/teardown.sh aws database [--engine mysql]
+./scripts/teardown.sh aws all              # one CSP: vm, then database, then bucket
+./scripts/teardown.sh all all              # every CSP in BEETLEENV_CSPS
+./scripts/teardown.sh aws all --force
 ```
 
 **Everything beetleenv deletes, it deletes from here.** `status.sh` only reports
-and `provision.sh` only creates.
+and `prepare.sh` only creates.
 
 **The namespace is never deleted**, whatever is passed. `up.sh` creates it once
 and it outlives every resource in it, so a teardown can be followed straight by
-another provision — and anything else sharing the namespace is unaffected either
+another prepare — and anything else sharing the namespace is unaffected either
 way. If you do want it gone, that is a cb-tumblebug operation:
 `curl -X DELETE ${TUMBLEBUG_URL}/ns/${BEETLEENV_NS}`.
 
@@ -770,8 +770,8 @@ else in the namespace is left alone.
 
 ### The last one out takes the network
 
-There is no `deprovision.sh <csp> network`, just as there is no
-`provision.sh <csp> network`. Instead **every run ends by checking whether
+There is no `teardown.sh <csp> network`, just as there is no
+`prepare.sh <csp> network`. Instead **every run ends by checking whether
 anything of ours is still inside the vNet, and removing it once nothing is:**
 
 ```
@@ -796,7 +796,7 @@ vNet, so a leftover bucket never keeps a network alive.
 
 **A vNet that outlived everything else** — from an interrupted run, or from
 deleting the database and the VM in two separate commands — is cleaned up by
-running `deprovision.sh <csp> all` again. It finds nothing to delete and does the
+running `teardown.sh <csp> all` again. It finds nothing to delete and does the
 network sweep, which is why that sweep runs on every path including one that
 deleted nothing.
 
@@ -819,7 +819,7 @@ hung.
 
 `state/<ns>/<prefix>/<csp>/*.json` holds the recommendation each resource was
 created from — what the APIs cannot give back. It is advisory: a missing state
-file never blocks a deprovision.
+file never blocks a teardown.
 
 **No secrets.** The password is injected after the recommendation is written to
 disk, exactly so that a leaked state file grants nothing.
@@ -837,7 +837,7 @@ why it is a directory of its own rather than a corner of `state/`. cb-tumblebug
 generates the key pair and hands the private half over only when asked, so a file
 here is the only copy outside tumblebug — and the only way into the node.
 
-`deprovision.sh <csp> vm` deletes this setup's key file along with the key pair
+`teardown.sh <csp> vm` deletes this setup's key file along with the key pair
 itself, and nothing else in the directory. Nothing
 else writes to the directory, and `conn-info.sh --ssh` recreates whatever is
 missing.

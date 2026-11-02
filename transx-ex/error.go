@@ -79,7 +79,7 @@ type (
 	TargetNotEmptyError = dbmsx.TargetNotEmptyError
 
 	// TargetDatabaseNotFoundError reports a database that does not exist: a
-	// migration destination, which must be provisioned beforehand, or the target
+	// migration destination, which must be prepared beforehand, or the target
 	// of a DropDatabase call made without IfExists.
 	TargetDatabaseNotFoundError = dbmsx.TargetDatabaseNotFoundError
 

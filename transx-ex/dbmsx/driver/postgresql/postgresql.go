@@ -4196,7 +4196,7 @@ func (d *PostgreSQLDriver) PrepareTarget(ctx context.Context, loc base.DBMSLocat
 	return d.prepareTargetViaSSH(ctx, loc, grant)
 }
 
-// pgRoleExistsQuery and pgCreateRole build the two statements that provision a
+// pgRoleExistsQuery and pgCreateRole build the two statements that prepare a
 // login role.
 //
 // PostgreSQL has no CREATE ROLE ... IF NOT EXISTS, so the existence check is a

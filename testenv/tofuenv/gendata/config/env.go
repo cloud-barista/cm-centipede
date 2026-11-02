@@ -12,7 +12,7 @@ import (
 //
 // They are read straight from the process environment rather than arriving over
 // --inputs-file, because they are not infrastructure facts. Inputs answers
-// "where are the resources and how do I reach them", which only the provisioning
+// "where are the resources and how do I reach them", which only the preparation
 // environment knows; these answer "how much data do you want", which is the
 // operator's intent and carries no secret. tofuenv keeps them in .env, where
 // ../scripts/gen-data.sh sources the file with `set -a` and every value is

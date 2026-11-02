@@ -1,4 +1,4 @@
-// Command gendata generates test data into OpenTofu-provisioned infrastructure:
+// Command gendata generates test data into OpenTofu-prepared infrastructure:
 // object storage buckets, VM filesystems, and databases.
 package main
 
@@ -59,7 +59,7 @@ func run() error {
 		return nil
 	}
 
-	// The values are assembled by whichever environment provisioned the
+	// The values are assembled by whichever environment prepared the
 	// resources and piped in, so that the secrets among them never land in a
 	// file. ../scripts/gen-data.sh does that.
 	if *inputsFile == "" {
@@ -290,7 +290,7 @@ func run() error {
 // cleanup
 // ---------------------------------------------------------------------------
 
-// runCleanup empties the provisioned target instead of filling it.
+// runCleanup empties the prepared target instead of filling it.
 //
 // Only the bucket is handled, because it is the one target whose leftovers block
 // a destroy: ncloud_objectstorage_bucket has no force_destroy, so NCP answers
@@ -602,19 +602,19 @@ func bulkOptions(d config.DatabaseConfig) database.BulkOptions {
 // capacity pre-flight
 // ---------------------------------------------------------------------------
 
-// capacityHeadroom is the share of a provisioned disk a run is allowed to ask
+// capacityHeadroom is the share of a prepared disk a run is allowed to ask
 // for. The rest is not spare: a database needs room for its WAL/binlog, its
 // temporary sort files and the copy an ALTER makes, and a filesystem for the OS
 // that is already on the volume.
 const capacityHeadroom = 0.8
 
-// capacityPreflight refuses a size that would not fit on the provisioned disk.
+// capacityPreflight refuses a size that would not fit on the prepared disk.
 //
 // This is not tidiness. A managed instance that fills its volume does not fail
 // the run and carry on - it goes read-only or into STORAGE_FULL, and on both CSPs
-// the way back is to deprovision and provision again, half an hour later. The
+// the way back is to tear down and prepare again, half an hour later. The
 // limits come from the connection info, because they are facts about the
-// infrastructure; when the provisioning environment does not know one it sends 0
+// infrastructure; when the preparation environment does not know one it sends 0
 // and the check is skipped rather than guessed at.
 //
 // largeBytes is the large files the run adds on top of the dummy set; they land

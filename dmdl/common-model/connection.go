@@ -82,7 +82,7 @@ type BeetleOSRef struct {
 // calls send them as the admin credentials, and the migration connects with
 // them too.
 //
-// cb-tumblebug provisions MySQL and MariaDB only, so those are the engines a
+// cb-tumblebug prepares MySQL and MariaDB only, so those are the engines a
 // managed reference can carry.
 //
 // TLSMode and TLSCAPem decide transport security. By default ("auto") centipede

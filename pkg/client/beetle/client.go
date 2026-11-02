@@ -46,7 +46,7 @@ type OSConfig struct {
 // Username is empty from cm-beetle v0.6.2 on, whose RDBMS read dropped
 // adminUserName; the ref's own username is what callers use.
 type DBConfig struct {
-	DBType   string // mysql | mariadb — the engines cb-tumblebug provisions
+	DBType   string // mysql | mariadb — the engines cb-tumblebug prepares
 	Host     string
 	Port     int
 	Username string
@@ -265,8 +265,8 @@ func GetRDBMSAccessInfo(ref commonmodel.BeetleDBRef) (*DBConfig, error) {
 
 	endpoint := strings.TrimSpace(raw.Endpoint)
 	if endpoint == "" {
-		// An instance still being provisioned has no endpoint yet. CSP RDS
-		// provisioning runs for minutes, so this is a wait, not a failure.
+		// An instance still being prepared has no endpoint yet. CSP RDS
+		// preparation runs for minutes, so this is a wait, not a failure.
 		return nil, fmt.Errorf(
 			"beetle rdbms %q has no endpoint yet (status=%q); wait until it is available",
 			ref.RdbmsID, raw.Status)

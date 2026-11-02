@@ -2,7 +2,7 @@
 #
 # lib/tofu.sh — the OpenTofu client (written for this folder)
 #
-# Why tofu provisions the managed instances
+# Why tofu prepares the managed instances
 #   - tofu creates the resources and the state file remembers them, so there is
 #     no separate inventory that can drift out of step with the CSP.
 #   - The requested version travels as written: the string is handed to the CSP,

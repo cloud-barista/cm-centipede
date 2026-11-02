@@ -25,7 +25,7 @@ variable "ncp_server_spec_code" {
 # The boot disk is the only disk the VM has, and the filesystem test data lands on
 # it, so it has to hold the whole dummy total. NCP's own default is 10 GB.
 variable "ncp_vm_volume_size" {
-  description = "Boot disk size in GB (NCP default: 10). Fixed at creation: changing it on a provisioned VM re-creates the VM"
+  description = "Boot disk size in GB (NCP default: 10). Fixed at creation: changing it on a prepared VM re-creates the VM"
   type        = number
   default     = 50
 
