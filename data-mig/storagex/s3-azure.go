@@ -315,17 +315,20 @@ func azureBlockID(n int) string {
 
 func (u *azureUpload) uploadPart(ctx context.Context, n int, size int64, r io.Reader) error {
 	// StageBlock needs to seek its body. A file section seeks in place; a
-	// stream is held in memory, one block of it.
+	// stream is held in memory, one block of it. The block is allocated at its
+	// size up front: io.ReadAll grows its buffer as it reads, and held up to
+	// twice the block while it did.
 	var body io.ReadSeekCloser
 	if rs, ok := r.(io.ReadSeeker); ok {
 		body = streaming.NopCloser(rs)
 	} else {
-		buf, err := io.ReadAll(io.LimitReader(r, size))
+		buf := make([]byte, size)
+		got, err := io.ReadFull(r, buf)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return fmt.Errorf("block %d: read %d of %d bytes", n, got, size)
+		}
 		if err != nil {
 			return fmt.Errorf("read block %d: %w", n, err)
-		}
-		if int64(len(buf)) != size {
-			return fmt.Errorf("block %d: read %d of %d bytes", n, len(buf), size)
 		}
 		body = streaming.NopCloser(bytes.NewReader(buf))
 	}
