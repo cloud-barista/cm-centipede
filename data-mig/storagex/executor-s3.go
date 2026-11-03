@@ -638,12 +638,25 @@ func (e *permanentError) Unwrap() error { return e.err }
 
 func permanent(err error) error { return &permanentError{err: err} }
 
+// requestTimeoutError marks S3's RequestTimeout: the server closed a request
+// whose body went idle. It stays retryable, and when the retries run out
+// withRetry says to lower the concurrency, the usual cause of the stall.
+type requestTimeoutError struct{ err error }
+
+func (e *requestTimeoutError) Error() string { return e.err.Error() }
+func (e *requestTimeoutError) Unwrap() error { return e.err }
+
 // statusError reads a failed response into an error. A 5xx, 408 or 429 is the
 // server's passing trouble and stays retryable; any other status is permanent.
+//
+// S3's RequestTimeout is the exception: it comes as a 400, but means the body
+// went idle — on a stream, a source that stalled under load — not a bad request.
 func statusError(op string, resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
 	err := fmt.Errorf("%s failed with status %d: %s", op, resp.StatusCode, string(body))
 	switch {
+	case resp.StatusCode == http.StatusBadRequest && strings.Contains(string(body), "<Code>RequestTimeout</Code>"):
+		return &requestTimeoutError{err: err}
 	case resp.StatusCode >= 500,
 		resp.StatusCode == http.StatusRequestTimeout,
 		resp.StatusCode == http.StatusTooManyRequests:
@@ -667,6 +680,11 @@ func withRetry(ctx context.Context, fn func() error) error {
 			return err
 		}
 		if attempt == s3Attempts {
+			var rt *requestTimeoutError
+			if errors.As(err, &rt) {
+				return fmt.Errorf("%w (after %d attempts; the server timed out waiting for data at concurrency %d: lower the concurrency and retry)",
+					err, attempt, core.ConcurrencyFrom(ctx))
+			}
 			return fmt.Errorf("%w (after %d attempts)", err, attempt)
 		}
 		select {

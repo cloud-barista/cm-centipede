@@ -269,7 +269,12 @@ func (u *minioUpload) abort(ctx context.Context) error {
 	return u.core.AbortMultipartUpload(ctx, u.bucket, u.key, u.uploadID)
 }
 
-// minioError classifies a minio-go failure for withRetry.
+// minioError classifies a minio-go failure for withRetry. S3's RequestTimeout,
+// a 400 for a body that went idle, stays retryable (see statusError).
 func minioError(err error) error {
-	return sdkError(err, minio.ToErrorResponse(err).StatusCode)
+	resp := minio.ToErrorResponse(err)
+	if resp.Code == "RequestTimeout" {
+		return &requestTimeoutError{err: err}
+	}
+	return sdkError(err, resp.StatusCode)
 }
