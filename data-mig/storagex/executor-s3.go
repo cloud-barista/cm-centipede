@@ -85,8 +85,10 @@ func (e *S3Executor) upload(ctx context.Context, localPath, s3Path string, flt *
 	progress := &s3Progress{reporter: core.ReporterFrom(ctx)}
 	reportS3Concurrency(ctx)
 
-	return forEachConcurrently(ctx, len(order), func(ctx context.Context, k int) error {
-		i := order[k]
+	mp, canMultipart := e.Provider.(multipartUploader)
+	inParts := func(i int) bool { return canMultipart && sizes[i] > mp.singlePutLimit() }
+
+	return forEachInLanes(ctx, order, inParts, func(ctx context.Context, i int) error {
 		file := files[i]
 
 		// A transfer of thousands of files reports which one it stopped on,
@@ -103,7 +105,7 @@ func (e *S3Executor) upload(ctx context.Context, localPath, s3Path string, flt *
 		s3Key = strings.ReplaceAll(s3Key, "\\", "/") // Normalize to forward slashes
 
 		size := sizes[i]
-		if mp, ok := e.Provider.(multipartUploader); ok && size > mp.singlePutLimit() {
+		if inParts(i) {
 			// Counted part by part as they land, then finished at the size.
 			var credited int64
 			err = e.uploadFileMultipart(ctx, mp, file, s3Key, size, func(written int64) {
@@ -367,8 +369,11 @@ func (e *S3StreamExecutor) Execute(ctx context.Context, source, destination Data
 	progress := &s3Progress{reporter: core.ReporterFrom(ctx)}
 	reportS3Concurrency(ctx)
 
-	return forEachConcurrently(ctx, len(order), func(ctx context.Context, k int) error {
-		i := matched[order[k]]
+	mp, canMultipart := e.Dst.(multipartUploader)
+	inParts := func(n int) bool { return canMultipart && objects[matched[n]].Size > mp.singlePutLimit() }
+
+	return forEachInLanes(ctx, order, inParts, func(ctx context.Context, n int) error {
+		i := matched[n]
 		obj := objects[i]
 
 		// A transfer of thousands of objects reports which one it stopped on,
@@ -383,7 +388,7 @@ func (e *S3StreamExecutor) Execute(ctx context.Context, source, destination Data
 		read := func(pos int64) { progress.credit(&credited, pos, obj.Key) }
 
 		var err error
-		if mp, ok := e.Dst.(multipartUploader); ok && obj.Size > mp.singlePutLimit() {
+		if inParts(n) {
 			// Retried part by part inside, so not wrapped in withRetry.
 			err = e.copyObjectMultipart(ctx, mp, obj, dstKey, read)
 		} else {
@@ -562,6 +567,51 @@ func forEachConcurrently(ctx context.Context, n int, fn func(ctx context.Context
 			return fn(gctx, i)
 		})
 	}
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// forEachInLanes calls fn for every index in order, in two lanes run side by
+// side: the indices inParts picks — objects written in parts — one at a time,
+// in order, and the rest s3Objects at a time through forEachConcurrently.
+//
+// One object in parts at a time keeps the connections at the objects plus one
+// object's parts, where several at once multiplied the two. The small objects
+// do not wait behind the large ones, which a single shared lane ordered
+// largest first would have them do.
+//
+// The first failure in either lane cancels both and is the error returned, as
+// in forEachConcurrently.
+func forEachInLanes(ctx context.Context, order []int, inParts func(i int) bool, fn func(ctx context.Context, i int) error) error {
+	var parted, whole []int
+	for _, i := range order {
+		if inParts(i) {
+			parted = append(parted, i)
+		} else {
+			whole = append(whole, i)
+		}
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		for _, i := range parted {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			if err := fn(gctx, i); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	g.Go(func() error {
+		return forEachConcurrently(gctx, len(whole), func(ctx context.Context, k int) error {
+			return fn(ctx, whole[k])
+		})
+	})
 
 	if err := g.Wait(); err != nil {
 		return err

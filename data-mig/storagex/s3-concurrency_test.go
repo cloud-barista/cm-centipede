@@ -2,6 +2,7 @@ package storagex
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,13 +33,13 @@ func TestS3Parts(t *testing.T) {
 		{1, 1, 1},
 		{8, 8, 8},
 		{16, 16, 16},
-		{32, 32, 8}, // 32 × 8 = s3MaxConnections
+		{32, 32, 32}, // one object in parts at a time: 32 + 32
 	} {
 		ctx := core.WithConcurrency(context.Background(), tc.c)
 		if o, p := s3Objects(ctx), s3Parts(ctx); o != tc.objects || p != tc.parts {
 			t.Errorf("concurrency %d: objects, parts = %d, %d, want %d, %d", tc.c, o, p, tc.objects, tc.parts)
 		}
-		if s3Objects(ctx)*s3Parts(ctx) > s3MaxConnections {
+		if s3Objects(ctx)+s3Parts(ctx) > s3MaxConnections {
 			t.Errorf("concurrency %d: over s3MaxConnections", tc.c)
 		}
 	}
@@ -48,7 +49,7 @@ func TestReportS3Concurrency(t *testing.T) {
 	for _, tc := range []struct {
 		c        int
 		wantNote bool
-	}{{16, false}, {32, true}} {
+	}{{16, false}, {32, false}} { // up to MaxConcurrency, parts are never cut back
 		var got core.Update
 		ctx := core.WithReporter(core.WithConcurrency(context.Background(), tc.c),
 			core.ReporterFunc(func(u core.Update) { got = u }))
@@ -59,6 +60,89 @@ func TestReportS3Concurrency(t *testing.T) {
 		if (got.ConcurrencyNote != "") != tc.wantNote {
 			t.Errorf("concurrency %d: note %q", tc.c, got.ConcurrencyNote)
 		}
+	}
+}
+
+// TestForEachInLanes checks that objects in parts go one at a time, in order,
+// while the rest run beside them, and that every index is called once.
+func TestForEachInLanes(t *testing.T) {
+	ctx := core.WithConcurrency(context.Background(), 4)
+	order := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	inParts := func(i int) bool { return i < 3 } // 0, 1, 2 are large
+
+	var (
+		mu                 sync.Mutex
+		called             = map[int]int{}
+		partedOrder        []int
+		partedNow, partMax int
+		wholeDuringParts   int
+	)
+	err := forEachInLanes(ctx, order, inParts, func(ctx context.Context, i int) error {
+		mu.Lock()
+		called[i]++
+		if inParts(i) {
+			partedOrder = append(partedOrder, i)
+			partedNow++
+			partMax = max(partMax, partedNow)
+		}
+		mu.Unlock()
+
+		time.Sleep(20 * time.Millisecond)
+
+		mu.Lock()
+		if inParts(i) {
+			partedNow--
+		} else if partedNow > 0 {
+			wholeDuringParts++
+		}
+		mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range order {
+		if called[i] != 1 {
+			t.Errorf("index %d called %d times", i, called[i])
+		}
+	}
+	if partMax != 1 {
+		t.Errorf("objects in parts at once = %d, want 1", partMax)
+	}
+	if len(partedOrder) != 3 || partedOrder[0] != 0 || partedOrder[1] != 1 || partedOrder[2] != 2 {
+		t.Errorf("objects in parts ran in order %v, want [0 1 2]", partedOrder)
+	}
+	if wholeDuringParts == 0 {
+		t.Error("no small object ran beside an object in parts")
+	}
+}
+
+// TestForEachInLanesFailure checks that a failure in one lane stops the other
+// and is the error returned.
+func TestForEachInLanesFailure(t *testing.T) {
+	ctx := core.WithConcurrency(context.Background(), 2)
+	boom := errors.New("boom")
+	order := make([]int, 50)
+	for i := range order {
+		order[i] = i
+	}
+	var mu sync.Mutex
+	ran := 0
+	err := forEachInLanes(ctx, order, func(i int) bool { return i == 0 }, func(ctx context.Context, i int) error {
+		if i == 0 {
+			return boom
+		}
+		time.Sleep(10 * time.Millisecond)
+		mu.Lock()
+		ran++
+		mu.Unlock()
+		return nil
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	if ran >= 49 {
+		t.Errorf("the other lane ran all %d of its objects after the failure", ran)
 	}
 }
 
