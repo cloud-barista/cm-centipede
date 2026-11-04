@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react"],
+  "jsPlugins": ["@shadcn/lint"],
+  "categories": {
+    "correctness": "warn"
+  },
+  "settings": {
+    "shadcn": {
+      "mergeFunctions": ["cx"],
+      "note": "See DESIGN_SYSTEM.md for the palette, type scale and approved exceptions."
+    }
+  },
+  "rules": {
+    "shadcn/no-arbitrary-values": [
+      "error",
+      {
+        "allow": ["min-w-*", "max-w-*", "grid-cols-*", "flex-*"]
+      }
+    ],
+    "shadcn/no-raw-colors": [
+      "error",
+      {
+        "deny": [
+          "*-slate-*",
+          "*-gray-*",
+          "*-zinc-*",
+          "*-neutral-*",
+          "*-stone-*",
+          "*-red-*",
+          "*-orange-*",
+          "*-yellow-*",
+          "*-lime-*",
+          "*-green-*",
+          "*-teal-*",
+          "*-cyan-*",
+          "*-blue-*",
+          "*-purple-*",
+          "*-fuchsia-*",
+          "*-pink-*"
+        ],
+        "message": "Off-palette colour. Brand is indigo/violet, categories sky/amber/violet, status emerald/amber/rose; neutrals use the text-*/bg-*/border-* theme tokens. See DESIGN_SYSTEM.md."
+      }
+    ],
+    "shadcn/no-unknown-classes": "error"
+  }
+}

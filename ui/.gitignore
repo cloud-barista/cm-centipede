@@ -1,0 +1,11 @@
+/node_modules
+/.next
+/out
+/build
+next-env.d.ts
+.env
+.env.local
+*.tsbuildinfo
+# written by `next dev` when run inside an AI coding agent
+/AGENTS.md
+/CLAUDE.md
