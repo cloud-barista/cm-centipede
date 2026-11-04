@@ -39,6 +39,8 @@ export function RunCard({
   const cat = categoryOfSummary(summary);
   const bar = cat ? CATEGORY_ACCENT[cat].bar : 'bg-indigo-500';
   const running = summary.status === 'running' || summary.status === 'pending';
+  // The server retries only a failed or cancelled run, whatever the mode.
+  const retryable = summary.status === 'failed' || summary.status === 'cancelled';
 
   // The full record — with its plan — is fetched only for the expanded card.
   const detail = useMigration(summary.id, open);
@@ -126,7 +128,7 @@ export function RunCard({
         </div>
 
         <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-border-main pt-4">
-          <Button onClick={() => setRetryOpen(true)} disabled={running}>
+          <Button onClick={() => setRetryOpen(true)} disabled={!retryable}>
             retry…
           </Button>
           <Button
@@ -137,7 +139,9 @@ export function RunCard({
             delete run
           </Button>
           <span className="text-xs text-text-muted">
-            partial re-runs failed items · full drops the target first
+            {retryable
+              ? 'partial re-runs failed items · full drops the target first'
+              : 'retry is available only for failed or cancelled runs'}
           </span>
         </div>
 
