@@ -119,6 +119,13 @@ func (e *Executor) Execute(migrationID string) {
 		m.Status = "failed"
 	default:
 		m.Status = "completed"
+		// rsync compares before it copies, so a filesystem run that moved no
+		// bytes found the destination already matching the source. Said here
+		// because the run otherwise ends in seconds at 0 B with no reason given.
+		if len(prop.FileSystems) > 0 && len(prop.ObjectStorages) == 0 &&
+			len(prop.Databases) == 0 && m.TransferredBytes == 0 {
+			m.StatusMessage = "No files transferred: source and destination are already identical."
+		}
 	}
 	if err := dao.UpdateMigrationStatus(m); err != nil {
 		log.Error().Str("migrationID", migrationID).Err(err).Msg("execute: set final status failed")
