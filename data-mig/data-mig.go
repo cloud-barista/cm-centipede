@@ -369,9 +369,10 @@ func ParseBucketAndKey(path string) (bucket, key string) { return storagex.Parse
 // SetLogger injects l as the structured logger for data-mig. Call once at
 // program startup, before any migration operation.
 //
-// Only the database domain logs today; the call is safe regardless.
-//
 // Example — zerolog bridge:
 //
 //	datamig.SetLogger(slog.New(zerologHandler))
-func SetLogger(l *slog.Logger) { dbmsx.SetLogger(l) }
+func SetLogger(l *slog.Logger) {
+	dbmsx.SetLogger(l)
+	storagex.SetLogger(l)
+}

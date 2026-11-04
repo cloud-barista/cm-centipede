@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path"
@@ -737,10 +738,16 @@ func withRetry(ctx context.Context, fn func() error) error {
 			}
 			return fmt.Errorf("%w (after %d attempts)", err, attempt)
 		}
+		wait := time.Duration(1<<(attempt-1)) * time.Second
+		logger.Warn("s3 request failed, retrying",
+			slog.Int("attempt", attempt),
+			slog.Int("maxAttempts", s3Attempts),
+			slog.Duration("wait", wait),
+			slog.String("err", err.Error()))
 		select {
 		case <-ctx.Done():
 			return err
-		case <-time.After(time.Duration(1<<(attempt-1)) * time.Second):
+		case <-time.After(wait):
 		}
 	}
 }
