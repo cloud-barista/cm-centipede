@@ -534,10 +534,40 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 		var selected []targetmodel.DBMigrationInfo
 		rollbackOf := map[string]rollbackOutcome{}
 
+		// failItem records an item that failed before it could be migrated. It is
+		// logged as "failed" with its plan entry, as a migrated item would be, so a
+		// partial retry of this run selects it again: a row without PlanEntryID
+		// would turn the whole failedSet into path-only matching.
+		failItem := func(itemPath, errMsg, rollbackStatus, rollbackErrMsg string) {
+			m.ProcessedItems++
+			m.FailedItems++
+			hasFailure = true
+			if err := dao.CreateMigrationLog(&model.MigrationLog{
+				MigrationID:      migrationID,
+				PlanEntryID:      dbEntry.PlanEntryID,
+				ItemPath:         itemPath,
+				Status:           "failed",
+				ErrorMsg:         errMsg,
+				RollbackStatus:   rollbackStatus,
+				RollbackErrorMsg: rollbackErrMsg,
+			}); err != nil {
+				log.Error().Str("migrationID", migrationID).Str("itemPath", itemPath).Err(err).Msg("retryRun: create failed-item log failed")
+			}
+			if err := dao.UpdateMigrationStatus(m); err != nil {
+				log.Error().Str("migrationID", migrationID).Err(err).Msg("retryRun: update progress failed")
+			}
+		}
+
 		for _, d := range dbEntry.Databases {
 			itemPath := fmt.Sprintf("%s/%s", dbType, d.SrcName)
 			if retryMode == "partial" && !failed.has(dbEntry.PlanEntryID, itemPath) {
 				continue
+			}
+
+			// Counted before anything can fail, so a failed item is still part
+			// of the total it is processed against.
+			if retryMode == "partial" {
+				m.TotalItems++
 			}
 
 			dstName := d.DstName
@@ -547,8 +577,8 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 			dstLoc, err := ResolveDBMSLocation(dbEntry.DstConnection, dstName, dbType)
 			if err != nil {
 				log.Error().Str("migrationID", migrationID).Str("itemPath", itemPath).Err(err).
-					Msg("retryRun: resolve DBMS dst failed; skipping item")
-				hasFailure = true
+					Msg("retryRun: resolve DBMS dst failed; item fails without running")
+				failItem(itemPath, "resolve target: "+err.Error(), "", "")
 				continue
 			}
 			// The rollback below has to reach exactly the schemas the migration
@@ -558,10 +588,6 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 			dstLoc.PgSchema = dstSchemas
 			if len(dstLoc.PgSchema) == 0 {
 				dstLoc.PgSchema = srcSchemas
-			}
-
-			if retryMode == "partial" {
-				m.TotalItems++
 			}
 
 			// A target database left over from the previous attempt still holds
@@ -582,7 +608,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 						Str("migrationID", migrationID).
 						Str("itemPath", itemPath).
 						Err(dropErr).
-						Msg("retryRun: DBMS rollback drop failed; item will be skipped")
+						Msg("retryRun: DBMS rollback drop failed; item fails without running")
 				}
 			default:
 				// Nothing to empty; the migration re-creates the database.
@@ -590,21 +616,7 @@ func (e *Executor) retryRun(migrationID, retryMode string, failed *failedSet) {
 			}
 
 			if out.status == "failed" {
-				m.ProcessedItems++
-				m.FailedItems++
-				hasFailure = true
-				if err := dao.CreateMigrationLog(&model.MigrationLog{
-					MigrationID:      migrationID,
-					ItemPath:         itemPath,
-					Status:           "skipped",
-					RollbackStatus:   "failed",
-					RollbackErrorMsg: out.errMsg,
-				}); err != nil {
-					log.Error().Str("migrationID", migrationID).Str("itemPath", itemPath).Err(err).Msg("retryRun: create rollback-failed log failed")
-				}
-				if err := dao.UpdateMigrationStatus(m); err != nil {
-					log.Error().Str("migrationID", migrationID).Err(err).Msg("retryRun: update progress failed")
-				}
+				failItem(itemPath, "pre-retry cleanup failed: "+out.errMsg, "failed", out.errMsg)
 				continue
 			}
 

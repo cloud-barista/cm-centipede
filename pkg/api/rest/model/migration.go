@@ -227,7 +227,7 @@ type CreateMigrationReq struct {
 //
 // RetryMode: "partial" (default) — re-run only failed items after rollback
 //
-//	"full"    — drop entire target DB, then re-run all items
+//	"full"    — empty every DBMS target (the database itself is kept), then re-run all plan items
 type RetryReq struct {
 	RetryMode string `json:"retryMode,omitempty"`
 }
