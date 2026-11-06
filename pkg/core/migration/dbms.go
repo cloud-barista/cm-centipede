@@ -649,9 +649,13 @@ func migrateOneDatabase(
 			handle.Cancel()
 			<-done
 			dropIfOwned(m.DstConnection, dstLoc, created, itemPath)
+			// Reported as failed, as a filesystem or object storage item cut off
+			// mid-transfer is: the database did not finish, so it counts as a
+			// failed item and a partial retry selects it again. The run itself
+			// still ends "cancelled", decided by ctx.Err().
 			progressCh <- ProgressEvent{
 				ItemPath:      itemPath,
-				Status:        "cancelled",
+				Status:        "failed",
 				DurationMs:    time.Since(start).Milliseconds(),
 				TargetCreated: created,
 				Err:           ctx.Err(),

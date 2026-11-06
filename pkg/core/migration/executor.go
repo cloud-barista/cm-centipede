@@ -672,7 +672,9 @@ func rollbackStatusFor(ev ProgressEvent, keep bool) string {
 	if ev.Status == "success" {
 		return ""
 	}
-	if keep && ev.Status == "failed" {
+	// A cancelled item is reported as failed too, but cancellation always drops
+	// the database centipede created, keep or not.
+	if keep && ev.Status == "failed" && !errors.Is(ev.Err, context.Canceled) {
 		return "skipped"
 	}
 	return "success"
