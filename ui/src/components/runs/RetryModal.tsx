@@ -1,6 +1,6 @@
 'use client';
 
-// `full` drops the target before re-running, so the choice is made explicitly
+// `full` empties every DBMS target before re-running, so the choice is made explicitly
 // and the destructive option is confirmed.
 
 import React from 'react';
@@ -42,15 +42,15 @@ export function RetryModal({
             checked={mode === 'full'}
             onChange={(v) => setMode(v as 'full')}
             label="Full"
-            hint="drops the target first, then migrates everything again"
+            hint="empties DBMS targets first, then migrates everything again"
           />
         </div>
 
         {mode === 'full' && (
           <div className="mt-3 space-y-2">
             <Note tone="warn">
-              A full retry drops the target before it starts. Everything currently at the
-              destination is lost.
+              A full retry empties every DBMS target before it starts, including ones that
+              migrated successfully. Everything currently in those databases is lost.
             </Note>
             <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
               <input
@@ -59,7 +59,7 @@ export function RetryModal({
                 onChange={(e) => setConfirmed(e.target.checked)}
                 className="accent-rose-500 cursor-pointer"
               />
-              I understand the target will be dropped.
+              I understand the DBMS targets will be emptied.
             </label>
           </div>
         )}

@@ -140,7 +140,7 @@ export function RunCard({
           </Button>
           <span className="text-xs text-text-muted">
             {retryable
-              ? 'partial re-runs failed items · full drops the target first'
+              ? 'partial re-runs failed items · full empties DBMS targets first'
               : 'retry is available only for failed or cancelled runs'}
           </span>
         </div>
