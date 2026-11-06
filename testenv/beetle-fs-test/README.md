@@ -2,7 +2,7 @@
 
 Migrates **a whole source filesystem onto a freshly created node on every
 configured CSP**, where the source is a container this folder builds and seeds
-and the target is a VM provisioned with **cm-beetle**. The outcome is reported
+and the target is a VM prepared with **cm-beetle**. The outcome is reported
 as a table.
 
 ```
@@ -13,11 +13,11 @@ as a table.
 ```
 
 The migration itself is **cm-centipede**, driven over its REST API, with
-**cm-honeybee** inspecting the source. This folder provisions, prepares and
+**cm-honeybee** inspecting the source. This folder prepares, sets up and
 judges; it does not migrate anything itself.
 
 > **Four servers must already be running** — cm-honeybee and cm-centipede for the
-> migration, cm-beetle and cb-tumblebug for the provisioning (with cb-spider
+> migration, cm-beetle and cb-tumblebug for the preparation (with cb-spider
 > behind them). This folder starts none of them, and steps 1 and 2 of every run
 > check that all four answer before a single resource is created. `.env` points at
 > them with `HB_BASE`, `CP_BASE`, `BEETLE_URL` and `TUMBLEBUG_URL`.
@@ -186,7 +186,7 @@ compared within one run, so that changes nothing about the verdict.
 | 6 | `GET /migration/{id}/logs`, delete the node, release the network |
 
 **Step 1 comes first for a reason.** centipede creates nothing of its own:
-`MigrateFileSystem` resolves both ends and hands them to transx-ex. The node has
+`MigrateFileSystem` resolves both ends and hands them to data-mig. The node has
 to be there before the plan runs.
 
 **The network has to exist before the node.** This is the main structural
@@ -209,7 +209,7 @@ The probe opens one SSH session to the node and answers three questions with it.
 
 **Where the data goes.** A plan with no filter resolves `dstPath` to the scan
 root — `/testdata` — because `resolveObjectStorageDstPath` leaves a `beetleSsh`
-destination alone. The transfer never gets that far: before rsync runs, transx-ex
+destination alone. The transfer never gets that far: before rsync runs, data-mig
 opens an SSH session and runs `mkdir -p /testdata` **as the node's own user, with
 no sudo** (`storagex/executor-rsync.go` `ensureRemoteDir`). That is a permission
 denied on every CSP image.
@@ -219,7 +219,7 @@ itself. Building it from beetle's `nodeUserName` instead would assume the home
 directory follows the user name, and CSP images disagree about that often enough
 to matter.
 
-**Whether rsync is there.** transx-ex shells out to `rsync -e ssh`, which needs
+**Whether rsync is there.** data-mig shells out to `rsync -e ssh`, which needs
 rsync on *both* ends. Without this check a missing rsync fails every cell
 identically, minutes into a transfer, with an error about a closed connection.
 
@@ -280,7 +280,7 @@ Outputs land in `logs/`:
 {
   "namePrefix": "cpbfs",
   "nsId": "cpbfs01",
-  "provisioner": "cm-beetle",
+  "preparer": "cm-beetle",
   "migrator": "cm-centipede",
   "collector": "cm-honeybee",
   "srcType": "filesystem",
@@ -323,7 +323,7 @@ CLI option  >  real shell variable  >  .env  >  script default
 | Key | Default | What it does |
 |---|---|---|
 | `FS_CSPS` | `aws ncp` | the rows — one cell each |
-| `BEETLE_URL` / `TUMBLEBUG_URL` | `:8056/beetle` / `:1323/tumblebug` | where the provisioner answers |
+| `BEETLE_URL` / `TUMBLEBUG_URL` | `:8056/beetle` / `:1323/tumblebug` | where the preparer answers |
 | `HB_BASE` / `CP_BASE` | `:8081` / `:8085` | where cm-honeybee and cm-centipede answer |
 | `BEETLE_USERNAME` / `_PASSWORD`, `TUMBLEBUG_USERNAME` / `_PASSWORD`, `CP_USER` / `CP_PASS` | `ChangeMe` | API credentials; no script default. Must be changed, empty allowed |
 | `MATRIX_NS` | `cpbfs01` | the cb-tumblebug namespace — this folder's own |

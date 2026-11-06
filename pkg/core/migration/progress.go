@@ -56,5 +56,10 @@ type ProgressEvent struct {
 	// model.MigrationLog.TargetCreated for why MongoDB sets it without anyone
 	// running a create statement.
 	TargetCreated bool
-	Err           error
+	// Concurrency is how many transfers the item ran at once and
+	// ConcurrencyNote why that is not what the migration asked for, as
+	// data-mig reported them. Zero when it did not. Outcomes only.
+	Concurrency     int
+	ConcurrencyNote string
+	Err             error
 }

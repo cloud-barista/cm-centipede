@@ -2,7 +2,7 @@
 # ==============================================================================
 # db-engines.sh — which database engines a database module runs
 # ------------------------------------------------------------------------------
-#   Sourced by provision.sh and deprovision.sh for --engine. tofu/<csp>/database
+#   Sourced by prepare.sh and teardown.sh for --engine. tofu/<csp>/database
 #   gives each engine a count driven by var.<csp>_db_engines, and these helpers
 #   work out that list from the command line and from what the state holds.
 #

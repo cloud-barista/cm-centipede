@@ -118,6 +118,55 @@ func Upload(ctx context.Context, p Params, files []generate.File, plan layout.Pl
 	return count, firstErr
 }
 
+// CheckLarge returns ErrDataExists naming every one of files already in the
+// bucket. Only those keys are looked at, not BasePrefix as a whole, which is
+// what lets large files be added next to a dataset that is already there.
+func CheckLarge(ctx context.Context, p Params, files []generate.Large) error {
+	up, err := p.client()
+	if err != nil {
+		return err
+	}
+	var found []string
+	for _, f := range files {
+		key := p.BasePrefix + f.Rel
+		exists, err := up.HasObjects(ctx, p.Bucket, key)
+		if err != nil {
+			return fmt.Errorf("bucket existence check: %w", err)
+		}
+		if exists {
+			found = append(found, "s3://"+p.Bucket+"/"+key)
+		}
+	}
+	if len(found) > 0 {
+		return fmt.Errorf("%w: %v", ErrDataExists, found)
+	}
+	return nil
+}
+
+// UploadLarge uploads the large files under BasePrefix, one after another, and
+// returns the count uploaded.
+//
+// One at a time rather than Concurrency at once: each file is already a
+// multipart upload running uploadPartThreads parts in parallel, and every part
+// in flight is a uploadPartSize buffer - 32 files at once would hold 4 GB. Their
+// bytes go to onRead as they are read, so OnFile is told 0 when a file is done.
+func UploadLarge(ctx context.Context, p Params, files []generate.Large, onRead func(n int64)) (int, error) {
+	up, err := p.client()
+	if err != nil {
+		return 0, err
+	}
+	for i, f := range files {
+		key := p.BasePrefix + f.Rel
+		if err := up.Upload(ctx, p.Bucket, key, f.Reader(onRead), f.Size); err != nil {
+			return i, fmt.Errorf("upload %s: %w", key, err)
+		}
+		if p.OnFile != nil {
+			p.OnFile(0)
+		}
+	}
+	return len(files), nil
+}
+
 func uploadOne(ctx context.Context, up Client, bucket, key, localAbs string) error {
 	f, err := os.Open(localAbs)
 	if err != nil {

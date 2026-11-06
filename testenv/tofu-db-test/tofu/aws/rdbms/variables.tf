@@ -19,7 +19,7 @@ variable "name_prefix" {
 # variables that change between applies. Each value pair gets its own tofu
 # workspace, which keeps the state of a column separate from its neighbours.
 variable "engine" {
-  description = "RDS engine: mysql, mariadb or postgres (transx-ex calls the last one postgresql)"
+  description = "RDS engine: mysql, mariadb or postgres (data-mig calls the last one postgresql)"
   type        = string
 
   validation {
@@ -70,7 +70,7 @@ variable "allowed_cidr" {
 #   csp-default  leave the CSP default alone (default)
 #   off          attach a parameter group that allows plaintext
 #
-# csp-default is the default because transx-ex now selects transport security
+# csp-default is the default because data-mig now selects transport security
 # per connection (DirectConfig.TLSMode), and the matrix's own clients follow the
 # same setting. At TARGET_TLS_MODE=prefer, its default, a column runs whether or
 # not the instance demands TLS, so there is nothing left to turn off.

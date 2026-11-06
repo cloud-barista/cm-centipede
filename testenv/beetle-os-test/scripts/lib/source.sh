@@ -24,7 +24,7 @@
 # ── Access is always direct ─────────────────────────────────────────────────
 # There is no ssh mode here. honeybee's object storage import reaches an
 # ssh-tunnel connection only through an agent installed on the source host, and
-# transx-ex has no tunnelled path for storage at all — MinioConnConfig says so in
+# data-mig has no tunnelled path for storage at all — MinioConnConfig says so in
 # as many words. sshd is in the image for interactive debugging, nothing else.
 
 if [ -n "${MATRIX_SOURCE_SH:-}" ]; then return 0; fi

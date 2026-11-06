@@ -24,15 +24,27 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Add the official MySQL repository + install (8.0, 8.4) ────────────────────
-# The mysql-apt-config signing key has expired (EXPKEYSIG), which breaks apt update,
-# so refresh the keyring directly with the latest key re-signed by repo.mysql.com.
-RUN wget -q https://dev.mysql.com/get/mysql-apt-config_0.8.29-1_all.deb -O /tmp/mysql-apt-config.deb \
-    && echo "mysql-apt-config mysql-apt-config/select-server select mysql-${DB_VERSION}" | debconf-set-selections \
-    && DEBIAN_FRONTEND=noninteractive dpkg -i /tmp/mysql-apt-config.deb \
+# The source list is written here rather than by mysql-apt-config. That package
+# (0.8.29) records the 8.4 component as "mysql-8.4", while repo.mysql.com names
+# it "mysql-8.4-lts"; apt only warns about a missing component, and then installs
+# Ubuntu's own mysql-server — 8.0 — for MYSQL_VERSION=8.4. The pin keeps Ubuntu's
+# package out for the same reason, and the version check fails the build outright
+# if the server is not the version asked for.
+#
+# The signing key is fetched directly: the one inside mysql-apt-config has
+# expired (EXPKEYSIG).
+RUN case "${DB_VERSION}" in \
+        8.0) comp=mysql-8.0 ;; \
+        8.4) comp=mysql-8.4-lts ;; \
+        *)   echo "unsupported MySQL version: ${DB_VERSION}" >&2; exit 1 ;; \
+    esac \
     && curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 \
-        | gpg --batch --yes --dearmor -o /usr/share/keyrings/mysql-apt-config.gpg \
+        | gpg --batch --yes --dearmor -o /usr/share/keyrings/mysql.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/mysql.gpg] http://repo.mysql.com/apt/ubuntu/ jammy ${comp}" \
+        > /etc/apt/sources.list.d/mysql.list \
+    && printf 'Package: *\nPin: origin repo.mysql.com\nPin-Priority: 1001\n' > /etc/apt/preferences.d/mysql \
     && apt-get update && apt-get install -y mysql-server \
-    && rm -f /tmp/mysql-apt-config.deb \
+    && mysqld --version | grep -q " ${DB_VERSION}\." \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -49,8 +61,13 @@ RUN find /etc/systemd/system /lib/systemd/system \
 # ── MySQL config: remote access, event scheduler, utf8mb4 everywhere ──────────
 # The sample data holds 4-byte UTF-8 (emoji); a utf8mb3 client connection would
 # reject it with ERROR 1366, so pin both the server and the client to utf8mb4.
-RUN printf '[mysqld]\nbind-address = 0.0.0.0\nevent_scheduler = ON\ncharacter-set-server = utf8mb4\ncollation-server = utf8mb4_unicode_ci\n\n[client]\ndefault-character-set = utf8mb4\n\n[mysql]\ndefault-character-set = utf8mb4\n' \
-    > /etc/mysql/conf.d/99-testenv.cnf
+#
+# ⚠ Written into mysql.conf.d, not conf.d. my.cnf reads conf.d first and
+#   mysql.conf.d second, so a bind-address = 127.0.0.1 in the package's
+#   mysql.conf.d/mysqld.cnf would win and leave the server unreachable through the
+#   published port. zz- sorts after mysqld.cnf, so this file is read last.
+RUN printf '[mysqld]\nbind-address = 0.0.0.0\nmysqlx-bind-address = 0.0.0.0\nevent_scheduler = ON\ncharacter-set-server = utf8mb4\ncollation-server = utf8mb4_unicode_ci\n\n[client]\ndefault-character-set = utf8mb4\n\n[mysql]\ndefault-character-set = utf8mb4\n' \
+    > /etc/mysql/mysql.conf.d/zz-testenv.cnf
 
 # ── Copy resources + pick the role-specific init.sh ───────────────────────────
 COPY sql/      /opt/testenv/sql/

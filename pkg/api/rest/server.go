@@ -26,6 +26,18 @@ func Start() {
 	e := echo.New()
 	e.HideBanner = true
 
+	// Use the direct TCP peer address as the client IP and ignore the
+	// client-supplied X-Forwarded-For / X-Real-IP headers. Without this,
+	// RealIP() trusts those headers and the RateLimiter can be bypassed by
+	// spoofing them (GHSA: Echo rate limiter bypass via X-Forwarded-For).
+	//
+	// NOTE: If a reverse proxy such as Traefik is placed in front of
+	// cm-centipede, every client will appear as the Traefik IP, so all
+	// clients share one rate-limit bucket. In that case switch to
+	// echo.ExtractIPFromXFFHeader(echo.TrustIPRange(<proxy subnet>)) and
+	// disable the default loopback/link-local/private-net trust.
+	e.IPExtractor = echo.ExtractIPDirect()
+
 	// Global middleware
 	e.Use(middlewares.Logger())
 	e.Use(middleware.Recover())

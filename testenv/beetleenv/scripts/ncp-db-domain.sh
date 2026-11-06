@@ -143,7 +143,7 @@ check_all() {
         # store what it finds.
         if ! bt_get "/migration/middleware/ns/${NS_PATH}/rdbms/$(urlq "$name")"; then
             printf '  %-9s %-8s %s\n' "ABSENT" "$engine" \
-                "no such instance - ./scripts/provision.sh ${CSP} database --engine ${engine}"
+                "no such instance - ./scripts/prepare.sh ${CSP} database --engine ${engine}"
             missing=$((missing + 1))
             continue
         fi

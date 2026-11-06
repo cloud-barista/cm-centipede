@@ -1,4 +1,4 @@
-// Command gendata generates test data into OpenTofu-provisioned infrastructure:
+// Command gendata generates test data into OpenTofu-prepared infrastructure:
 // object storage buckets, VM filesystems, and databases.
 package main
 
@@ -41,6 +41,9 @@ func run() error {
 		dryRun     = flag.Bool("dry-run", false, "generate only; skip upload/transfer/db load")
 		force      = flag.Bool("force", false, "skip the pre-flight checks: existing data (allow overwrite/DROP) and capacity")
 		cleanup    = flag.Bool("cleanup", false, "delete data instead of generating it; --target bucket only, and it empties the whole bucket")
+		largeMB    = flag.Int("large-file-mb", 0, "size of each large file in MB, 0 for none (overrides "+config.EnvLargeFileMB+" and config.json)")
+		largeN     = flag.Int("large-files", 0, "how many large files, 0 for none (overrides "+config.EnvLargeFiles+" and config.json)")
+		largeOnly  = flag.Bool("large-only", false, "add only the large files, next to the data already there; bucket/filesystem only")
 		envKeys    = flag.Bool("env-keys", false, "print the environment variables gendata reads, one per line, and exit")
 		manifestTo = flag.String("manifest", filepath.Join("runs", "last-run.json"), "where the run summary is written")
 	)
@@ -56,7 +59,7 @@ func run() error {
 		return nil
 	}
 
-	// The values are assembled by whichever environment provisioned the
+	// The values are assembled by whichever environment prepared the
 	// resources and piped in, so that the secrets among them never land in a
 	// file. ../scripts/gen-data.sh does that.
 	if *inputsFile == "" {
@@ -85,6 +88,31 @@ func run() error {
 	origins, err := config.ApplyEnv(cfg)
 	if err != nil {
 		return err
+	}
+	// Only a flag given on the command line wins over .env; the defaults the flag
+	// package fills in for the rest are not an answer from anyone.
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "large-file-mb":
+			cfg.Large.FileMB, origins.Large = *largeMB, "flag"
+		case "large-files":
+			cfg.Large.Files, origins.Large = *largeN, "flag"
+		}
+	})
+	if cfg.Large.FileMB < 0 {
+		return fmt.Errorf("--large-file-mb=%d is negative (0 for none)", cfg.Large.FileMB)
+	}
+	if cfg.Large.Files < 0 {
+		return fmt.Errorf("--large-files=%d is negative (0 for none)", cfg.Large.Files)
+	}
+	if *largeOnly {
+		if *cleanup {
+			return fmt.Errorf("--large-only and --cleanup do opposite things; pick one")
+		}
+		if cfg.Large.FileMB == 0 || cfg.Large.Files == 0 {
+			return fmt.Errorf("--large-only: nothing to add, %d files of %d MB (%s and %s in .env, or --large-file-mb and --large-files)",
+				cfg.Large.Files, cfg.Large.FileMB, config.EnvLargeFileMB, config.EnvLargeFiles)
+		}
 	}
 	tmpDir, err := config.TmpDir()
 	if err != nil {
@@ -125,7 +153,20 @@ func run() error {
 	// not the sizes asked for: over the limit files grow, formats can be skipped
 	// and png/gif cut, and only the plan says what will actually be written.
 	alloc := generate.Allocate(dummyOptions(cfg.Dummy, cfg.Layout.MaxFiles))
+	if *largeOnly {
+		// Checked before anything is looked up: --target defaults to all, and
+		// quietly loading the database fixture alongside would be a surprise.
+		if targets["database"] {
+			return fmt.Errorf("--large-only adds files to bucket and filesystem only, not database " +
+				"(--target defaults to all, so name the targets explicitly)")
+		}
+		alloc = generate.Allocation{}
+	}
+	var large []generate.Large
 	if targets["bucket"] || targets["filesystem"] {
+		large = generate.PlanLarge(cfg.Large.FileMB, cfg.Large.Files)
+	}
+	if (targets["bucket"] || targets["filesystem"]) && !*largeOnly {
 		maxFiles := "no limit"
 		if alloc.MaxFiles > 0 {
 			maxFiles = fmt.Sprintf("max %d", alloc.MaxFiles)
@@ -136,6 +177,18 @@ func run() error {
 			log.Printf("[warn] dummy: max %d files is fewer than the formats on - skipped %s, their size moved to the others",
 				alloc.MaxFiles, strings.Join(alloc.Skipped, ", "))
 		}
+	}
+	if len(large) > 0 {
+		only := ""
+		if *largeOnly {
+			only = ", only these - the dummy set is left as it is"
+		}
+		log.Printf("large   : %d × %d MB under %s/ (from %s%s)", len(large), cfg.Large.FileMB, generate.LargeDir, origins.Large, only)
+	} else if cfg.Large.FileMB == 0 && cfg.Large.Files > 0 {
+		// The other way round - a size with 0 files - is the default .env and
+		// says nothing worth a warning.
+		log.Printf("[warn] large: %d files asked for, but the size is 0 - none added (%s or --large-file-mb)",
+			cfg.Large.Files, config.EnvLargeFileMB)
 	}
 	bulkPlan := database.BulkPlan{}
 	if targets["database"] {
@@ -150,26 +203,35 @@ func run() error {
 	}
 
 	// ---- pre-flight ----
-	if !*force {
-		if err := capacityPreflight(cfg, inputs, targets, alloc); err != nil {
+	switch {
+	case *force:
+		log.Printf("[warn] --force set: skipping existing-data and capacity checks")
+	case *largeOnly:
+		if err := largePreflight(ctx, cfg, inputs, targets, prov, large); err != nil {
+			return err
+		}
+	default:
+		if err := capacityPreflight(cfg, inputs, targets, alloc, generate.LargeBytes(large)); err != nil {
 			return err
 		}
 		if err := preflight(ctx, cfg, inputs, targets, engines, prov); err != nil {
 			return err
 		}
-	} else {
-		log.Printf("[warn] --force set: skipping existing-data and capacity checks")
 	}
 
 	man := newManifest(prov, targets, cfg, origins, *dryRun)
 	man.Files = alloc
+	man.LargeOnly = *largeOnly
+	if len(large) > 0 {
+		man.Large = &largeManifest{FileMB: cfg.Large.FileMB, Files: len(large), Dir: generate.LargeDir}
+	}
 
 	// ---- generate dummy files once (shared by bucket + filesystem) ----
 	var (
 		genDir string
 		files  []generate.File
 	)
-	needGen := targets["bucket"] || targets["filesystem"]
+	needGen := (targets["bucket"] || targets["filesystem"]) && !*largeOnly
 	if needGen {
 		if alloc.TotalFiles() == 0 {
 			log.Printf("[warn] dummy sizes are all 0; nothing to generate for bucket/filesystem")
@@ -188,12 +250,22 @@ func run() error {
 
 	// ---- dispatch ----
 	if targets["bucket"] {
-		if err := doBucket(ctx, cfg, inputs, prov, files, plan, *dryRun, man); err != nil {
+		if !*largeOnly {
+			if err := doBucket(ctx, cfg, inputs, prov, files, plan, *dryRun, man); err != nil {
+				return err
+			}
+		}
+		if err := doLargeBucket(ctx, cfg, inputs, prov, large, *dryRun, man); err != nil {
 			return err
 		}
 	}
 	if targets["filesystem"] {
-		if err := doFilesystem(ctx, cfg, inputs, files, plan, *dryRun, man); err != nil {
+		if !*largeOnly {
+			if err := doFilesystem(ctx, cfg, inputs, files, plan, *dryRun, man); err != nil {
+				return err
+			}
+		}
+		if err := doLargeFilesystem(ctx, cfg, inputs, large, *dryRun, man); err != nil {
 			return err
 		}
 	}
@@ -218,7 +290,7 @@ func run() error {
 // cleanup
 // ---------------------------------------------------------------------------
 
-// runCleanup empties the provisioned target instead of filling it.
+// runCleanup empties the prepared target instead of filling it.
 //
 // Only the bucket is handled, because it is the one target whose leftovers block
 // a destroy: ncloud_objectstorage_bucket has no force_destroy, so NCP answers
@@ -306,6 +378,52 @@ func preflight(ctx context.Context, cfg *config.Config, in *config.Inputs, targe
 	return nil
 }
 
+// largePreflight is the pre-flight of a --large-only run, which adds to whatever
+// is there rather than starting from nothing. It refuses only what this run
+// would overwrite - the large files themselves - and measures the VM's free
+// space instead of comparing the run with the volume size: the dataset already
+// on the volume is exactly what that comparison leaves out.
+func largePreflight(ctx context.Context, cfg *config.Config, in *config.Inputs, targets map[string]bool, provider string, large []generate.Large) error {
+	var problems []string
+	if targets["bucket"] {
+		if err := bucket.CheckLarge(ctx, bucketParams(cfg, in, provider), large); err != nil {
+			if !errors.Is(err, bucket.ErrDataExists) {
+				return fmt.Errorf("bucket pre-flight: %w", err)
+			}
+			problems = append(problems, err.Error())
+		}
+	}
+	if targets["filesystem"] {
+		p := fsParams(cfg, in)
+		if err := filesystem.CheckLarge(ctx, p, large); err != nil {
+			if !errors.Is(err, filesystem.ErrDataExists) {
+				return fmt.Errorf("filesystem pre-flight: %w", err)
+			}
+			problems = append(problems, err.Error())
+		}
+		total, used, err := filesystem.Usage(ctx, p)
+		switch {
+		case errors.Is(err, filesystem.ErrNoStatVFS):
+			log.Printf("[warn] filesystem: %v - free space not checked", err)
+		case err != nil:
+			return fmt.Errorf("filesystem pre-flight: %w", err)
+		default:
+			want := uint64(generate.LargeBytes(large))
+			if limit := uint64(float64(total) * capacityHeadroom); used+want > limit {
+				problems = append(problems, fmt.Sprintf(
+					"filesystem: %d MB of large files on top of %d MB in use, on a %d MB volume (max %d MB in use, %.0f%% of the volume)",
+					want/generate.MiB, used/generate.MiB, total/generate.MiB, limit/generate.MiB, capacityHeadroom*100))
+			}
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("the large files cannot be added (use --force to try anyway):\n  - %s",
+			strings.Join(problems, "\n  - "))
+	}
+	log.Printf("pre-flight: none of the large files exist yet")
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // targets
 // ---------------------------------------------------------------------------
@@ -355,6 +473,60 @@ func doFilesystem(ctx context.Context, cfg *config.Config, in *config.Inputs, fi
 	man.Filesystem.Files = n
 	if err != nil {
 		return fmt.Errorf("filesystem transfer (%d/%d ok): %w", n, len(files), err)
+	}
+	return nil
+}
+
+// doLargeBucket uploads the large files, streamed rather than generated first.
+// Nothing to do when none are configured.
+func doLargeBucket(ctx context.Context, cfg *config.Config, in *config.Inputs, provider string, large []generate.Large, dryRun bool, man *manifest) error {
+	if len(large) == 0 {
+		return nil
+	}
+	prefix := cfg.ObjectStorage.BasePrefix
+	if man.Bucket == nil {
+		man.Bucket = &bucketManifest{Name: in.BucketName, Prefix: prefix}
+	}
+	if dryRun {
+		log.Printf("[dry-run] bucket: would upload %d large files to s3://%s/%s%s/", len(large), in.BucketName, prefix, generate.LargeDir)
+		return nil
+	}
+	log.Printf("bucket: uploading %d large files to s3://%s/%s%s/, one at a time ...", len(large), in.BucketName, prefix, generate.LargeDir)
+	p := bucketParams(cfg, in, provider)
+	pg := progress.New("bucket(large)", len(large), generate.LargeBytes(large))
+	p.OnFile = pg.Add
+	n, err := bucket.UploadLarge(ctx, p, large, pg.AddBytes)
+	pg.Finish()
+	man.Large.BucketObjects = n
+	if err != nil {
+		return fmt.Errorf("bucket large upload (%d/%d ok): %w", n, len(large), err)
+	}
+	return nil
+}
+
+// doLargeFilesystem transfers the large files, streamed rather than generated
+// first. Nothing to do when none are configured.
+func doLargeFilesystem(ctx context.Context, cfg *config.Config, in *config.Inputs, large []generate.Large, dryRun bool, man *manifest) error {
+	if len(large) == 0 {
+		return nil
+	}
+	base := fsBasePath(cfg, in)
+	if man.Filesystem == nil {
+		man.Filesystem = &fsManifest{Host: in.VMHost, BasePath: base}
+	}
+	if dryRun {
+		log.Printf("[dry-run] filesystem: would transfer %d large files to %s@%s:%s/%s/", len(large), in.VMUser, in.VMHost, base, generate.LargeDir)
+		return nil
+	}
+	log.Printf("filesystem: transferring %d large files to %s@%s:%s/%s/, one at a time ...", len(large), in.VMUser, in.VMHost, base, generate.LargeDir)
+	p := fsParams(cfg, in)
+	pg := progress.New("filesystem(large)", len(large), generate.LargeBytes(large))
+	p.OnFile = pg.Add
+	n, err := filesystem.TransferLarge(ctx, p, large, pg.AddBytes)
+	pg.Finish()
+	man.Large.FilesystemFiles = n
+	if err != nil {
+		return fmt.Errorf("filesystem large transfer (%d/%d ok): %w", n, len(large), err)
 	}
 	return nil
 }
@@ -430,27 +602,30 @@ func bulkOptions(d config.DatabaseConfig) database.BulkOptions {
 // capacity pre-flight
 // ---------------------------------------------------------------------------
 
-// capacityHeadroom is the share of a provisioned disk a run is allowed to ask
+// capacityHeadroom is the share of a prepared disk a run is allowed to ask
 // for. The rest is not spare: a database needs room for its WAL/binlog, its
 // temporary sort files and the copy an ALTER makes, and a filesystem for the OS
 // that is already on the volume.
 const capacityHeadroom = 0.8
 
-// capacityPreflight refuses a size that would not fit on the provisioned disk.
+// capacityPreflight refuses a size that would not fit on the prepared disk.
 //
 // This is not tidiness. A managed instance that fills its volume does not fail
 // the run and carry on - it goes read-only or into STORAGE_FULL, and on both CSPs
-// the way back is to deprovision and provision again, half an hour later. The
+// the way back is to tear down and prepare again, half an hour later. The
 // limits come from the connection info, because they are facts about the
-// infrastructure; when the provisioning environment does not know one it sends 0
+// infrastructure; when the preparation environment does not know one it sends 0
 // and the check is skipped rather than guessed at.
-func capacityPreflight(cfg *config.Config, in *config.Inputs, targets map[string]bool, alloc generate.Allocation) error {
+//
+// largeBytes is the large files the run adds on top of the dummy set; they land
+// on the same volume.
+func capacityPreflight(cfg *config.Config, in *config.Inputs, targets map[string]bool, alloc generate.Allocation, largeBytes int64) error {
 	var problems []string
 	if targets["filesystem"] && in.VMVolumeGB > 0 {
-		want := int(alloc.TotalBytes() / generate.MiB)
+		want := int((alloc.TotalBytes() + largeBytes) / generate.MiB)
 		if limit := int(float64(in.VMVolumeGB) * 1024 * capacityHeadroom); want > limit {
 			problems = append(problems, fmt.Sprintf(
-				"filesystem: %d MB of dummy files on a %d GB volume (max %d MB, %.0f%% of the volume)",
+				"filesystem: %d MB of dummy and large files on a %d GB volume (max %d MB, %.0f%% of the volume)",
 				want, in.VMVolumeGB, limit, capacityHeadroom*100))
 		}
 	}
@@ -636,8 +811,12 @@ type manifest struct {
 	Dummy     config.DummyConfig `json:"dummy"`
 	// Files is the plan the sizes above turned into once the file limit applied:
 	// files and bytes per format, and any format the limit skipped.
-	Files  generate.Allocation `json:"files"`
-	BulkMB int                 `json:"bulkMB"`
+	Files generate.Allocation `json:"files"`
+	// Large is the large files the run added, if any. LargeOnly says the dummy
+	// set was left alone and these were all the run did.
+	Large     *largeManifest `json:"large,omitempty"`
+	LargeOnly bool           `json:"largeOnly,omitempty"`
+	BulkMB    int            `json:"bulkMB"`
 	// Origins says whether the sizes above came from config.json or from .env,
 	// which the numbers alone cannot.
 	Origins    config.Origins  `json:"origins"`
@@ -661,6 +840,13 @@ type fsManifest struct {
 	Host     string `json:"host"`
 	BasePath string `json:"basePath"`
 	Files    int    `json:"files"`
+}
+type largeManifest struct {
+	FileMB          int    `json:"fileMB"`
+	Files           int    `json:"files"`
+	Dir             string `json:"dir"`
+	BucketObjects   int    `json:"bucketObjects,omitempty"`
+	FilesystemFiles int    `json:"filesystemFiles,omitempty"`
 }
 type dbManifest struct {
 	Engines  []string       `json:"engines"`

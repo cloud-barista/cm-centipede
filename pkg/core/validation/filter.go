@@ -1,9 +1,9 @@
 package validation
 
 import (
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 	"github.com/cloud-barista/cm-centipede/pkg/core/migration"
-	"github.com/cloud-barista/cm-centipede/transx-ex"
 )
 
 // filter.go teaches validation what the migration was told to leave behind.
@@ -18,8 +18,8 @@ import (
 // migration model.
 //
 // ── The pipeline decides, and it decides once ───────────────────────────────
-// Every verdict below is transx-ex's own PathFilterOption.MatchPath, reached
-// through the same migration.ToTransxFilter the transfer uses.
+// Every verdict below is data-mig's own PathFilterOption.MatchPath, reached
+// through the same migration.ToDataMigFilter the transfer uses.
 //
 // MatchPath is where rsync's semantics live: the path is relative to the
 // migrated folder or prefix, an excluded directory takes its subtree, and size
@@ -30,7 +30,7 @@ import (
 // what keeps the transfer, this validation and inspect on one answer.
 type migrationFilter struct {
 	// files judges a file or object against the whole pipeline.
-	files *transxex.PathFilterOption
+	files *datamig.PathFilterOption
 }
 
 // newMigrationFilter builds the verdict helper for one folder's or bucket's
@@ -40,7 +40,7 @@ func newMigrationFilter(rules []commonmodel.PathFilterRule) (*migrationFilter, e
 	if len(rules) == 0 {
 		return nil, nil
 	}
-	files, err := migration.ToTransxFilter(rules)
+	files, err := migration.ToDataMigFilter(rules)
 	if err != nil {
 		return nil, err
 	}

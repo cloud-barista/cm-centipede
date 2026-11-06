@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"sync"
@@ -53,7 +54,7 @@ func dial(p Params) (*ssh.Client, *sftp.Client, error) {
 	cfg := &ssh.ClientConfig{
 		User:            p.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // POC: ephemeral, freshly provisioned VM
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // POC: ephemeral, freshly prepared VM
 		Timeout:         15 * time.Second,
 	}
 	addr := fmt.Sprintf("%s:%d", p.Host, port)
@@ -200,6 +201,105 @@ func Transfer(_ context.Context, p Params, files []generate.File, plan layout.Pl
 	close(jobs)
 	wg.Wait()
 	return count, firstErr
+}
+
+// CheckLarge returns ErrDataExists naming every one of files already under
+// BasePath. Only those paths are looked at, not BasePath as a whole, which is
+// what lets large files be added next to a dataset that is already there.
+func CheckLarge(_ context.Context, p Params, files []generate.Large) error {
+	sc, fc, err := dial(p)
+	if err != nil {
+		return err
+	}
+	defer sc.Close()
+	defer fc.Close()
+
+	var found []string
+	for _, f := range files {
+		remote := path.Join(p.BasePath, f.Rel)
+		if _, err := fc.Stat(remote); err == nil {
+			found = append(found, remote)
+		}
+	}
+	if len(found) > 0 {
+		return fmt.Errorf("%w: %v", ErrDataExists, found)
+	}
+	return nil
+}
+
+// ErrNoStatVFS indicates the SFTP server cannot report disk usage.
+var ErrNoStatVFS = errors.New("sftp server does not support statvfs")
+
+// Usage reports the size of the file system BasePath is on and how much of it
+// is in use, from the nearest directory that exists - BasePath may not yet.
+//
+// Used is everything this login cannot write to: the space actually taken plus
+// the blocks reserved for root, which a non-root account cannot use either.
+// That is what the volume size alone cannot tell: a VM that already holds a
+// 50 GB dataset has far less room than its size says.
+func Usage(_ context.Context, p Params) (total, used uint64, err error) {
+	sc, fc, err := dial(p)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer sc.Close()
+	defer fc.Close()
+
+	dir := p.BasePath
+	for {
+		if _, serr := fc.Stat(dir); serr == nil || dir == "/" || dir == "." {
+			break
+		}
+		dir = path.Dir(dir)
+	}
+	st, err := fc.StatVFS(dir)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%w: %v", ErrNoStatVFS, err)
+	}
+	total = st.TotalSpace()
+	return total, total - st.Frsize*st.Bavail, nil
+}
+
+// TransferLarge writes the large files to <BasePath>/<rel>, one after another
+// over a single connection, and returns the count transferred. A file is a
+// single stream either way, and the pipelined writes of one already keep the
+// connection full. Their bytes go to onRead as they are read, so OnFile is told
+// 0 when a file is done.
+func TransferLarge(_ context.Context, p Params, files []generate.Large, onRead func(n int64)) (int, error) {
+	sc, fc, err := dial(p)
+	if err != nil {
+		return 0, err
+	}
+	defer sc.Close()
+	defer fc.Close()
+
+	madeDirs := map[string]bool{}
+	for i, f := range files {
+		remote := path.Join(p.BasePath, f.Rel)
+		if dir := path.Dir(remote); !madeDirs[dir] {
+			if err := fc.MkdirAll(dir); err != nil {
+				return i, fmt.Errorf("transfer %s: %w", remote, err)
+			}
+			madeDirs[dir] = true
+		}
+		if err := writeFile(fc, f.Reader(onRead), remote); err != nil {
+			return i, fmt.Errorf("transfer %s: %w", remote, err)
+		}
+		if p.OnFile != nil {
+			p.OnFile(0)
+		}
+	}
+	return len(files), nil
+}
+
+func writeFile(fc *sftp.Client, src io.Reader, remote string) error {
+	dst, err := fc.Create(remote)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	_, err = dst.ReadFrom(src)
+	return err
 }
 
 func copyFile(fc *sftp.Client, localAbs, remote string) error {

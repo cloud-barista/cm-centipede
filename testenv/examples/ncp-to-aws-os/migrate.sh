@@ -13,8 +13,8 @@
 #
 # Three things have to exist first (README steps 1-3):
 #   the stack          make up                    (from the repo root)
-#   the source bucket  testenv/tofuenv: provision.sh ncp bucket + gen-data.sh
-#   the target bucket  testenv/beetleenv/scripts/provision.sh aws bucket
+#   the source bucket  testenv/tofuenv: prepare.sh ncp bucket + gen-data.sh
+#   the target bucket  testenv/beetleenv/scripts/prepare.sh aws bucket
 #
 # Cleanup is the README's step 8, not this script's job.
 

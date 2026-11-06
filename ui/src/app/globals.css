@@ -1,0 +1,264 @@
+@import "tailwindcss";
+
+/* Bind the dark: variant to the .dark class the theme toggle sets. Without this
+   Tailwind v4 compiles dark: to @media (prefers-color-scheme: dark), which
+   follows the operating system and not this app — so on a light-preference OS
+   the dark theme kept every light-mode accent shade (text-emerald-600,
+   text-amber-600 …) on a near-black panel. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* cm-centipede brand: indigo/violet, deliberately distinct from cm-beetle's
+     emerald/teal so the two dashboards are never confused. */
+  --color-brand-primary: #6366f1;
+  --color-brand-secondary: #8b5cf6;
+
+  /* Category accents — the only instant signal telling three near-identical
+     domain screens apart. */
+  --color-cat-filesystem: #0ea5e9;
+  --color-cat-objectstorage: #f59e0b;
+  --color-cat-database: #8b5cf6;
+
+  --color-bg-main: var(--bg-main);
+  --color-bg-panel: var(--bg-panel);
+  --color-text-main: var(--text-main);
+  --color-text-muted: var(--text-muted);
+  --color-border-main: var(--border-main);
+  --color-bg-input: var(--bg-input);
+  --color-border-input: var(--border-input);
+
+  /* Type scale. One step above Tailwind's defaults: these screens pack paths, rules and ids into a single
+     column, and a 20px body turns most of them into wrapped or truncated text.
+     The whole scale is defined here even where a step is currently unused —
+     @theme extends the default theme rather than replacing it, so a missing
+     token silently falls back to Tailwind's value and puts a hole in the ratio.
+     --text-2xs is the meta level: labels ABOUT data (section bands, table
+     headers, badges), never data itself. */
+  --text-2xs: 0.7rem;
+  /* Paired line-height, as every other step inherits from Tailwind's defaults.
+     Without it .text-2xs emits font-size alone and picks up body's 1.6, which
+     is looser than the larger text above it. */
+  --text-2xs--line-height: 1.35;
+  --text-xs: 0.85rem;
+  --text-sm: 0.95rem;
+  --text-base: 1.05rem;
+  --text-lg: 1.2rem;
+  --text-xl: 1.4rem;
+  --text-2xl: 1.7rem;
+  --text-3xl: 2.05rem;
+
+  /* Letter-spacing for the uppercase meta labels. Two steps so neither label
+     moves: tracking-label on the text-2xs panel headings (h4), tracking-section
+     on the text-xs SectionHeader band (h2). */
+  --tracking-label: 0.15em;
+  --tracking-section: 0.18em;
+}
+
+/* Light is the default. An unclassed :root is light, so the page is legible
+   before hydration and if the theme script never runs.
+ *
+ * Both themes are a three-step surface ramp — page, panel, inset — and every
+ * value is opaque. The dark theme used to set --bg-panel to
+ * rgba(99,102,241,0.05) and --border-main to rgba(...,0.12) over the page; those
+ * composite to a 1.04:1 surface step and a 1.07:1 border, which is to say the
+ * cards and their outlines were invisible. Alpha over a near-black page cannot
+ * produce a readable step, so the steps are stated directly. */
+:root {
+  color-scheme: light;
+  --bg-main: #eef0f7;
+  --bg-panel: #ffffff;
+  --bg-input: #f5f6fc;
+  --text-main: #15132b;
+  --text-muted: #545a76;
+  --text-placeholder: #7d83a3;
+  --border-main: #d5d8e8;
+  --border-input: #8b91b0;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --bg-main: #09071a;
+  --bg-panel: #1a1739;
+  --bg-input: #110e28;
+  --text-main: #f4f5fb;
+  --text-muted: #a8aec9;
+  --text-placeholder: #6e7399;
+  --border-main: #393471;
+  --border-input: #5b57a6;
+}
+
+/* Root scale. Every --text-* token is in rem, so this one value moves the whole
+   ladder together: 112.5% puts the dominant body step (text-xs) at 15.3px
+   instead of 13.6px, where 85% of this UI's text used to sit.
+ *
+ * It is a percentage rather than a px value on purpose — `font-size: 18px` here
+ * would override a reader who has raised their own browser default, which is
+ * exactly the person this change is for. */
+html {
+  font-size: 112.5%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg-main);
+  color: var(--color-text-main);
+  /* rem, not px: an absolute value here would opt body out of the root scale
+     above, leaving every unclassed element behind at 16px. */
+  font-size: 1rem;
+  line-height: 1.6;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  transition: background-color 0.3s ease, color 0.3s ease;
+  overflow-x: hidden;
+}
+
+select,
+input,
+textarea {
+  border: 1px solid var(--border-input);
+  background: var(--color-bg-input);
+  color: var(--color-text-main);
+  transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+}
+
+/* Most placeholders in this UI are example values — `127.0.0.1`, `ubuntu`,
+   `prod-fs-seoul-web01` — rendered in the same monospace face as the value that
+   replaces it. Left at the browser default it reads as something already typed.
+ *
+ * Two cues, because one is not enough. The colour steps down to ~3.4:1 on the
+ * inset surface, against ~17:1 for entered text, so the two cannot be confused
+ * at a glance. Italic carries the same distinction without colour, for a
+ * washed-out laptop panel or a colour-blind reader — and it is a shape no value
+ * typed into these fields would ever have.
+ *
+ * The opacity reset is for Firefox, which dims placeholders on its own and would
+ * otherwise apply that on top of the colour below. */
+::placeholder {
+  color: var(--text-placeholder);
+  font-style: italic;
+  opacity: 1;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid rgba(99, 102, 241, 0.45);
+  outline-offset: -1px;
+}
+
+/* Every screen is one vertical column of stacked full-width panels, so a panel
+   has no neighbour beside it to mark its edge — the surface step and the border
+   are the only separation there is. The shadow lifts a card off the page in
+   light mode; on dark it is nearly invisible, which is why the dark theme
+   carries a wider surface step instead of leaning on it. */
+.panel {
+  background: var(--color-bg-panel);
+  border: 1px solid var(--color-border-main);
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 2px rgba(15, 18, 45, 0.06);
+}
+
+:root.dark .panel {
+  box-shadow: none;
+}
+
+/* A card nested inside a panel — the repeated connection forms in "New source",
+   the per-database rows in the mapping step. Plain .panel gives it the same
+   background as the panel it sits in, leaving a 1px border to carry the whole
+   separation: 1.55:1 on dark, where the shadow is switched off. This takes the
+   third step of the ramp, the inset surface, so the card is separated by an area
+   rather than by a line.
+ *
+ * Declared after .panel, and unlayered like it, because a Tailwind bg-* utility
+ * could not win against .panel's own `background` — utilities live in a layer,
+ * and unlayered rules beat layered ones whatever the order. */
+.panel-inset {
+  background: var(--color-bg-input);
+}
+
+/* "The panel you are working in": an expanded accordion or an open form. One
+   treatment for both, so the two read as the same thing.
+ *
+ * The border is the brand colour at full strength — 4.47:1 on the light panel
+ * and 3.84:1 on the dark one, against 3:1 for a UI boundary. It used to be
+ * indigo-500/30, which composites to 1.48:1 and 1.44:1, indistinguishable from
+ * the 1.42/1.55 of an ordinary border: the colour was being applied but never
+ * arrived.
+ *
+ * The ring is a box-shadow rather than a thicker border or a left bar, so
+ * opening a panel does not move a single pixel of its contents. */
+.panel-open {
+  border-color: var(--color-brand-primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18), 0 1px 2px rgba(15, 18, 45, 0.06);
+}
+
+:root.dark .panel-open {
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22);
+}
+
+.panel-interactive {
+  background: var(--color-bg-panel);
+  border: 1px solid var(--color-border-main);
+  border-radius: 0.75rem;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.panel-interactive:hover {
+  border-color: var(--color-brand-primary);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-input);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #b0b5cc;
+  border-radius: 5px;
+}
+
+:root.dark ::-webkit-scrollbar-thumb {
+  background: #4c4f6b;
+}
+
+/* Pulsing dot used by the live-poll indicator. */
+.pulse-dot {
+  position: relative;
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  background-color: #22c55e;
+  border-radius: 50%;
+}
+
+.pulse-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-color: #22c55e;
+  border-radius: 50%;
+  animation: pulse 1.6s infinite ease-in-out;
+  transform-origin: center;
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(3); opacity: 0; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+::selection {
+  background-color: #6366f1;
+  color: #ffffff;
+}

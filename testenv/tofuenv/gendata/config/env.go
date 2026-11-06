@@ -12,7 +12,7 @@ import (
 //
 // They are read straight from the process environment rather than arriving over
 // --inputs-file, because they are not infrastructure facts. Inputs answers
-// "where are the resources and how do I reach them", which only the provisioning
+// "where are the resources and how do I reach them", which only the preparation
 // environment knows; these answer "how much data do you want", which is the
 // operator's intent and carries no secret. tofuenv keeps them in .env, where
 // ../scripts/gen-data.sh sources the file with `set -a` and every value is
@@ -26,6 +26,8 @@ const (
 	EnvDummySizes  = "GENDATA_DUMMY_SIZES"
 	EnvDBSizeMB    = "GENDATA_DB_SIZE_MB"
 	EnvMaxFiles    = "GENDATA_DUMMY_MAX_FILES"
+	EnvLargeFileMB = "GENDATA_LARGE_FILE_MB"
+	EnvLargeFiles  = "GENDATA_LARGE_FILES"
 	EnvTmpDir      = "GENDATA_TMP_DIR"
 
 	// How many at once - the parallelism of each step. All optional; config.json
@@ -46,7 +48,7 @@ const (
 // Having the list come from the binary keeps the script from growing a second
 // copy that drifts.
 func EnvKeys() []string {
-	return []string{EnvDummySizeMB, EnvDummySizes, EnvMaxFiles, EnvDBSizeMB, EnvTmpDir,
+	return []string{EnvDummySizeMB, EnvDummySizes, EnvMaxFiles, EnvLargeFileMB, EnvLargeFiles, EnvDBSizeMB, EnvTmpDir,
 		EnvGenWorkers, EnvUploadConcurrency, EnvSFTPConcurrency, EnvSFTPConnections, EnvDBWorkers}
 }
 
@@ -77,6 +79,7 @@ func TmpDir() (string, error) {
 type Origins struct {
 	Dummy    string `json:"dummy"`
 	MaxFiles string `json:"maxFiles"`
+	Large    string `json:"large"`
 	Database string `json:"database"`
 }
 
@@ -91,7 +94,7 @@ type Origins struct {
 // all and say nothing about why - and the failure would surface minutes later as
 // an empty database rather than immediately as a typo.
 func ApplyEnv(c *Config) (Origins, error) {
-	o := Origins{Dummy: "config", MaxFiles: "config", Database: "config"}
+	o := Origins{Dummy: "config", MaxFiles: "config", Large: "config", Database: "config"}
 
 	var sizes map[string]int
 	if v, ok := envValue(EnvDummySizes); ok {
@@ -141,6 +144,24 @@ func ApplyEnv(c *Config) (Origins, error) {
 		}
 		c.Layout.MaxFiles = n
 		o.MaxFiles = "env"
+	}
+	if v, ok := envValue(EnvLargeFileMB); ok {
+		mb, err := envInt(EnvLargeFileMB, v)
+		if err != nil {
+			return o, err
+		}
+		c.Large.FileMB = mb
+		o.Large = "env"
+	}
+	// 0 files - the default - adds none, so .env can keep a size ready and switch
+	// the files on by count alone.
+	if v, ok := envValue(EnvLargeFiles); ok {
+		n, err := envInt(EnvLargeFiles, v)
+		if err != nil {
+			return o, err
+		}
+		c.Large.Files = n
+		o.Large = "env"
 	}
 	// The parallelism knobs. 0 means "one per CPU" for generation only; for the
 	// others it would mean nothing runs, so it is refused.

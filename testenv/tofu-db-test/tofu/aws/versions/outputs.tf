@@ -7,7 +7,7 @@ output "rds_versions" {
 }
 
 # Keyed by the engine name RDS uses (postgres, not postgresql); the script maps
-# it back to the transx-ex spelling.
+# it back to the data-mig spelling.
 output "suggested_versions" {
   description = "Candidate target versions per engine: the default plus its upgrade targets"
   value       = local.suggested

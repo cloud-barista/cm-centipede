@@ -2,7 +2,7 @@
 
 Runs a migration for **every combination of a source engine version and a target
 engine version**, where the source is a container this folder builds and the
-target is a **managed cloud database provisioned with OpenTofu**. The outcome is
+target is a **managed cloud database prepared with OpenTofu**. The outcome is
 reported as a matrix.
 
 ```
@@ -13,7 +13,7 @@ reported as a matrix.
 ```
 
 The migration itself is **cm-centipede**, driven over its REST API, with
-**cm-honeybee** collecting the source. This folder provisions, prepares and
+**cm-honeybee** collecting the source. This folder prepares, sets up and
 judges; it does not migrate anything itself.
 
 > **cm-honeybee and cm-centipede must already be running.** This folder starts
@@ -111,7 +111,7 @@ cp .env.example .env && chmod 600 .env
 ```
 
 Start with a single cell. One cell exercises the whole path — image build,
-provisioning, target database creation, collection, migration, validation,
+preparation, target database creation, collection, migration, validation,
 teardown — for the price of one instance. Widen the version lists once it goes
 green.
 
@@ -144,7 +144,7 @@ read a `.env` anyone else can. See [Credentials](#credentials).
  Step 4  ./scripts/<csp>-db-matrix.sh        the matrix itself
             |    ├ pre-flight    honeybee, centipede, stack, credentials, versions
             |    ├ network       NCP only: VPC + PUBLIC subnet
-            |    └ per column    provision -> [NCP: console step] -> probe -> cells -> destroy
+            |    └ per column    prepare -> [NCP: console step] -> probe -> cells -> destroy
             |
  Step 5  logs/<csp>-db-matrix.log
          logs/<csp>-db-matrix-api.log
@@ -211,12 +211,12 @@ plaintext key stays on disk.
     secret/db/aws    AWS_DB_PASSWORD
     secret/db/ncp    NCP_DB_PASSWORD
       │
-      ├──▶ tofu provider "vault"          provisioning
+      ├──▶ tofu provider "vault"          preparation
       └──▶ vault_db_password() in tofu.sh target databases, probe, centipede request
 ```
 
 `register-creds.sh` validates the NCP password against the rules the ncloud
-provider enforces **before** anything is provisioned. Without that check, NCP
+provider enforces **before** anything is prepared. Without that check, NCP
 reports the violation as a failed creation about 30 minutes later.
 
 ### What this protects, and what it does not
@@ -361,7 +361,7 @@ libpq-style modes:
 | `verify-ca` | yes | yes | no | error |
 | `verify-full` | yes | yes | yes | error |
 
-It governs the migration — the `db.tlsMode` centipede carries into transx-ex —
+It governs the migration — the `db.tlsMode` centipede carries into data-mig —
 and nothing else. **Setting up a cell does not use it.** Creating the target
 database (`my-target`, `pg-target`) and the PostgreSQL privilege query connect on
 the best transport the server offers: TLS when it is available, plaintext when it
@@ -371,7 +371,7 @@ That separation was learned the hard way. The setup connections used to honour
 `TARGET_TLS_MODE` too, on the argument that one value everywhere means a column
 cannot migrate successfully and then fail its own preparation. But NCP Cloud DB
 for MySQL offers **no TLS at all**, so at the default `prefer` the probe could
-not connect and every NCP MySQL column SKIPped — while transx-ex, which
+not connect and every NCP MySQL column SKIPped — while data-mig, which
 implements a real `prefer`, would have migrated into it over plaintext quite
 happily. Setup failing on the experiment's own condition is a false negative, and
 it hides the result the run exists to produce.
@@ -384,7 +384,7 @@ configured.
 Three limits worth knowing:
 
 - **MongoDB has no `prefer`** — a client either negotiates TLS or it does not, and
-  transx-ex rejects it. Rather than refusing a whole run because one engine in it
+  data-mig rejects it. Rather than refusing a whole run because one engine in it
   is mongodb, the matrix runs **mongodb cells at `disable`** and leaves the other
   engines on the configured mode. The effective mode appears per engine in the
   result JSON (`engines[].tlsMode`).
@@ -486,7 +486,7 @@ Outputs land in `logs/`:
 {
   "csp": "aws",
   "namePrefix": "cptfm",
-  "provisioner": "opentofu",
+  "preparer": "opentofu",
   "migrator": "cm-centipede",
   "collector": "cm-honeybee",
   "srcMode": "direct",

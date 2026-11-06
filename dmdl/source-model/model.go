@@ -5,7 +5,7 @@
 // two sides never keep separate copies in step by hand. A producer fills the one
 // sub-field of ConnectionRef (see common-model/connection.go) matching the
 // connection it holds; the sources it cannot produce are omitempty and stay out
-// of its payloads. All discovery/inspect shapes track dbmsx / transx-ex.
+// of its payloads. All discovery/inspect shapes track dbmsx / data-mig.
 package sourcemodel
 
 // SourceDataMigrationProperty holds all discovered source resources grouped by type.

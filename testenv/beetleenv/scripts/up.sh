@@ -7,9 +7,9 @@
 #   secret store to bring up here and no connection to register. What is left is
 #   a namespace, which cm-beetle cannot create itself.
 #
-#   The namespace it creates is never deleted again - not by deprovision.sh, not
+#   The namespace it creates is never deleted again - not by teardown.sh, not
 #   by anything here. It outlives every resource in it, so a teardown can be
-#   followed straight by another provision.
+#   followed straight by another prepare.
 #
 #   Safe to re-run: everything here is a check or a create-if-absent.
 # ==============================================================================
@@ -27,7 +27,7 @@ Usage: ./scripts/up.sh [--help]
 Verifies cm-beetle and cb-tumblebug are reachable, checks the .env settings for
 every CSP in BEETLEENV_CSPS, and creates the namespace if it is not there.
 
-Creates no cloud resources. ./scripts/provision.sh does that.
+Creates no cloud resources. ./scripts/prepare.sh does that.
 EOF
 }
 
@@ -99,11 +99,11 @@ fi
 printf '\n'
 printf '  Next:\n'
 printf '    ./scripts/catalog.sh <csp> rdbms       what the CSP offers\n'
-printf '    ./scripts/provision.sh <csp> database  create the DB instances\n'
-printf '    ./scripts/provision.sh <csp> vm\n'
-printf '    ./scripts/provision.sh <csp> bucket\n'
+printf '    ./scripts/prepare.sh <csp> database    create the DB instances\n'
+printf '    ./scripts/prepare.sh <csp> vm\n'
+printf '    ./scripts/prepare.sh <csp> bucket\n'
 printf '    ./scripts/status.sh                    what is up\n'
-printf '    ./scripts/deprovision.sh <csp> all     delete it again\n'
+printf '    ./scripts/teardown.sh <csp> all        delete it again\n'
 printf '\n'
 
 # A CSP that cannot be used is a failure of this run, not a warning to scroll

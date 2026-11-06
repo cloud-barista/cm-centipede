@@ -2,7 +2,7 @@ package sourcemodel
 
 import commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 
-// ObjectEntry mirrors transxex.OSEntry (one folder-prefix entry).
+// ObjectEntry mirrors datamig.OSEntry (one folder-prefix entry).
 type ObjectEntry struct {
 	Key          string `json:"key"`                    // folder prefix "bucket/prefix/"
 	LastModified string `json:"lastModified,omitempty"` // only when ObjectStorageMetric.PrefixModTime
@@ -10,7 +10,7 @@ type ObjectEntry struct {
 	Size         *int64 `json:"size,omitempty"`         // only when ObjectStorageMetric.PrefixObjectSize
 }
 
-// ObjectStorageInfo mirrors transxex.OSInspectResult.
+// ObjectStorageInfo mirrors datamig.OSInspectResult.
 type ObjectStorageInfo struct {
 	Path            string         `json:"path"`
 	TotalSize       *int64         `json:"totalSize,omitempty"`       // only when ObjectStorageMetric.TotalSize

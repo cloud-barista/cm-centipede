@@ -39,7 +39,7 @@ func lookupType(s string) minio.BucketLookupType {
 
 // NewClient builds the client for the resolved connection info: MinIO for the S3
 // endpoints, azblob for Azure Blob Storage. The endpoint is what tells them apart,
-// as in transx-ex/storagex/planner.go - Blob answers on the same connection info
+// as in data-mig/storagex/planner.go - Blob answers on the same connection info
 // but does not speak S3, so minio-go cannot reach it at all.
 func NewClient(ci S3ConnInfo) (Client, error) {
 	if IsAzureBlobEndpoint(ci.Endpoint) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-barista/cm-centipede/transx-ex"
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	"github.com/rs/zerolog/log"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
@@ -19,19 +19,19 @@ import (
 )
 
 // DBConnConfigToDBMSLocation converts the unified DBConnConfig (the type all DB
-// sources resolve into) to a transxex.DBMSLocation.
+// sources resolve into) to a datamig.DBMSLocation.
 //
 // DBConnConfig carries server-level access only, so the database name is a
 // separate argument: which databases to migrate is a decision of the migration,
 // not a property of the connection.
-func DBConnConfigToDBMSLocation(cfg commonmodel.DBConnConfig, database string) (transxex.DBMSLocation, error) {
+func DBConnConfigToDBMSLocation(cfg commonmodel.DBConnConfig, database string) (datamig.DBMSLocation, error) {
 	switch cfg.AccessType {
 	case "sshTunnel":
 		if cfg.SSHTunnel == nil {
-			return transxex.DBMSLocation{}, fmt.Errorf("db config: sshTunnel is required for accessType=sshTunnel")
+			return datamig.DBMSLocation{}, fmt.Errorf("db config: sshTunnel is required for accessType=sshTunnel")
 		}
-		tunnel := &transxex.SSHTunnelConfig{
-			SSH: &transxex.SSHConfig{
+		tunnel := &datamig.SSHTunnelConfig{
+			SSH: &datamig.SSHConfig{
 				Host:       cfg.SSHTunnel.Host,
 				Port:       cfg.SSHTunnel.Port,
 				Username:   cfg.SSHTunnel.Username,
@@ -47,7 +47,7 @@ func DBConnConfigToDBMSLocation(cfg commonmodel.DBConnConfig, database string) (
 		loc.ProviderName = cfg.ProviderName
 		return loc, nil
 	default: // direct
-		direct := &transxex.DirectConfig{
+		direct := &datamig.DirectConfig{
 			Host:           cfg.Host,
 			Port:           cfg.Port,
 			Username:       cfg.Username,
@@ -63,37 +63,37 @@ func DBConnConfigToDBMSLocation(cfg commonmodel.DBConnConfig, database string) (
 	}
 }
 
-// DBMSLocationDirect builds a transxex.DBMSLocation for a direct TCP connection.
-func DBMSLocationDirect(dbType, database string, direct *transxex.DirectConfig) transxex.DBMSLocation {
-	return transxex.DBMSLocation{
+// DBMSLocationDirect builds a datamig.DBMSLocation for a direct TCP connection.
+func DBMSLocationDirect(dbType, database string, direct *datamig.DirectConfig) datamig.DBMSLocation {
+	return datamig.DBMSLocation{
 		DBMSType:   dbType,
 		Database:   database,
-		AccessType: transxex.AccessTypeDirect,
+		AccessType: datamig.AccessTypeDirect,
 		Direct:     direct,
 	}
 }
 
-// DBMSLocationSSHTunnel builds a transxex.DBMSLocation for an SSH-tunnelled connection.
-func DBMSLocationSSHTunnel(dbType, database string, tunnel *transxex.SSHTunnelConfig) transxex.DBMSLocation {
-	return transxex.DBMSLocation{
+// DBMSLocationSSHTunnel builds a datamig.DBMSLocation for an SSH-tunnelled connection.
+func DBMSLocationSSHTunnel(dbType, database string, tunnel *datamig.SSHTunnelConfig) datamig.DBMSLocation {
+	return datamig.DBMSLocation{
 		DBMSType:   dbType,
 		Database:   database,
-		AccessType: transxex.AccessTypeSSHTunnel,
+		AccessType: datamig.AccessTypeSSHTunnel,
 		SSHTunnel:  tunnel,
 	}
 }
 
 // DBMSLocationWithFilter attaches a DBMSFilterOption (table/column/row/object
 // exclusions) to an existing DBMSLocation. Returns a copy with Filter set.
-func DBMSLocationWithFilter(loc transxex.DBMSLocation, f *transxex.DBMSFilterOption) transxex.DBMSLocation {
+func DBMSLocationWithFilter(loc datamig.DBMSLocation, f *datamig.DBMSFilterOption) datamig.DBMSLocation {
 	loc.Filter = f
 	return loc
 }
 
 // splitPgSchemas turns the name pairs carried by a migration item into the two
-// positional slices transx-ex matches against each other.
+// positional slices data-mig matches against each other.
 //
-// When no pair renames anything the destination slice is left empty: transx-ex
+// When no pair renames anything the destination slice is left empty: data-mig
 // reads an empty destination as "reproduce the source names as they are", which
 // keeps a same-name migration clear of the restriction that blocks a rename when
 // both sides use an SSH tunnel.
@@ -121,18 +121,18 @@ func splitPgSchemas(pairs []commonmodel.PgSchemaMapping) (src, dst []string) {
 	return src, dst
 }
 
-// HoneybeeToDBMSLocation maps a honeybee DBMS config to a transxex.DBMSLocation.
+// HoneybeeToDBMSLocation maps a honeybee DBMS config to a datamig.DBMSLocation.
 // When the honeybee connection has SSH tunnel info (db_access_type = "ssh-tunnel"),
 // an SSH-tunnelled DBMSLocation is returned; otherwise a direct one is returned.
-func HoneybeeToDBMSLocation(cfg honeybee.HoneybeeConnConfig, database string) transxex.DBMSLocation {
+func HoneybeeToDBMSLocation(cfg honeybee.HoneybeeConnConfig, database string) datamig.DBMSLocation {
 	if cfg.SSHTunnelHost != "" {
-		sshCfg := &transxex.SSHConfig{
+		sshCfg := &datamig.SSHConfig{
 			Host:       cfg.SSHTunnelHost,
 			Port:       cfg.SSHTunnelPort,
 			Username:   cfg.SSHTunnelUser,
 			PrivateKey: cfg.SSHTunnelPrivateKey,
 		}
-		tunnel := &transxex.SSHTunnelConfig{
+		tunnel := &datamig.SSHTunnelConfig{
 			SSH:        sshCfg,
 			DBHost:     cfg.DBHost,
 			DBPort:     cfg.DBPort,
@@ -142,7 +142,7 @@ func HoneybeeToDBMSLocation(cfg honeybee.HoneybeeConnConfig, database string) tr
 		}
 		return DBMSLocationSSHTunnel(cfg.DBType, database, tunnel)
 	}
-	direct := &transxex.DirectConfig{
+	direct := &datamig.DirectConfig{
 		Host:       cfg.DBHost,
 		Port:       cfg.DBPort,
 		Username:   cfg.DBUsername,
@@ -155,35 +155,35 @@ func HoneybeeToDBMSLocation(cfg honeybee.HoneybeeConnConfig, database string) tr
 }
 
 // InspectDB returns server and schema metadata for the database described by loc.
-func InspectDB(loc transxex.DBMSLocation) (*transxex.DBMSInfo, error) {
-	info, err := transxex.InspectDBMS(loc)
+func InspectDB(loc datamig.DBMSLocation) (*datamig.DBMSInfo, error) {
+	info, err := datamig.InspectDBMS(loc)
 	if err != nil {
 		return nil, fmt.Errorf("inspect %s database %s: %w", loc.DBMSType, loc.Database, err)
 	}
 	return info, nil
 }
 
-// ResolveDBMSLocation maps a ConnectionRef to a transxex.DBMSLocation.
+// ResolveDBMSLocation maps a ConnectionRef to a datamig.DBMSLocation.
 // database is the database name to operate on (from the migration item).
 // dbType is the engine hint; empty falls back to the value resolved from the source.
 //
 // honeybee resolves via its own connection info; beetleDb is a managed RDB whose
 // host/port/user/engine would be fetched from cm-beetle; db is inline
 // credentials. Inline credentials and ref passwords are decrypted first.
-func ResolveDBMSLocation(ref commonmodel.ConnectionRef, database, dbType string) (transxex.DBMSLocation, error) {
+func ResolveDBMSLocation(ref commonmodel.ConnectionRef, database, dbType string) (datamig.DBMSLocation, error) {
 	ref, err := connsec.DecryptRef(ref)
 	if err != nil {
-		return transxex.DBMSLocation{}, fmt.Errorf("decrypt connection ref: %w", err)
+		return datamig.DBMSLocation{}, fmt.Errorf("decrypt connection ref: %w", err)
 	}
 
 	switch ref.Source {
 	case commonmodel.ConnectionSourceHoneybee:
 		if ref.Honeybee == nil {
-			return transxex.DBMSLocation{}, fmt.Errorf("honeybee ref is nil")
+			return datamig.DBMSLocation{}, fmt.Errorf("honeybee ref is nil")
 		}
 		cfg, err := honeybee.GetConnectionInfo(*ref.Honeybee)
 		if err != nil {
-			return transxex.DBMSLocation{}, fmt.Errorf("get honeybee connection: %w", err)
+			return datamig.DBMSLocation{}, fmt.Errorf("get honeybee connection: %w", err)
 		}
 		db := database
 		if db == "" {
@@ -193,39 +193,39 @@ func ResolveDBMSLocation(ref commonmodel.ConnectionRef, database, dbType string)
 
 	case commonmodel.ConnectionSourceBeetleDB:
 		if ref.BeetleDB == nil {
-			return transxex.DBMSLocation{}, fmt.Errorf("beetleDb ref is nil")
+			return datamig.DBMSLocation{}, fmt.Errorf("beetleDb ref is nil")
 		}
 		// cm-beetle reports host/port/user/engine for the managed instance; the
 		// password comes from the ref, since the lookup never returns one.
 		// Access is always direct.
 		acc, err := beetle.GetRDBMSAccessInfo(*ref.BeetleDB)
 		if err != nil {
-			return transxex.DBMSLocation{}, err
+			return datamig.DBMSLocation{}, err
 		}
 		engine := pick(dbType, acc.DBType)
 		if err := validateManagedEngine(engine); err != nil {
-			return transxex.DBMSLocation{}, err
+			return datamig.DBMSLocation{}, err
 		}
 		tls, err := resolveManagedTLS(*ref.BeetleDB, acc)
 		if err != nil {
-			return transxex.DBMSLocation{}, err
+			return datamig.DBMSLocation{}, err
 		}
 		return DBConnConfigToDBMSLocation(
 			managedDBConnConfig(engine, acc, *ref.BeetleDB, tls), database)
 
 	case commonmodel.ConnectionSourceDB:
 		if ref.DB == nil {
-			return transxex.DBMSLocation{}, fmt.Errorf("db config is nil")
+			return datamig.DBMSLocation{}, fmt.Errorf("db config is nil")
 		}
 		return DBConnConfigToDBMSLocation(*ref.DB, database)
 
 	default:
-		return transxex.DBMSLocation{}, fmt.Errorf("unsupported source type for DBMS migration: %s", ref.Source)
+		return datamig.DBMSLocation{}, fmt.Errorf("unsupported source type for DBMS migration: %s", ref.Source)
 	}
 }
 
 // validateManagedEngine rejects an engine cm-beetle cannot be holding.
-// cb-tumblebug provisions MySQL and MariaDB only, so a beetleDb reference to a
+// cb-tumblebug prepares MySQL and MariaDB only, so a beetleDb reference to a
 // PostgreSQL or MongoDB server is a mistake worth naming rather than a
 // connection to attempt.
 func validateManagedEngine(engine string) error {
@@ -236,7 +236,7 @@ func validateManagedEngine(engine string) error {
 		return fmt.Errorf("beetleDb: cm-beetle reported no database engine")
 	default:
 		return fmt.Errorf(
-			"beetleDb: engine %q is not available as a managed instance (cm-beetle provisions %s and %s only); "+
+			"beetleDb: engine %q is not available as a managed instance (cm-beetle prepares %s and %s only); "+
 				"use an inline db connection instead",
 			engine, commonmodel.DBMSTypeMySQL, commonmodel.DBMSTypeMariaDB)
 	}
@@ -248,7 +248,7 @@ func validateManagedEngine(engine string) error {
 //
 // ProviderName is left empty on purpose. cm-beetle's RDBMS read does report the
 // CSP (connectionConfig.providerName), but the field decides nothing here
-// (transx-ex carries it into DBMSLocation.ProviderName but never reads it).
+// (data-mig carries it into DBMSLocation.ProviderName but never reads it).
 func managedDBConnConfig(engine string, acc *beetle.DBConfig, ref commonmodel.BeetleDBRef, tls tlsDecision) commonmodel.DBConnConfig {
 	return commonmodel.DBConnConfig{
 		DBMSType:   engine,
@@ -278,7 +278,7 @@ func pick(primary, fallback string) string {
 // instance, the database connection itself for everything else. Asking the other
 // one invites a split verdict, and that verdict is what decides whether centipede
 // owns the database and has to drop it after a failure.
-func TargetDatabaseExists(dst commonmodel.ConnectionRef, dstLoc transxex.DBMSLocation) (bool, error) {
+func TargetDatabaseExists(dst commonmodel.ConnectionRef, dstLoc datamig.DBMSLocation) (bool, error) {
 	if dst.Source == commonmodel.ConnectionSourceBeetleDB {
 		if dst.BeetleDB == nil {
 			return false, fmt.Errorf("beetleDb ref is nil")
@@ -296,7 +296,7 @@ func TargetDatabaseExists(dst commonmodel.ConnectionRef, dstLoc transxex.DBMSLoc
 		return containsName(names, dstLoc.Database), nil
 	}
 
-	names, err := transxex.ListDatabases(dstLoc)
+	names, err := datamig.ListDatabases(dstLoc)
 	if err != nil {
 		return false, fmt.Errorf("list target databases: %w", err)
 	}
@@ -316,10 +316,10 @@ func containsName(names []string, want string) bool {
 // EnsureTargetDatabase creates the destination database when it does not exist,
 // and reports whether centipede created it.
 //
-// transx-ex requires the target to already exist and be empty, and never creates
+// data-mig requires the target to already exist and be empty, and never creates
 // one itself, so this step belongs here. The returned flag decides who cleans up
 // after a failure: a database centipede created is dropped whole
-// (DropTargetDatabase), while one that already existed is left to transx-ex's
+// (DropTargetDatabase), while one that already existed is left to data-mig's
 // rollback, which empties it and keeps it.
 //
 // srcInfo supplies the source database's character set so the new database
@@ -327,8 +327,8 @@ func containsName(names []string, want string) bool {
 // warning or a charset incompatibility error.
 func EnsureTargetDatabase(
 	dst commonmodel.ConnectionRef,
-	dstLoc transxex.DBMSLocation,
-	srcInfo *transxex.DBMSInfo,
+	dstLoc datamig.DBMSLocation,
+	srcInfo *datamig.DBMSInfo,
 ) (bool, error) {
 	exists, err := TargetDatabaseExists(dst, dstLoc)
 	if err != nil {
@@ -350,7 +350,7 @@ func EnsureTargetDatabase(
 	// behind on failure. DropTargetDatabase already passes IfExists for exactly
 	// this shape, so a source with no collections - where the restore wrote
 	// nothing and the database never appeared - drops cleanly rather than erroring.
-	if dstLoc.DBMSType == transxex.DBMSTypeMongoDB {
+	if dstLoc.DBMSType == datamig.DBMSTypeMongoDB {
 		return true, nil
 	}
 
@@ -382,11 +382,11 @@ func EnsureTargetDatabase(
 		if !strings.EqualFold(dst.DB.ProviderName, commonmodel.ProviderOnPrem) {
 			return false, fmt.Errorf(
 				"db target: database %q does not exist; centipede creates one only for "+
-					"providerName %q (got %q) — provision it on the provider first",
+					"providerName %q (got %q) — prepare it on the provider first",
 				dstLoc.Database, commonmodel.ProviderOnPrem, dst.DB.ProviderName)
 		}
 		opt := createOptionFrom(dstLoc.DBMSType, srcInfo)
-		err := transxex.CreateDatabase(dstLoc, opt)
+		err := datamig.CreateDatabase(dstLoc, opt)
 		// The source's libc locale need not be installed on the target host (an
 		// alpine image, or one that ships only C.UTF-8). Retry with the target's
 		// default locale rather than fail; the encoding is kept.
@@ -395,7 +395,7 @@ func EnsureTargetDatabase(
 				Str("lcCollate", opt.PostgreSQL.LcCollate).Str("lcCtype", opt.PostgreSQL.LcCtype).
 				Msg("source locale not available on target; creating with target default locale")
 			opt.PostgreSQL.LcCollate, opt.PostgreSQL.LcCtype = "", ""
-			err = transxex.CreateDatabase(dstLoc, opt)
+			err = datamig.CreateDatabase(dstLoc, opt)
 		}
 		if err != nil {
 			return false, fmt.Errorf("create target database %q: %w", dstLoc.Database, err)
@@ -410,8 +410,8 @@ func EnsureTargetDatabase(
 
 // DropTargetDatabase removes a database centipede created, after its migration
 // failed or was cancelled. It is never called for a database that already
-// existed: that case is transx-ex's rollback, which keeps the database.
-func DropTargetDatabase(dst commonmodel.ConnectionRef, dstLoc transxex.DBMSLocation) error {
+// existed: that case is data-mig's rollback, which keeps the database.
+func DropTargetDatabase(dst commonmodel.ConnectionRef, dstLoc datamig.DBMSLocation) error {
 	switch dst.Source {
 	case commonmodel.ConnectionSourceBeetleDB:
 		// Deletion pairs with creation: both go through cm-beetle.
@@ -428,7 +428,7 @@ func DropTargetDatabase(dst commonmodel.ConnectionRef, dstLoc transxex.DBMSLocat
 		// IfExists covers MongoDB, where creation was a no-op. RequireEmpty is
 		// left unset on purpose: the point is to remove a partially loaded
 		// database along with whatever it holds.
-		return transxex.DropDatabase(dstLoc, &transxex.DropDatabaseOption{IfExists: true})
+		return datamig.DropDatabase(dstLoc, &datamig.DropDatabaseOption{IfExists: true})
 
 	default:
 		return fmt.Errorf("unsupported DBMS target source: %s", dst.Source)
@@ -437,27 +437,27 @@ func DropTargetDatabase(dst commonmodel.ConnectionRef, dstLoc transxex.DBMSLocat
 
 // createOptionFrom builds the engine-specific CREATE DATABASE clauses that
 // reproduce the source database's text handling on the target.
-func createOptionFrom(dbmsType string, src *transxex.DBMSInfo) *transxex.CreateDatabaseOption {
-	opt := &transxex.CreateDatabaseOption{}
+func createOptionFrom(dbmsType string, src *datamig.DBMSInfo) *datamig.CreateDatabaseOption {
+	opt := &datamig.CreateDatabaseOption{}
 	if src == nil {
 		return opt
 	}
 	switch dbmsType {
-	case transxex.DBMSTypeMySQL:
-		opt.MySQL = &transxex.MySQLCreateOption{CharacterSet: src.CharacterSet, Collate: src.Collation}
-	case transxex.DBMSTypeMariaDB:
-		opt.MariaDB = &transxex.MariaDBCreateOption{CharacterSet: src.CharacterSet, Collate: src.Collation}
-	case transxex.DBMSTypePostgreSQL:
+	case datamig.DBMSTypeMySQL:
+		opt.MySQL = &datamig.MySQLCreateOption{CharacterSet: src.CharacterSet, Collate: src.Collation}
+	case datamig.DBMSTypeMariaDB:
+		opt.MariaDB = &datamig.MariaDBCreateOption{CharacterSet: src.CharacterSet, Collate: src.Collation}
+	case datamig.DBMSTypePostgreSQL:
 		// Encoding, LcCollate and LcCtype require a template database whose own
 		// encoding matches, which in practice means template0: template1 may
 		// already hold data in another encoding and the server then refuses.
-		opt.PostgreSQL = &transxex.PostgreSQLCreateOption{
+		opt.PostgreSQL = &datamig.PostgreSQLCreateOption{
 			Encoding:  src.CharacterSet,
 			LcCollate: src.Collation,
 			LcCtype:   src.Ctype,
 			Template:  "template0",
 		}
-	case transxex.DBMSTypeMongoDB:
+	case datamig.DBMSTypeMongoDB:
 		// MongoDB has no CREATE DATABASE: the database begins to exist when the
 		// migration creates its first collection.
 	}
@@ -476,20 +476,22 @@ func createOptionFrom(dbmsType string, src *transxex.DBMSInfo) *transxex.CreateD
 // that removes the listed tables/columns/rows/schema objects.
 //
 // Cleanup after a failure follows ownership: RollbackOnFailure is enabled only
-// for a database that already existed, in which case transx-ex empties it and
+// for a database that already existed, in which case data-mig empties it and
 // keeps it. A database centipede created is dropped whole instead, so the two
 // paths never both run.
 //
 // Filter feasibility (e.g. column/row/object exclusion is impossible over an
-// ssh-tunnel) is checked up-front by transxex.ValidateDBMS — MigrateDBMSAsync
+// ssh-tunnel) is checked up-front by datamig.ValidateDBMS — MigrateDBMSAsync
 // does not validate on its own — and any violation is reported as a failed item.
 //
 // stagingDir is the local staging root a dump is written under (see
-// ResolveStagingDir); empty leaves it to transx-ex's default.
+// ResolveStagingDir); empty leaves it to data-mig's default. concurrency is how
+// many connections a restore writes over at once (see ResolveConcurrency); zero
+// leaves it to data-mig's default.
 //
 // Returns ctx.Err() on cancellation; per-item errors are reported through
 // progressCh and do not stop the remaining items.
-func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure, stagingDir string, progressCh chan<- ProgressEvent) error {
+func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure, stagingDir string, concurrency int, progressCh chan<- ProgressEvent) error {
 	dbType := string(m.DBType)
 
 	dbs := make([]targetmodel.DBMigrationInfo, len(m.Databases))
@@ -508,7 +510,7 @@ func MigrateDBMS(ctx context.Context, m targetmodel.MigrationDBModel, onFailure,
 		default:
 		}
 
-		if err := migrateOneDatabase(ctx, m, d, dbType, onFailure, stagingDir, progressCh); err != nil {
+		if err := migrateOneDatabase(ctx, m, d, dbType, onFailure, stagingDir, concurrency, progressCh); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -527,6 +529,7 @@ func migrateOneDatabase(
 	dbType string,
 	onFailure string,
 	stagingDir string,
+	concurrency int,
 	progressCh chan<- ProgressEvent,
 ) error {
 	itemPath := fmt.Sprintf("%s/%s", dbType, d.SrcName)
@@ -586,24 +589,25 @@ func migrateOneDatabase(
 	// distinction this option exists to override.
 	keep := onFailure == model.DBMSOnFailureKeep
 
-	dmm := transxex.DBMSMigrationModel{
+	dmm := datamig.DBMSMigrationModel{
 		Source:      srcLoc,
 		Destination: dstLoc,
-		Scope:       transxex.ScopeFull,
+		Scope:       datamig.ScopeFull,
 		// A database we created is dropped whole on failure, so there is nothing
 		// for the object-level rollback to do; the two paths are exclusive.
 		RollbackOnFailure: !created && !keep,
 		StagingDir:        stagingDir,
+		Concurrency:       concurrency,
 	}
 
-	if err := transxex.ValidateDBMS(dmm); err != nil {
+	if err := datamig.ValidateDBMS(dmm); err != nil {
 		if !keep {
 			dropIfOwned(m.DstConnection, dstLoc, created, itemPath)
 		}
 		return fail(err)
 	}
 
-	handle := transxex.MigrateDBMSAsync(dmm)
+	handle := datamig.MigrateDBMSAsync(dmm)
 	done := make(chan error, 1)
 	go func() { done <- handle.Wait() }()
 
@@ -645,9 +649,13 @@ func migrateOneDatabase(
 			handle.Cancel()
 			<-done
 			dropIfOwned(m.DstConnection, dstLoc, created, itemPath)
+			// Reported as failed, as a filesystem or object storage item cut off
+			// mid-transfer is: the database did not finish, so it counts as a
+			// failed item and a partial retry selects it again. The run itself
+			// still ends "cancelled", decided by ctx.Err().
 			progressCh <- ProgressEvent{
 				ItemPath:      itemPath,
-				Status:        "cancelled",
+				Status:        "failed",
 				DurationMs:    time.Since(start).Milliseconds(),
 				TargetCreated: created,
 				Err:           ctx.Err(),
@@ -674,15 +682,18 @@ func migrateOneDatabase(
 					dropIfOwned(m.DstConnection, dstLoc, created, itemPath)
 				}
 			}
+			// What the dump actually wrote, read from the handle one last time:
+			// the ticks were observations, this is the item's figure.
+			p := handle.Progress()
 			progressCh <- ProgressEvent{
-				ItemPath:      itemPath,
-				Status:        status,
-				DurationMs:    time.Since(start).Milliseconds(),
-				TargetCreated: created,
-				Err:           migErr,
-				// What the dump actually wrote, read from the handle one last
-				// time: the ticks were observations, this is the item's figure.
-				SizeBytes: handle.Progress().BytesTransferred,
+				ItemPath:        itemPath,
+				Status:          status,
+				DurationMs:      time.Since(start).Milliseconds(),
+				TargetCreated:   created,
+				Err:             migErr,
+				SizeBytes:       p.BytesTransferred,
+				Concurrency:     p.Concurrency,
+				ConcurrencyNote: p.ConcurrencyNote,
 			}
 			return migErr
 		}
@@ -692,8 +703,8 @@ func migrateOneDatabase(
 // dropIfOwned removes the target database when centipede created it. A failure
 // to drop is logged rather than returned: the item has already failed, and the
 // next attempt finds the leftover database and takes the pre-existing path,
-// where transx-ex empties it instead.
-func dropIfOwned(dst commonmodel.ConnectionRef, dstLoc transxex.DBMSLocation, created bool, itemPath string) {
+// where data-mig empties it instead.
+func dropIfOwned(dst commonmodel.ConnectionRef, dstLoc datamig.DBMSLocation, created bool, itemPath string) {
 	if !created {
 		return
 	}

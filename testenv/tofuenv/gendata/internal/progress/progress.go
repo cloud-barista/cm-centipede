@@ -58,10 +58,18 @@ func New(label string, totalFiles int, totalBytes int64) *Counter {
 }
 
 // Add records one finished file of size bytes.
-func (c *Counter) Add(size int64) {
+func (c *Counter) Add(size int64) { c.record(1, size) }
+
+// AddBytes records n bytes of a file still in flight. A step whose files are
+// large reports through it as it goes - one 10 GB file would otherwise sit at 0%
+// until it is done - and then calls Add(0) for each file, its bytes already
+// counted.
+func (c *Counter) AddBytes(n int64) { c.record(0, n) }
+
+func (c *Counter) record(files int, size int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.files++
+	c.files += files
 	c.bytes += size
 	if now := time.Now(); now.Sub(c.winStart) >= recentWindow {
 		if !c.winStart.IsZero() {
@@ -81,12 +89,23 @@ func (c *Counter) Add(size int64) {
 		fmt.Fprintf(os.Stderr, "\r\033[K%s", c.line(now))
 		return
 	}
-	if c.totalFiles > 0 {
-		if step := c.files * 10 / c.totalFiles; step > c.lastStep {
-			c.lastStep = step
-			log.Print(c.line(now))
-		}
+	if step := c.percent() / 10; step > c.lastStep {
+		c.lastStep = step
+		log.Print(c.line(now))
 	}
+}
+
+// percent is how far the step has got, by bytes when the total is known - a
+// file count says nothing while the only file is still going - else by files.
+func (c *Counter) percent() int {
+	switch {
+	case c.totalBytes > 0:
+		// A retried part is read twice, so the bytes can overshoot the total.
+		return int(min(c.bytes*100/c.totalBytes, 100))
+	case c.totalFiles > 0:
+		return c.files * 100 / c.totalFiles
+	}
+	return 0
 }
 
 // Finish ends the step with a summary line, whether it completed or not: a
@@ -106,10 +125,7 @@ func (c *Counter) Finish() {
 // "bucket: 120/800 files (15%), 120.0 MiB / 800.0 MiB, 12.3 MiB/s (now 9.8 MiB/s), 55s left".
 func (c *Counter) line(now time.Time) string {
 	elapsed := now.Sub(c.start)
-	pct := 0
-	if c.totalFiles > 0 {
-		pct = c.files * 100 / c.totalFiles
-	}
+	pct := c.percent()
 	left := "-"
 	if r := rate(c.bytes, elapsed); r > 0 && c.totalBytes > c.bytes {
 		left = (time.Duration(float64(c.totalBytes-c.bytes)/float64(r)) * time.Second).Round(time.Second).String()

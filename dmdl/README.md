@@ -50,8 +50,8 @@ Dependency direction is one-way: `sourcemodel → commonmodel` and
   non-nil. Inline credentials are AES-256-GCM encrypted (`enc:` prefix) by the
   server before storage.
 - `SSHConnConfig`, `MinioConnConfig`, `DBConnConfig`: Inline credential shapes
-  every connection source converges on before being handed to transx / dbmsx.
-- `PathFilterRule`: One ordered include/exclude entry of the transx-ex filter
+  every connection source converges on before being handed to data-mig / dbmsx.
+- `PathFilterRule`: One ordered include/exclude entry of the data-mig filter
   pipeline (`glob` or `size`).
 - `DBMSFilterRule`: One entry of the dbmsx exclude-only pipeline
   (`table_column`, `row_exclude`, `object_exclude`).
@@ -81,7 +81,7 @@ a migration reads them — so a source description is defined once rather than
 copied and kept in step by hand. A producer fills the one `ConnectionRef`
 sub-field matching the connection it holds; the sources it cannot produce are
 `omitempty` and never appear in its payloads. The discovery/inspect shapes track
-dbmsx and transx-ex.
+dbmsx and data-mig.
 
 ### 3. Target Models (`target-model/`)
 

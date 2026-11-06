@@ -116,7 +116,7 @@ DB versions are set in `.env`. When unset, the **default version** (marked ⭐) 
 |------|---------|---------|-------|------------|
 | **Default** | 7.0 ⭐ | 10.6 ⭐ | 8.0 ⭐ | 14 ⭐ |
 | **Supported** | 6.0 · 7.0 ⭐ · 8.0 | 10.6 ⭐ · 10.11 · 11.4 · 11.8 | 8.0 ⭐ · 8.4 | 13 · 14 ⭐ · 15 · 16 · 17 |
-| **Repository** | MongoDB official apt repo | MariaDB official repo (`mariadb_repo_setup`) | Oracle official apt repo (`mysql-apt-config`) | PostgreSQL PGDG apt repo |
+| **Repository** | MongoDB official apt repo | MariaDB official repo (`mariadb_repo_setup`) | Oracle official apt repo (`mysql-8.0` / `mysql-8.4-lts` component) | PostgreSQL PGDG apt repo |
 | **`.env` variable** | `MONGODB_VERSION` | `MARIADB_VERSION` | `MYSQL_VERSION` | `POSTGRESQL_VERSION` |
 
 ```bash

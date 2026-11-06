@@ -2,7 +2,7 @@ package sourcemodel
 
 import commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
 
-// FSEntry mirrors transxex.FSEntry (one directory entry).
+// FSEntry mirrors datamig.FSEntry (one directory entry).
 type FSEntry struct {
 	Path        string `json:"path"`
 	IsMount     bool   `json:"isMount"`
@@ -12,7 +12,7 @@ type FSEntry struct {
 	FileSize    *int64 `json:"fileSize,omitempty"`    // only when FilesystemMetric.FolderFileSize
 }
 
-// FSInfo mirrors transxex.FSInspectResult: the path-wide aggregates plus the
+// FSInfo mirrors datamig.FSInspectResult: the path-wide aggregates plus the
 // directory listing.
 type FSInfo struct {
 	Path            string         `json:"path"`

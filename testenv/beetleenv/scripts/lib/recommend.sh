@@ -16,7 +16,7 @@
 #
 #   For a recommendation engine that is the right behaviour: the caller asked for
 #   somewhere to put their data, and mysql is closer than nothing. For beetleenv
-#   it is not: `provision.sh aws database --engine mariadb` that quietly builds a
+#   it is not: `prepare.sh aws database --engine mariadb` that quietly builds a
 #   MySQL instance gives cm-centipede the wrong thing to migrate, and the mistake
 #   only surfaces much later. So the answer is compared against the request, and
 #   a substitution stops the run.
@@ -265,7 +265,7 @@ recommend_rdbms() {
 #
 #   rdbmsName: the recommendation names every instance mig-rdbms-01, whatever
 #   engine it is for. Two engines on one CSP would then collide. See the naming
-#   note in provision.sh for why the name is set here rather than with nameSeed.
+#   note in prepare.sh for why the name is set here rather than with nameSeed.
 #
 #   publicAccess: sent as a target preference too, but a recommendation is free to
 #   overrule one, so .env decides here. On NCP the only value that can be sent is

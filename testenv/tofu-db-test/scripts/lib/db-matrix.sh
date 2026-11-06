@@ -15,7 +15,7 @@
 # systemd in it, so it is built once per version and cached (lib/source.sh).
 #
 # ── The migration and the verdict belong to someone else ────────────────────
-# This matrix does not call transx-ex. cm-honeybee collects the source and
+# This matrix does not call data-mig. cm-honeybee collects the source and
 # cm-centipede plans, migrates and validates; this file calls the two and turns
 # the answers into a table. So a verdict rests on centipede's validationStatus
 # rather than on a snapshot string comparison.
@@ -142,7 +142,7 @@ assert_tls_mode() {
 	fi
 
 	# MongoDB has no prefer: a client either negotiates TLS or it does not, with
-	# nowhere to fall back to, and transx-ex's ValidateDBMS rejects it for the same
+	# nowhere to fall back to, and data-mig's ValidateDBMS rejects it for the same
 	# reason. It does not stop the run: when one CSP is run with several engines,
 	# standing the other columns still over one mongodb costs too much. The mongodb
 	# cells alone drop, and the result records which mode they ran at.
@@ -580,7 +580,7 @@ write_result_json() {
 		--arg st "$AWS_TARGET_SECURE_TRANSPORT" --arg gp "$COLUMN_GRANT_PUBLIC" \
 		--arg pgs "$COLUMN_PG_SCHEMA" \
 		--arg tls "$(target_tls_mode)" --arg onfail "${DBMS_ON_FAILURE:-cleanup}" \
-		'{csp:$csp, namePrefix:$prefix, provisioner:"opentofu", migrator:"cm-centipede",
+		'{csp:$csp, namePrefix:$prefix, preparer:"opentofu", migrator:"cm-centipede",
 		  collector:"cm-honeybee", srcMode:$sm, dstMode:"direct",
 		  targetTLSMode:$tls, dbmsOnFailure:$onfail,
 		  secureTransport:(if $csp == "aws" then $st else "csp-default" end),
@@ -757,7 +757,7 @@ matrix_main() {
 
 	assert_src_ports "$engines" || die "source port check failed. Nothing was created."
 
-	# MongoDB runs direct-only: transx-ex requires both sides to use the same
+	# MongoDB runs direct-only: data-mig requires both sides to use the same
 	# accessType, and a managed target has no shell, so it is always direct.
 	if [ "$MODE" = "ssh" ]; then
 		case " $engines " in

@@ -60,6 +60,11 @@ func CreateMigration(c echo.Context) error {
 			return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse("stagingDir: "+err.Error()))
 		}
 	}
+	// Refused rather than clamped: a migration run at a figure nobody asked for
+	// would leave its timing unexplained.
+	if err := migrationpkg.CheckConcurrency(req.Concurrency); err != nil {
+		return c.JSON(http.StatusBadRequest, model.SimpleErrorResponse(err.Error()))
+	}
 
 	// The plan arrives as POST /plans/target answered it, so every check below is
 	// about a plan that was edited, hand-written, or issued elsewhere. Execution
@@ -121,6 +126,7 @@ func CreateMigration(c echo.Context) error {
 		Plan:          req.Plan,
 		DBMSOnFailure: req.DBMSOnFailure,
 		StagingDir:    req.StagingDir,
+		Concurrency:   req.Concurrency,
 		Status:        "pending",
 	}
 	if err := dao.CreateMigration(m); err != nil {

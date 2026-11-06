@@ -1,18 +1,24 @@
 package commonmodel
 
-// filter.go defines centipede's own mirror of the transx-ex and dbmsx filter
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
+// filter.go defines centipede's own mirror of the data-mig and dbmsx filter
 // pipelines. The model package stays free of any library dependency; the core
-// layer converts these mirror types into the concrete transx / dbmsx filter
+// layer converts these mirror types into the concrete data-mig / dbmsx filter
 // options at the call site (see core/migration).
 //
 // Both pipelines are ordered rule lists keyed by a "type" discriminator, so the
 // mirror types are flat structs carrying every field the underlying matchers
 // use. Unused fields stay zero/omitted per rule type.
 
-// ── transx-ex filter (shared by file system and object storage) ─────────────
+// ── data-mig filter (shared by file system and object storage) ──────────────
 
 // Path filter actions and rule type discriminators. They name the same strings
-// the transx-ex filter registry decodes, so a caller that has to branch on a
+// the data-mig filter registry decodes, so a caller that has to branch on a
 // rule — validation asking which rules can prune a directory, for one — does it
 // without a literal that drifts.
 const (
@@ -23,7 +29,7 @@ const (
 	PathRuleSize = "size"
 )
 
-// PathFilterRule mirrors one transx filter.Rule. It is an ordered include/exclude
+// PathFilterRule mirrors one data-mig filter.Rule. It is an ordered include/exclude
 // entry evaluated top-to-bottom; the first matching rule decides the outcome and
 // an item matched by no rule is kept.
 //
@@ -71,9 +77,10 @@ const (
 //
 //	the named Columns within it (the table itself is kept).
 //
-// Type "row_exclude":    drop rows of Table for which the SQL predicate Match is
+// Type "row_exclude":    drop rows of Table for which Match is TRUE. Match is a
 //
-//	TRUE (relational engines only; requires direct access).
+//	SQL predicate on the relational engines and a MongoDB query
+//	document on MongoDB (requires direct access).
 //
 // Type "object_exclude": drop the schema object of Kind named Name. Table is an
 //
@@ -82,16 +89,48 @@ type DBMSFilterRule struct {
 	Type    string   `json:"type"`
 	Table   string   `json:"table,omitempty"`
 	Columns []string `json:"columns,omitempty"` // type=table_column (empty => whole table)
-	Match   string   `json:"match,omitempty"`   // type=row_exclude
-	Kind    string   `json:"kind,omitempty"`    // type=object_exclude (view|index|function|...)
-	Name    string   `json:"name,omitempty"`    // type=object_exclude
+	// type=row_exclude. SQL engines: a predicate ("status = 'cancelled'").
+	// MongoDB: a query document, sent as JSON text or as a JSON object.
+	Match string `json:"match,omitempty"`
+	Kind  string `json:"kind,omitempty"` // type=object_exclude (view|index|function|...)
+	Name  string `json:"name,omitempty"` // type=object_exclude
+}
+
+// UnmarshalJSON accepts match as a string or as a JSON object. An object is kept
+// as its compact JSON text, so MongoDB's query document travels in the same
+// string field as a SQL predicate; data-mig decides which form the engine takes.
+func (r *DBMSFilterRule) UnmarshalJSON(data []byte) error {
+	type plain DBMSFilterRule
+	var aux struct {
+		plain
+		Match json.RawMessage `json:"match,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*r = DBMSFilterRule(aux.plain)
+	raw := bytes.TrimSpace(aux.Match)
+	switch {
+	case len(raw) == 0 || bytes.Equal(raw, []byte("null")):
+	case raw[0] == '"':
+		return json.Unmarshal(raw, &r.Match)
+	case raw[0] == '{':
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, raw); err != nil {
+			return err
+		}
+		r.Match = buf.String()
+	default:
+		return fmt.Errorf("match must be a string or a JSON object")
+	}
+	return nil
 }
 
 // ── Per-resource filters (shared by the plan request and the plan output) ────
 
 // PgSchemaMapping maps one PostgreSQL schema from source to target.
 //
-// transx-ex takes DBMSLocation.PgSchema as a []string on each side and matches
+// data-mig takes DBMSLocation.PgSchema as a []string on each side and matches
 // them by position. Taking name pairs here instead means a caller cannot
 // silently migrate into the wrong schema by listing them out of order; the
 // adapter splits the pairs into the two positional slices.
@@ -112,6 +151,11 @@ type PgSchemaMapping struct {
 //
 // SrcName must match an entry in the source model exactly. When DstName is
 // empty the source name is used as-is on the target.
+//
+// An object storage target's bucket — the first segment of DstName, or of
+// SrcName when DstName is empty — must already exist: nothing creates it, and
+// the plan is refused when the store says it is not there. A cm-beetle target
+// is exempt, its bucket being the osId's.
 type TargetMapping struct {
 	SrcName string `json:"srcName" validate:"required"`
 	DstName string `json:"dstName,omitempty"`
@@ -125,7 +169,7 @@ type TargetMapping struct {
 }
 
 // FileSystemFilter defines file system migration filter conditions.
-// Rules mirror the transx-ex filter pipeline; TargetMapping is centipede-specific
+// Rules mirror the data-mig filter pipeline; TargetMapping is centipede-specific
 // single-folder selection + source→target remapping applied by the plan layer.
 // Supplying a filter at all means naming the folder it applies to, so
 // TargetMapping is required here; omitting the whole filter migrates the source

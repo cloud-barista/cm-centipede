@@ -94,13 +94,13 @@ type HoneybeeConnConfig struct {
 	Database   string
 
 	// Transport security for the DBMS connection, passed straight through to
-	// transxex.DirectConfig. Read only on the direct path: an SSH-tunnelled
+	// datamig.DirectConfig. Read only on the direct path: an SSH-tunnelled
 	// connection has no TLS settings, so these are ignored there.
 	DBTLSMode  string
 	DBTLSCAPEM string
 
 	// DBAuthSource is the MongoDB authSource database. Unlike the TLS fields it
-	// is read on both paths — transxex.SSHTunnelConfig carries one too — because
+	// is read on both paths — datamig.SSHTunnelConfig carries one too — because
 	// which database holds the account is a property of the server, not of how
 	// the connection reaches it. Empty → the driver defaults to "admin".
 	DBAuthSource string

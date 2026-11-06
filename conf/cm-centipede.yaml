@@ -13,7 +13,7 @@ centipede:
     username: ChangeMe
     password: ChangeMe
   tumblebug:
-    # Object storage transfers only (transx-ex reaches managed buckets through
+    # Object storage transfers only (data-mig reaches managed buckets through
     # cb-tumblebug). Not selectable as a connection source.
     #
     # Host and port only, like the beetle endpoint above: cm-centipede appends
@@ -40,11 +40,18 @@ centipede:
     # from source to destination: a filesystem or object storage relay, a
     # cross-storage transfer, a DBMS dump. Dumps can be as large as the source
     # database, so point this at a disk with room. A migration request's
-    # stagingDir overrides it. Empty uses $TMPDIR/transxex-staging, or
-    # /tmp/transxex-staging when TMPDIR is unset. The server refuses to start
+    # stagingDir overrides it. Empty uses $TMPDIR/datamig-staging, or
+    # /tmp/datamig-staging when TMPDIR is unset. The server refuses to start
     # when a value set here cannot be created or written.
     # Override with CENTIPEDE_MIGRATION_STAGING_DIR.
     stagingDir: ""
+    # How many transfers each item runs at once when a migration request names
+    # none: rsync processes for a filesystem, objects and the parts of one
+    # object for object storage, restore connections for a database. 1 to 32;
+    # 0 uses the default, 4. A migration request's concurrency overrides it.
+    # The server refuses to start on a value out of range.
+    # Override with CENTIPEDE_MIGRATION_CONCURRENCY.
+    concurrency: 0
   encryption:
     # Passphrase the connection credentials are encrypted with. Required: the
     # server will not start without it. Any passphrase of 12+ characters; it is

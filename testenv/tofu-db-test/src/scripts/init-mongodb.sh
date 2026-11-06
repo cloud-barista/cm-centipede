@@ -14,7 +14,7 @@ mongosh --quiet admin --eval \
 	"db.createUser({ user: 'root', pwd: '$DB_ROOT_PASS', roles: [ { role: 'root', db: 'admin' } ] })" >/dev/null
 log "root account created"
 
-# Two accounts for one user, on purpose. transx-ex builds
+# Two accounts for one user, on purpose. data-mig builds
 # mongodb://.../<db>?authSource=..., and authSource defaults to "admin" - so the
 # admin account is the one that authenticates. The second, inside the source
 # database, covers a connection that names that database as its authSource

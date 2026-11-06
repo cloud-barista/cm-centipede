@@ -1,4 +1,4 @@
-// Package database loads the shop_db fixtures into provisioned databases using
+// Package database loads the shop_db fixtures into prepared databases using
 // native Go drivers (no CLI clients). SQL fixtures are executed via engine-aware
 // statement splitters; the MongoDB fixture is injected from Extended JSON.
 package database
@@ -60,7 +60,7 @@ type Config struct {
 	Port     string
 	User     string
 	Password string
-	// Database is the target database to load into — the provisioned DB (e.g.
+	// Database is the target database to load into — the prepared DB (e.g.
 	// tofu output db_name, "testdb"). The fixtures carry no CREATE DATABASE or
 	// USE, so the schema lands here. Empty falls back to shop_db.
 	Database string
@@ -411,9 +411,9 @@ func loadMongo(ctx context.Context, cfg Config) error {
 // is already present.
 //
 // "any collection at all" would be wrong: a MongoDB database is created lazily, so
-// provisioning has to leave something behind for the database to exist. The AWS
+// preparation has to leave something behind for the database to exist. The AWS
 // user_data creates a placeholder collection ("init") for exactly that reason, which
-// made every first run on a freshly provisioned instance report existing data.
+// made every first run on a freshly prepared instance report existing data.
 // This mirrors checkPostgres, which looks for a representative fixture table rather
 // than for a non-empty schema.
 func checkMongo(ctx context.Context, cfg Config) error {

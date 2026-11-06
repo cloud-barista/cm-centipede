@@ -212,7 +212,7 @@ hb_source_model() {
 }
 
 # hb_scan_root SRC_MODEL — the path the plan will treat as this bucket's source.
-#   honeybee builds it as "<bucket>/<prefix>" and transx-ex normalises it to
+#   honeybee builds it as "<bucket>/<prefix>" and data-mig normalises it to
 #   "<bucket>/" for an empty prefix. Printed so a cell's line names what it
 #   actually migrated rather than what was asked for.
 hb_scan_root() {

@@ -8,7 +8,7 @@
 #   talks to cb-tumblebug directly; everything else goes through beetle.
 #
 #   The namespace is created by up.sh and never deleted. It outlives every
-#   resource in it, so a teardown can be followed straight by another provision,
+#   resource in it, so a teardown can be followed straight by another prepare,
 #   and anything else sharing the namespace is unaffected by either. Every other
 #   script only requires that it exists.
 #
@@ -43,7 +43,7 @@ ensure_ns() {
     log_ok "created namespace ${BEETLEENV_NS}"
 }
 
-# require_ns — every entry point that provisions or reads resources calls this,
+# require_ns — every entry point that prepares or reads resources calls this,
 #   so "run up.sh first" is the message instead of a namespace error from three
 #   calls further in.
 require_ns() {

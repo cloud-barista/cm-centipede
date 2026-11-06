@@ -92,7 +92,7 @@ for csp in $WANT_CSPS; do
 	#   and answer separately, which turns one dead end into a specific one.
 	#
 	#   Asked through cm-beetle rather than by listing cb-tumblebug's catalogue:
-	#   beetle's search is what actually runs at provision time, and the catalogue
+	#   beetle's search is what actually runs at prepare time, and the catalogue
 	#   listing endpoints move between tumblebug versions.
 	candidates() {
 		local kind="$1" path field body

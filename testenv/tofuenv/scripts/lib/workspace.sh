@@ -18,7 +18,7 @@
 #   shares. Two prefixes running at once - a 30-minute NCP database next to a
 #   destroy - would switch each other's workspace mid-run. TF_WORKSPACE is per
 #   process, and applying to a workspace that does not exist yet creates it.
-#   The flip side: even a read creates the workspace directory, so "provisioned"
+#   The flip side: even a read creates the workspace directory, so "prepared"
 #   is judged by the state file and its resources, never by the directory.
 #
 #   The caller sets ROOT_DIR and RUNNER, then calls ws_load <csp>.
@@ -85,11 +85,11 @@ ws_current() {
     ( ws_load "$1" >/dev/null 2>&1 && printf %s "$WS_PREFIX" ) || true
 }
 
-# ws_provisioned — "<csp> <module> <prefix>" for every state that tracks a managed
+# ws_prepared — "<csp> <module> <prefix>" for every state that tracks a managed
 #   resource, across every prefix. The state files are read directly: tofu can only
 #   look at one workspace at a time, and asking it about a workspace that does not
 #   exist would create one. Data sources and leftover outputs do not count.
-ws_provisioned() {
+ws_prepared() {
     docker exec "$RUNNER" bash -c '
         managed() { jq -e "[.resources[]? | select(.mode == \"managed\")] | length > 0" "$1" >/dev/null 2>&1; }
         for dir in /work/tofu/aws/bucket /work/tofu/aws/vm /work/tofu/aws/database \

@@ -23,9 +23,9 @@ const (
 // ── Provider names ───────────────────────────────────────────────────────────
 
 // Provider names for MinioConnConfig.ProviderName and DBConnConfig.ProviderName.
-// Spelled as cm-honeybee spells them, which is also how transx-ex spells its
+// Spelled as cm-honeybee spells them, which is also how data-mig spells its
 // ProviderAWS…ProviderOnPrem constants, so a name resolved in honeybee reaches
-// transx-ex unchanged.
+// data-mig unchanged.
 const (
 	ProviderAWS       = "aws"
 	ProviderAlibaba   = "alibaba"
@@ -82,7 +82,7 @@ type BeetleOSRef struct {
 // calls send them as the admin credentials, and the migration connects with
 // them too.
 //
-// cb-tumblebug provisions MySQL and MariaDB only, so those are the engines a
+// cb-tumblebug prepares MySQL and MariaDB only, so those are the engines a
 // managed reference can carry.
 //
 // TLSMode and TLSCAPem decide transport security. By default ("auto") centipede
@@ -100,7 +100,7 @@ type BeetleDBRef struct {
 	// takes the mode cm-beetle recommends for the instance: verify-full,
 	// verify-ca or disable, falling back to require when no CA was collected and
 	// to prefer when cm-beetle could not say. Any other value means the same
-	// thing here as on DBConnConfig — see the table in transx-ex's
+	// thing here as on DBConnConfig — see the table in data-mig's
 	// dbmsx/driver/base/tls.go — and is used as given; plaintext therefore needs
 	// "disable" spelled out.
 	TLSMode string `json:"tlsMode,omitempty" validate:"omitempty,oneof=auto disable prefer require verify-ca verify-full"`
@@ -115,8 +115,8 @@ type BeetleDBRef struct {
 
 // ── Inline type ──────────────────────────────────────────────────────────────
 
-// SSHConnConfig — directly supplied SSH access info. Maps to transxex.SSHConfig /
-// transxex SSH tunnel config. Authentication is by key only, so there is no
+// SSHConnConfig — directly supplied SSH access info. Maps to datamig.SSHConfig /
+// datamig SSH tunnel config. Authentication is by key only, so there is no
 // password field. AES-encrypted on store: PrivateKey.
 type SSHConnConfig struct {
 	Host       string `json:"host"       validate:"required"`
@@ -131,11 +131,11 @@ type SSHConnConfig struct {
 // object storage access is always direct. A tunnelled store is reached only
 // through a honeybee reference, whose SSH host centipede reads from honeybee.
 //
-// Maps to transxex.S3MinioConfig after ProviderName is resolved into an
+// Maps to datamig.S3MinioConfig after ProviderName is resolved into an
 // endpoint. AES-encrypted on store: SecretAccessKey.
 type MinioConnConfig struct {
 	// ProviderName decides the endpoint, region, TLS and bucket addressing style
-	// (see ResolveS3Endpoint in core/migration). transxex.S3MinioConfig has no
+	// (see ResolveS3Endpoint in core/migration). datamig.S3MinioConfig has no
 	// provider field: it receives the resolved values.
 	ProviderName string `json:"providerName" validate:"required,oneof=aws alibaba tencent ncp nhn ibm gcp kt azure openstack onprem"`
 
@@ -168,7 +168,7 @@ type MinioConnConfig struct {
 
 // DBConnConfig is the single canonical type for DBMS access info. Every DB
 // source (honeybee, beetleDb, db) converges on this type before being converted
-// into a transxex.DBMSLocation.
+// into a datamig.DBMSLocation.
 //
 // It carries server-level access only and holds no database name: the databases
 // to migrate are resolved by the plan layer and carried in
@@ -177,7 +177,7 @@ type MinioConnConfig struct {
 //
 // AES-encrypted on store: Password, SSHTunnel.PrivateKey.
 type DBConnConfig struct {
-	// ProviderName records where the database is hosted. transx-ex carries it
+	// ProviderName records where the database is hosted. data-mig carries it
 	// through to DBMSLocation.ProviderName but never reads it: no routing,
 	// validation or connection decision depends on it. It is required all the
 	// same, so that "where does this data live" has an answer for every
@@ -197,7 +197,7 @@ type DBConnConfig struct {
 	ConnectTimeout int    `json:"connectTimeout,omitempty"`
 
 	// TLSMode selects transport security; the empty value is "disable". The
-	// modes mean the same thing on every engine — see transx-ex's
+	// modes mean the same thing on every engine — see data-mig's
 	// dbmsx/driver/base/tls.go for the table that defines them.
 	TLSMode string `json:"tlsMode,omitempty" validate:"omitempty,oneof=disable prefer require verify-ca verify-full"`
 
@@ -205,7 +205,7 @@ type DBConnConfig struct {
 	// Empty means the system trust store, which carries only publicly trusted
 	// CAs, so a server using a private CA needs its root supplied here.
 	//
-	// transx-ex also accepts a path to a CA file, but that path would name a
+	// data-mig also accepts a path to a CA file, but that path would name a
 	// file on the centipede server rather than on the caller's machine, so it
 	// is deliberately not part of this API.
 	TLSCAPEM string `json:"tlsCAPem,omitempty"`
@@ -230,7 +230,7 @@ type DBConnConfig struct {
 // AES-256-GCM encrypted ("enc:" prefix) on store.
 //
 // cb-tumblebug is not a connection source. It is reached during an object
-// storage transfer, but only as an internal detail of transx-ex's
+// storage transfer, but only as an internal detail of data-mig's
 // managed-bucket access path.
 type ConnectionRef struct {
 	Source ConnectionSource `json:"source" validate:"required,oneof=honeybee beetleSsh beetleObjectStorage beetleDb ssh minio db"`

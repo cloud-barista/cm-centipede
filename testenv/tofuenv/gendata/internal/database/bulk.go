@@ -261,7 +261,7 @@ func LoadBulk(ctx context.Context, cfg Config, o BulkOptions, plan BulkPlan) (Bu
 // Not LOAD DATA LOCAL INFILE, which would be several times faster: it needs
 // local_infile=ON on the server, and both RDS and NCP ship it off. Carrying a
 // fast path that is refused on every managed instance this environment actually
-// provisions - and a fallback underneath it for when it is - would be two code
+// prepares - and a fallback underneath it for when it is - would be two code
 // paths where the slower one does all the work.
 func loadBulkMySQL(ctx context.Context, cfg Config, o BulkOptions, plan BulkPlan) error {
 	dbName := targetDB(cfg)

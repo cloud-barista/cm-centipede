@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloud-barista/cm-centipede/transx-ex"
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	"github.com/rs/zerolog/log"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
@@ -17,10 +17,10 @@ import (
 	"github.com/cloud-barista/cm-centipede/pkg/connsec"
 )
 
-// ToTransxSSHConfig maps a beetle SSHConfig to a transx-ex SSHConfig.
-// transx-ex supports key-based and SSH-agent auth only (no password field).
-func ToTransxSSHConfig(cfg beetle.SSHConfig) *transxex.SSHConfig {
-	return &transxex.SSHConfig{
+// ToDataMigSSHConfig maps a beetle SSHConfig to a data-mig SSHConfig.
+// data-mig supports key-based and SSH-agent auth only (no password field).
+func ToDataMigSSHConfig(cfg beetle.SSHConfig) *datamig.SSHConfig {
+	return &datamig.SSHConfig{
 		Host:       cfg.Host,
 		Port:       cfg.Port,
 		Username:   cfg.Username,
@@ -40,25 +40,25 @@ func normalizePEMKey(key string) string {
 	return trimmed + "\n"
 }
 
-// FilesystemLoc builds a transxex.StorageLocation for a remote filesystem path.
+// FilesystemLoc builds a datamig.StorageLocation for a remote filesystem path.
 // Pass nil filter to scan all entries with no depth limit.
-func FilesystemLoc(sshCfg *transxex.SSHConfig, path string, filter *transxex.PathFilterOption) transxex.StorageLocation {
-	return transxex.StorageLocation{
-		StorageType: transxex.StorageTypeFilesystem,
+func FilesystemLoc(sshCfg *datamig.SSHConfig, path string, filter *datamig.PathFilterOption) datamig.StorageLocation {
+	return datamig.StorageLocation{
+		StorageType: datamig.StorageTypeFilesystem,
 		Path:        path,
-		Filesystem: &transxex.FilesystemAccess{
-			AccessType: transxex.AccessTypeSSH,
+		Filesystem: &datamig.FilesystemAccess{
+			AccessType: datamig.AccessTypeSSH,
 			SSH:        sshCfg,
 		},
 		Filter: filter,
 	}
 }
 
-// ResolveSSHConfig resolves a ConnectionRef to a transx SSHConfig.
+// ResolveSSHConfig resolves a ConnectionRef to a data-mig SSHConfig.
 // Supports honeybee and beetleSsh (references) and ssh (inline).
-// Inline credentials are decrypted first. transx SSH uses key-based auth only,
+// Inline credentials are decrypted first. data-mig SSH uses key-based auth only,
 // so the private key is required for filesystem transfers.
-func ResolveSSHConfig(ref commonmodel.ConnectionRef) (*transxex.SSHConfig, error) {
+func ResolveSSHConfig(ref commonmodel.ConnectionRef) (*datamig.SSHConfig, error) {
 	ref, err := connsec.DecryptRef(ref)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt connection ref: %w", err)
@@ -73,7 +73,7 @@ func ResolveSSHConfig(ref commonmodel.ConnectionRef) (*transxex.SSHConfig, error
 		if err != nil {
 			return nil, fmt.Errorf("get honeybee connection: %w", err)
 		}
-		return &transxex.SSHConfig{
+		return &datamig.SSHConfig{
 			Host:       cfg.Host,
 			Port:       cfg.Port,
 			Username:   cfg.User,
@@ -87,12 +87,12 @@ func ResolveSSHConfig(ref commonmodel.ConnectionRef) (*transxex.SSHConfig, error
 		if err != nil {
 			return nil, fmt.Errorf("get beetle ssh access: %w", err)
 		}
-		return ToTransxSSHConfig(*cfg), nil
+		return ToDataMigSSHConfig(*cfg), nil
 	case commonmodel.ConnectionSourceSSH:
 		if ref.SSH == nil {
 			return nil, fmt.Errorf("ssh config is nil")
 		}
-		return &transxex.SSHConfig{
+		return &datamig.SSHConfig{
 			Host:       ref.SSH.Host,
 			Port:       ref.SSH.Port,
 			Username:   ref.SSH.Username,
@@ -103,34 +103,36 @@ func ResolveSSHConfig(ref commonmodel.ConnectionRef) (*transxex.SSHConfig, error
 	}
 }
 
-// resolveTransxLoc builds a transxex.StorageLocation for ref interpreted as the given
+// resolveDataMigLoc builds a datamig.StorageLocation for ref interpreted as the given
 // storageType (commonmodel.StorageTypeFilesystem / commonmodel.StorageTypeObjectStorage).
 // Used to resolve either side of a (possibly cross-storage) transfer. filter is
 // attached to the returned location (pass nil for the destination side).
-func resolveTransxLoc(ref commonmodel.ConnectionRef, storageType, path string, filter *transxex.PathFilterOption) (transxex.StorageLocation, error) {
+func resolveDataMigLoc(ref commonmodel.ConnectionRef, storageType, path string, filter *datamig.PathFilterOption) (datamig.StorageLocation, error) {
 	switch storageType {
 	case commonmodel.StorageTypeObjectStorage:
 		return ResolveObjectStorageLoc(ref, path, filter)
 	case commonmodel.StorageTypeFilesystem, "":
 		ssh, err := ResolveSSHConfig(ref)
 		if err != nil {
-			return transxex.StorageLocation{}, err
+			return datamig.StorageLocation{}, err
 		}
 		return FilesystemLoc(ssh, path, filter), nil
 	default:
-		return transxex.StorageLocation{}, fmt.Errorf("unknown storage type %q", storageType)
+		return datamig.StorageLocation{}, fmt.Errorf("unknown storage type %q", storageType)
 	}
 }
 
 // MigrateFileSystem transfers each FSMigrationInfo directory from a filesystem
 // source to the destination. The destination is another filesystem (SSH→SSH) or,
 // when m.DstType is objectstorage, an object-storage bucket (filesystem→S3 cross-
-// storage; transx handles the ssh→local→S3 relay). Processes folders in ascending
+// storage; data-mig handles the ssh→local→S3 relay). Processes folders in ascending
 // Order and emits a ProgressEvent per folder. Returns ctx.Err() on cancellation;
 // per-folder transfer errors are reported via ProgressEvent only (continues).
 // stagingDir is the local staging root a relay or cross-storage transfer uses
-// (see ResolveStagingDir); empty leaves it to transx-ex's default.
-func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemModel, stagingDir string, progressCh chan<- ProgressEvent) error {
+// (see ResolveStagingDir); empty leaves it to data-mig's default. concurrency
+// is how many rsync processes a folder runs at once (see ResolveConcurrency);
+// zero leaves it to data-mig's default.
+func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemModel, stagingDir string, concurrency int, progressCh chan<- ProgressEvent) error {
 	srcSSH, err := ResolveSSHConfig(m.SrcConnection)
 	if err != nil {
 		return fmt.Errorf("resolve src connection: %w", err)
@@ -166,7 +168,7 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 
 		start := time.Now()
 
-		filter, filterErr := ToTransxFilter(folder.Rules)
+		filter, filterErr := ToDataMigFilter(folder.Rules)
 		if filterErr != nil {
 			progressCh <- ProgressEvent{
 				ItemPath:   folder.SrcPath,
@@ -178,7 +180,7 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 		}
 
 		srcLoc := FilesystemLoc(srcSSH, folder.SrcPath, filter)
-		dstLoc, dstErr := resolveTransxLoc(m.DstConnection, dstType, folder.DstPath, nil)
+		dstLoc, dstErr := resolveDataMigLoc(m.DstConnection, dstType, folder.DstPath, nil)
 		if dstErr != nil {
 			progressCh <- ProgressEvent{
 				ItemPath:   folder.SrcPath,
@@ -189,11 +191,12 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 			continue
 		}
 
-		movedBytes, transferErr := runStorageTransfer(ctx, transxex.StorageMigrationModel{
+		movedBytes, conc, transferErr := runStorageTransfer(ctx, datamig.StorageMigrationModel{
 			Source:      srcLoc,
 			Destination: dstLoc,
 			Strategy:    strategy,
 			StagingDir:  stagingDir,
+			Concurrency: concurrency,
 		}, folder.SrcPath, progressCh)
 		durationMs := time.Since(start).Milliseconds()
 
@@ -208,11 +211,13 @@ func MigrateFileSystem(ctx context.Context, m targetmodel.MigrationFileSystemMod
 		}
 
 		progressCh <- ProgressEvent{
-			ItemPath:   folder.SrcPath,
-			Status:     status,
-			SizeBytes:  movedBytes,
-			DurationMs: durationMs,
-			Err:        transferErr,
+			ItemPath:        folder.SrcPath,
+			Status:          status,
+			SizeBytes:       movedBytes,
+			DurationMs:      durationMs,
+			Concurrency:     conc.n,
+			ConcurrencyNote: conc.note,
+			Err:             transferErr,
 		}
 	}
 

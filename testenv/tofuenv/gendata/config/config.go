@@ -94,6 +94,18 @@ func (d *DummyConfig) Split(totalMB int, formats []string) {
 	}
 }
 
+// LargeConfig adds Files files of FileMB each next to the dummy set, under
+// <basePrefix>large/ and <data path>/large/. Either at 0 - Files is, by
+// default - adds none.
+//
+// They are not dummy formats: one file is meant to be big enough to need a
+// multipart upload of its own, which the dummy plan never makes on purpose, and
+// their bytes are streamed to the target rather than staged in the temp dir.
+type LargeConfig struct {
+	FileMB int `json:"fileMB"`
+	Files  int `json:"files"`
+}
+
 // DatabaseConfig controls the bulk data phase that follows the shop_db fixture
 // load. SizeMB 0 - the default - means fixture only, which is what gendata did
 // before this phase existed.
@@ -127,6 +139,7 @@ type Config struct {
 	ObjectStorage ObjectStorageConfig `json:"objectStorage"`
 	Filesystem    FilesystemConfig    `json:"filesystem"`
 	Dummy         DummyConfig         `json:"dummy"`
+	Large         LargeConfig         `json:"large"`
 	Generate      GenerateConfig      `json:"generate"`
 	Database      DatabaseConfig      `json:"database"`
 }
@@ -178,6 +191,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Layout.MaxFiles < 0 {
 		c.Layout.MaxFiles = 0
+	}
+	if c.Large.FileMB < 0 {
+		c.Large.FileMB = 0
+	}
+	if c.Large.Files < 0 {
+		c.Large.Files = 0
 	}
 	if c.Database.BatchSize < 1 {
 		c.Database.BatchSize = 1000

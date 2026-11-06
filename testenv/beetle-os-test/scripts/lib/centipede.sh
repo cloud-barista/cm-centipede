@@ -11,13 +11,13 @@
 #
 # ── The target bucket is created by cm-beetle, not by centipede ─────────────
 # Nothing in MigrateObjectStorage creates a bucket: it resolves both ends and
-# hands them to transx-ex. So the bucket has to exist before the plan runs, which
+# hands them to data-mig. So the bucket has to exist before the plan runs, which
 # is what create_bucket (lib/beetle.sh) is for.
 #
 # ── One osId is one bucket ──────────────────────────────────────────────────
 # For a beetleObjectStorage destination the plan rewrites DstPath's first segment
 # to the osId (pkg/core/plan/target.go resolveObjectStorageDstPath), because
-# transx-ex builds its Tumblebug provider from the nsId/osId pair and never sees
+# data-mig builds its Tumblebug provider from the nsId/osId pair and never sees
 # that segment. Two source buckets in one plan would therefore both land in the
 # osId's bucket, which is why a cell carries exactly one.
 #
@@ -90,7 +90,7 @@ cp_preflight() {
 # The target connection — a beetleObjectStorage reference
 # ---------------------------------------------------------------------------
 # A reference, not credentials: centipede resolves it through cm-beetle and
-# transx-ex reaches the bucket over cb-tumblebug's ObjectStorage API. No S3 key
+# data-mig reaches the bucket over cb-tumblebug's ObjectStorage API. No S3 key
 # for the target exists anywhere in this folder, which is the whole reason the
 # beetle path is worth testing separately from an inline minio target.
 cp_dst_connection() {

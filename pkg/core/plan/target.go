@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cloud-barista/cm-centipede/transx-ex"
+	"github.com/cloud-barista/cm-centipede/data-mig"
 	"github.com/rs/zerolog/log"
 
 	commonmodel "github.com/cloud-barista/cm-centipede/dmdl/common-model"
@@ -101,7 +101,7 @@ func dbmsIdentityOf(ref commonmodel.ConnectionRef) (dbmsIdentity, error) {
 	return dbmsIdentity{}, fmt.Errorf("connection source %q is not a DBMS type", ref.Source)
 }
 
-// validateDBMSEngines rejects a heterogeneous pair up front. transx-ex refuses
+// validateDBMSEngines rejects a heterogeneous pair up front. data-mig refuses
 // one too, but saying so at plan time costs nothing and reads better.
 func validateDBMSEngines(srcRef, dstRef commonmodel.ConnectionRef) (string, error) {
 	srcID, err := dbmsIdentityOf(srcRef)
@@ -119,11 +119,11 @@ func validateDBMSEngines(srcRef, dstRef commonmodel.ConnectionRef) (string, erro
 	return srcID.dbType, nil
 }
 
-// validateDBMSVersion asks transx-ex whether the target can accept a dump taken
-// from the source. transx-ex runs the same check for itself just before a
+// validateDBMSVersion asks data-mig whether the target can accept a dump taken
+// from the source. data-mig runs the same check for itself just before a
 // migration starts; calling it here only moves the answer forward to plan time.
 //
-// A pair transx-ex cannot compare is reported rather than judged: a version it
+// A pair data-mig cannot compare is reported rather than judged: a version it
 // could not parse is not evidence of anything, so the plan proceeds.
 func validateDBMSVersion(srcRef, dstRef commonmodel.ConnectionRef, database, dbType string) error {
 	srcLoc, err := migration.ResolveDBMSLocation(srcRef, database, dbType)
@@ -135,7 +135,7 @@ func validateDBMSVersion(srcRef, dstRef commonmodel.ConnectionRef, database, dbT
 		return fmt.Errorf("resolve target DB location: %w", err)
 	}
 
-	vc, err := transxex.CheckVersion(srcLoc, dstLoc)
+	vc, err := datamig.CheckVersion(srcLoc, dstLoc)
 	if err != nil {
 		log.Warn().Err(err).Msg("cannot read both server versions; skipping the version check")
 		return nil
@@ -157,7 +157,7 @@ func validateDBMSVersion(srcRef, dstRef commonmodel.ConnectionRef, database, dbT
 // this plan needs either exists already or can be created (see
 // migration.EnsureTargetDatabase). Creation is centipede's responsibility, and
 // the conditions on it are knowable before the migration runs.
-func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transxex.DBMSLocation) error {
+func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc datamig.DBMSLocation) error {
 	switch dstRef.Source {
 	case commonmodel.ConnectionSourceBeetleDB, commonmodel.ConnectionSourceDB:
 	default:
@@ -171,19 +171,19 @@ func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transx
 		return nil
 	}
 	if exists {
-		return nil // already provisioned — nothing to create
+		return nil // already prepared — nothing to create
 	}
 
-	// MongoDB is exempt: there is no empty database to provision, and no way to
+	// MongoDB is exempt: there is no empty database to prepare, and no way to
 	// ask for one. A MongoDB database begins to exist when its first collection is
-	// written, so it cannot be listed beforehand and cannot be "provisioned on the
+	// written, so it cannot be listed beforehand and cannot be "prepared on the
 	// provider first" - a managed MongoDB offers no create-database API (NCP has
-	// none), and neither does the wire protocol. transx-ex says the same thing
+	// none), and neither does the wire protocol. data-mig says the same thing
 	// from its own side: CreateDatabase for MongoDB logs "no-op without a
 	// collection to create" and returns, so even the onprem branch below would
 	// create nothing. The restore brings the database into existence by writing
 	// into it, which is the only way there is.
-	if dstLoc.DBMSType == transxex.DBMSTypeMongoDB {
+	if dstLoc.DBMSType == datamig.DBMSTypeMongoDB {
 		return nil
 	}
 
@@ -194,9 +194,39 @@ func validateDBMSTargetReachable(dstRef commonmodel.ConnectionRef, dstLoc transx
 	case commonmodel.ConnectionSourceDB:
 		if dstRef.DB == nil || !strings.EqualFold(dstRef.DB.ProviderName, commonmodel.ProviderOnPrem) {
 			return validationErr(
-				"target database %q does not exist; centipede creates one only for providerName %q — provision it on the provider first",
+				"target database %q does not exist; centipede creates one only for providerName %q — prepare it on the provider first",
 				dstLoc.Database, commonmodel.ProviderOnPrem)
 		}
+	}
+	return nil
+}
+
+// validateObjectStorageTargetReachable checks, at plan time, that the bucket an
+// object storage destination writes into exists. Neither centipede nor data-mig
+// creates one — the bucket is prepared on the provider first, onprem and CSP
+// alike — so a missing bucket would otherwise surface only as NoSuchBucket once
+// the transfer had started.
+//
+// Only the store's own "no such bucket" refuses the plan. A check that cannot be
+// answered is deferred to execution, as for a target database: credentials that
+// may write but not list (AWS answers HeadBucket with 403 without s3:ListBucket)
+// could still transfer.
+func validateObjectStorageTargetReachable(dstRef commonmodel.ConnectionRef, dstPath string) error {
+	// cm-beetle creates the bucket behind osId, and the first segment of
+	// DstPath is not the bucket there (see resolveObjectStorageDstPath).
+	if dstRef.Source == commonmodel.ConnectionSourceBeetleObjectStorage {
+		return nil
+	}
+
+	exists, err := migration.TargetBucketExists(dstRef, dstPath)
+	if err != nil {
+		log.Warn().Err(err).Str("dstPath", dstPath).Msg("cannot check the target bucket; deferring the check to execution")
+		return nil
+	}
+	if !exists {
+		bucket, _ := datamig.ParseBucketAndKey(dstPath)
+		return validationErr(
+			"target bucket %q does not exist; centipede does not create buckets — create it on the provider first", bucket)
 	}
 	return nil
 }
@@ -229,7 +259,7 @@ func selectMigrationPath(scanRoot string, folders []string, tm *commonmodel.Targ
 // should carry, given the one the mapping produced.
 //
 // For a beetleObjectStorage destination the bucket is decided by osId, and the
-// first segment of DstPath is discarded: transx-ex builds its Tumblebug provider
+// first segment of DstPath is discarded: data-mig builds its Tumblebug provider
 // from the nsId/osId pair and never passes that segment to it (NewS3Provider
 // checks only that it is non-empty, then calls NewTumblebugProvider without it),
 // while the executor uses what follows it as the key prefix.
@@ -523,6 +553,88 @@ func validatePgSchemas(dbType, database string, pairs []commonmodel.PgSchemaMapp
 	return nil
 }
 
+// validateObjectRules rejects an object_exclude rule that names no object of its
+// kind in the source database. Such a rule is not an error to the migration — it
+// simply removes nothing — so without this check a misspelt name, a wrong schema
+// or a name in a form the engine does not take would migrate the object the
+// caller meant to leave out, and say nothing.
+//
+// A name is matched the way the engine's dump matches it
+// (datamig.ObjectRuleMatches). A kind whose inventory the source model does not
+// carry is not checked: honeybee collects the inventory only on request, and an
+// absent list says nothing about what the database holds.
+func validateObjectRules(dbType string, info sourcemodel.DBMSInfo, rules []commonmodel.DBMSFilterRule) error {
+	lists := map[string][]string{
+		"view":              info.Views,
+		"function":          info.Functions,
+		"procedure":         info.Procedures,
+		"trigger":           info.Triggers,
+		"event":             info.Events,
+		"foreign_key":       info.ForeignKeys,
+		"materialized_view": info.MaterializedViews,
+		"sequence":          info.Sequences,
+		"type":              info.Types,
+		"extension":         info.Extensions,
+		"rule":              info.Rules,
+		"validator":         info.Validators,
+	}
+	for _, r := range rules {
+		if r.Type != commonmodel.DBMSRuleObjectExclude || r.Name == "" {
+			continue
+		}
+		if r.Kind == "index" {
+			if found, collected := sourceHasIndex(info, r.Table, r.Name); collected && !found {
+				return validationErr("object_exclude index %q%s matches no index in database %q",
+					r.Name, onTable(r.Table), info.Database)
+			}
+			continue
+		}
+		names, ok := lists[r.Kind]
+		if !ok || names == nil {
+			continue
+		}
+		matched := false
+		for _, n := range names {
+			if datamig.ObjectRuleMatches(dbType, r.Kind, r.Name, n) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return validationErr("object_exclude %s %q matches no %s in database %q",
+				r.Kind, r.Name, r.Kind, info.Database)
+		}
+	}
+	return nil
+}
+
+// sourceHasIndex reports whether a table of info (table, when it is given, by
+// its bare or schema-qualified name) holds an index named name. collected is
+// false when no table carries an index list.
+func sourceHasIndex(info sourcemodel.DBMSInfo, table, name string) (found, collected bool) {
+	for _, t := range info.Tables {
+		if t.Indexes != nil {
+			collected = true
+		}
+		if table != "" && table != t.Name && table != t.PgSchema+"."+t.Name {
+			continue
+		}
+		for _, idx := range t.Indexes {
+			if idx.Name == name {
+				return true, true
+			}
+		}
+	}
+	return false, collected
+}
+
+func onTable(table string) string {
+	if table == "" {
+		return ""
+	}
+	return fmt.Sprintf(" on table %q", table)
+}
+
 // sourceEntry is one entry of the request's source model, found by the honeybee
 // connection id that produced it. Exactly one of the three pointers is non-nil,
 // and kind says which.
@@ -678,6 +790,11 @@ func buildFileSystemEntry(
 	// would otherwise carry the source *directory* ("/testdata") into the
 	// bucket-name position. Same treatment, same reasons.
 	dstPath = resolveObjectStorageDstPath(e.DstConnection, mapping, dstPath)
+	if dstType == kindObjectStorage {
+		if err := validateObjectStorageTargetReachable(e.DstConnection, dstPath); err != nil {
+			return targetmodel.MigrationFileSystemModel{}, err
+		}
+	}
 
 	return targetmodel.MigrationFileSystemModel{
 		PlanEntryID:   newPlanEntryID(),
@@ -752,6 +869,11 @@ func buildObjectStorageEntry(
 			"objectStorageFilter.targetMapping.srcName %q matches no bucket of this source", mapping.SrcName)
 	}
 	dstPath = resolveObjectStorageDstPath(e.DstConnection, mapping, dstPath)
+	if dstType == kindObjectStorage {
+		if err := validateObjectStorageTargetReachable(e.DstConnection, dstPath); err != nil {
+			return targetmodel.MigrationObjectStorageModel{}, err
+		}
+	}
 
 	return targetmodel.MigrationObjectStorageModel{
 		PlanEntryID:   newPlanEntryID(),
@@ -802,7 +924,15 @@ func buildDBEntry(
 			"no database selected for migration; dbmsFilter.databases names none of this source's databases")
 	}
 
+	infos := make(map[string]sourcemodel.DBMSInfo, len(srcDB.Databases))
+	for _, info := range srcDB.Databases {
+		infos[info.Database] = info
+	}
+
 	for _, it := range items {
+		if err := validateObjectRules(dbType, infos[it.SrcName], it.Rules); err != nil {
+			return targetmodel.MigrationDBModel{}, err
+		}
 		if err := validateDBMSVersion(srcDB.Connection, e.DstConnection, it.SrcName, dbType); err != nil {
 			return targetmodel.MigrationDBModel{}, err
 		}

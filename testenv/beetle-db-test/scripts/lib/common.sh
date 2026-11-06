@@ -167,7 +167,7 @@ load_env_file() {
 # ---------------------------------------------------------------------------
 # Target TLS — TARGET_TLS_MODE
 # ---------------------------------------------------------------------------
-# The `tlsMode` values beetleDb.tlsMode takes: transx-ex's DirectConfig.TLSMode
+# The `tlsMode` values beetleDb.tlsMode takes: data-mig's DirectConfig.TLSMode
 # five, plus auto. Everywhere
 # the matrix connects to the target itself (creating and dropping cell databases,
 # the creation probe, the PostgreSQL privilege query) uses the same value, so a
@@ -180,7 +180,7 @@ load_env_file() {
 #   verify-ca    chain verified
 #   verify-full  chain + hostname verified
 #
-#   auto is a beetleDb value only - transx-ex never sees it. centipede asks
+#   auto is a beetleDb value only - data-mig never sees it. centipede asks
 #   cm-beetle's secure-transport API, which relays what cb-spider measured on the
 #   instance, and connects with verify-full, verify-ca or disable accordingly,
 #   verifying against the CA cb-spider collected. The mode it settled on is in
@@ -203,7 +203,7 @@ TLS_MODES="auto disable prefer require verify-ca verify-full"
 # MONGODB_PREFER_FALLBACK — what stands in for prefer on MongoDB.
 #
 #   MongoDB has no prefer: a client either negotiates TLS or it does not, with
-#   nowhere to fall back to, and transx-ex's ValidateDBMS rejects it for the same
+#   nowhere to fall back to, and data-mig's ValidateDBMS rejects it for the same
 #   reason. Refusing a whole run because one engine in it is mongodb would stand
 #   the mysql and postgresql columns still - a common case when one CSP is run
 #   with several engines. So mongodb cells alone drop to this value.

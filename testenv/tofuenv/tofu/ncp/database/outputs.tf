@@ -5,7 +5,7 @@
 #   it is issued from the console. Run ./scripts/ncp-db-domain.sh afterwards to
 #   refresh state and fill these in.
 #   An engine left out of var.ncp_db_engines has no resource, and all of its
-#   outputs are null - *_port included, which is what tells "not provisioned"
+#   outputs are null - *_port included, which is what tells "not prepared"
 #   apart from "public domain not issued yet".
 # ---------------------------------------------------------------------------
 output "db_name" {

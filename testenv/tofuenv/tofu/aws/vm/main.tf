@@ -136,7 +136,7 @@ resource "aws_instance" "vm" {
   vpc_security_group_ids      = [aws_security_group.vm.id]
   associate_public_ip_address = true
 
-  # Mounts the EFS file system on first boot. null without NFS, so a VM provisioned
+  # Mounts the EFS file system on first boot. null without NFS, so a VM prepared
   # before this option existed sees no change. cloud-init runs user_data only once,
   # so a changed script has to come with a new instance to take effect at all.
   user_data = var.aws_nfs_enabled ? templatefile("${path.module}/templates/vm-init.sh.tpl", {

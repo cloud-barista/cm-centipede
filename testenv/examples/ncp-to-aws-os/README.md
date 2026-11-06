@@ -14,7 +14,7 @@ Three systems each do one thing:
         └────────────────────── ──▶ :8085               move it, then check it
                                          │
    AWS bucket                            │              cm-beetle
-   cpbt-aws-bucket         ◀─────────────┘              :8056  provisions the bucket
+   cpbt-aws-bucket         ◀─────────────┘              :8056  prepares the bucket
 ```
 
 cm-honeybee reads the source. cm-centipede moves the objects and verifies them.
@@ -83,7 +83,7 @@ cd ../../tofuenv
 cp .env.example .env && chmod 600 .env    # NCP keys, region, bucket name
 
 ./scripts/up.sh                           # OpenBao + the tofu runner
-./scripts/provision.sh ncp bucket
+./scripts/prepare.sh ncp bucket
 ./scripts/gen-data.sh --provider ncp --target bucket
 ./scripts/conn-info.sh ncp bucket
 ```
@@ -111,7 +111,7 @@ cd ../beetleenv
 cp .env.example .env && chmod 600 .env    # fill in region and zones
 
 ./scripts/up.sh                           # check the stack, create the namespace
-./scripts/provision.sh aws bucket         # seconds
+./scripts/prepare.sh aws bucket           # seconds
 ./scripts/conn-info.sh aws --ids
 ```
 
@@ -510,20 +510,20 @@ Both clouds, then the stack:
 
 ```bash
 cd ../../beetleenv
-./scripts/deprovision.sh aws bucket
+./scripts/teardown.sh aws bucket
 
 cd ../tofuenv
-./scripts/deprovision.sh ncp bucket
+./scripts/teardown.sh ncp bucket
 ./scripts/down.sh
 
 cd ../..                            # repo root
 make down
 ```
 
-**Two providers now bill you, so clean up both.** `deprovision.sh ncp bucket`
+**Two providers now bill you, so clean up both.** `teardown.sh ncp bucket`
 needs the bucket empty on some paths — `./scripts/gen-data.sh --provider ncp
 --target bucket --cleanup` empties it first. In `beetleenv` the namespace is kept,
-so another `provision.sh aws bucket` can follow straight on.
+so another `prepare.sh aws bucket` can follow straight on.
 
 ---
 

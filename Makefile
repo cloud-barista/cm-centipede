@@ -21,13 +21,13 @@ build: ## Build the cm-centipede binary into bin/
 run: build ## Build and run cm-centipede locally (reads conf/cm-centipede.yaml)
 	@./bin/cm-centipede
 
-# dummy/ vendors other Cloud-Barista repos and transx-ex is a nested module;
+# dummy/ vendors other Cloud-Barista repos and data-mig is a nested module;
 # scanning either makes swag fail on types it cannot resolve.
 swagger: ## Regenerate the OpenAPI docs in pkg/api/rest/docs from the handler annotations
 	@go run github.com/swaggo/swag/cmd/swag@v1.16.6 init \
 		--generalInfo cmd/cm-centipede/main.go \
 		--dir ./ \
-		--exclude ./dummy,./testenv,./deployments,./transx-ex \
+		--exclude ./dummy,./testenv,./deployments,./data-mig \
 		--output pkg/api/rest/docs \
 		--parseDependency --parseInternal
 	@echo "Regenerated pkg/api/rest/docs"

@@ -2,10 +2,10 @@
 #
 # lib/beetle.sh — the cm-beetle client (written for this folder)
 #
-# The provisioner, whole and entire: everything that creates, reads and deletes a
+# The preparer, whole and entire: everything that creates, reads and deletes a
 # migrated node lives here. fs-matrix.sh calls the functions below and knows
 # nothing about cm-beetle itself, which is what keeps the matrix body, its
-# verdicts and its table free of provisioner detail.
+# verdicts and its table free of preparer detail.
 #
 # ── Which server answers which call ─────────────────────────────────────────
 # Every call about a resource goes through cm-beetle. cb-tumblebug is addressed
@@ -977,7 +977,7 @@ node_wait_ssh() {
 #               a destination would assume the home directory follows the user
 #               name, and CSP images disagree about that often enough to matter.
 #               This is what becomes the plan's dstName.
-#     rsync     whether the transfer can happen at all. transx-ex shells out to
+#     rsync     whether the transfer can happen at all. data-mig shells out to
 #               `rsync -e ssh`, and rsync has to exist on BOTH ends. Without this
 #               check a missing rsync fails every cell identically, minutes into
 #               a transfer, with an error about a closed connection.
@@ -1054,7 +1054,7 @@ node_probe() {
 	fi
 	if [ "$NODE_HAS_RSYNC" != "yes" ]; then
 		fail "rsync is not installed on the node ($NODE_USER@$NODE_PUBLIC_IP)."
-		fail "  transx-ex transfers a filesystem by shelling out to \`rsync -e ssh\`, so it has"
+		fail "  data-mig transfers a filesystem by shelling out to \`rsync -e ssh\`, so it has"
 		fail "  to be present on both ends. Every cell on this CSP would fail the same way,"
 		fail "  minutes into a transfer, with an error about the connection closing."
 		fail "  Either pick an image that ships it ($(upper "$csp")_NODE_OS), or install it"
@@ -1069,7 +1069,7 @@ node_probe() {
 
 # node_dst_path — where this cell's data goes, on stdout.
 #   $HOME plus one directory. Not "/testdata": the node's own user cannot create a
-#   directory at the filesystem root, and transx-ex's remote mkdir -p carries no
+#   directory at the filesystem root, and data-mig's remote mkdir -p carries no
 #   sudo (storagex/executor-rsync.go ensureRemoteDir).
 node_dst_path() {
 	if [ -n "${FS_DST_PATH:-}" ]; then printf '%s' "$FS_DST_PATH"; return 0; fi

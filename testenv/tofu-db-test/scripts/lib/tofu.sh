@@ -2,7 +2,7 @@
 #
 # lib/tofu.sh — the OpenTofu client (written for this folder)
 #
-# Why tofu provisions the managed instances
+# Why tofu prepares the managed instances
 #   - tofu creates the resources and the state file remembers them, so there is
 #     no separate inventory that can drift out of step with the CSP.
 #   - The requested version travels as written: the string is handed to the CSP,
@@ -257,7 +257,7 @@ csp_engines() {
 }
 
 # csp_engine_name CSP ENGINE — the name the CSP uses. AWS calls postgresql
-#   postgres; the matrix and transx-ex say postgresql throughout.
+#   postgres; the matrix and data-mig say postgresql throughout.
 csp_engine_name() {
 	local csp engine
 	csp="$(lower "$1")"; engine="$(lower "$2")"
@@ -905,7 +905,7 @@ PG_TARGET_SCHEMA=""
 		warn "cannot create in public, and cannot grant either (ACL ${PG_PUBLIC_ACL:-none}, owner ${PG_DB_OWNER:-?})."
 		warn "  Running the probe without a GRANT — if it cannot create a table, this column is SKIPped."
 		warn "  What that would need: creating the database through the CSP with an explicit owner"
-		warn "  (ncloud_postgresql_databases), or migrating into a non-public schema (transx-ex destination.pgSchema)."
+		warn "  (ncloud_postgresql_databases), or migrating into a non-public schema (data-mig destination.pgSchema)."
 	fi
 	return 0
 }
@@ -1028,7 +1028,7 @@ target_db_create() {
 	tofu_init "$mod" || return 1
 	tofu_vars "$mod" "$(_target_db_vars "$csp" "$engine" "$pass" "$dbs")"
 
-	# Leftovers from a previous cell go first. transx-ex requires the target to
+	# Leftovers from a previous cell go first. data-mig requires the target to
 	# exist and be empty, so anything left behind fails as target-not-empty.
 	tofu_quiet "$mod" destroy -auto-approve -input=false || true
 
@@ -1138,7 +1138,7 @@ target_db_probe() {
 			#
 			# What the owner CAN do is create a schema of its own in the database it
 			# owns, which is what has_database_privilege(...,'CREATE') reported. So
-			# that is tried before the column is given up on. transx-ex restores
+			# that is tried before the column is given up on. data-mig restores
 			# into a renamed schema by emitting CREATE SCHEMA IF NOT EXISTS itself
 			# (dbmsx/driver/postgresql), so nothing has to be created in advance -
 			# only proven possible here.
@@ -1179,12 +1179,12 @@ target_db_probe() {
 # Two ways out. Usually raising TARGET_TLS_MODE is enough (the default, prefer,
 # never produces this error at all), and failing that a parameter group can allow
 # plaintext on AWS.
-# explain_pg_maintenance_db ERROR — the "postgres" database transx-ex insists on.
+# explain_pg_maintenance_db ERROR — the "postgres" database data-mig insists on.
 #
-#   transx-ex reaches PostgreSQL server-level operations through the maintenance
+#   data-mig reaches PostgreSQL server-level operations through the maintenance
 #   database, and the name is a constant, not a setting:
 #
-#     transx-ex/dbmsx/driver/postgresql/postgresql.go
+#     data-mig/dbmsx/driver/postgresql/postgresql.go
 #       const pgMaintenanceDB = "postgres"
 #
 #   Listing the target databases, reading the server version, creating and
@@ -1205,11 +1205,11 @@ explain_pg_maintenance_db() {
 	*) return 0 ;;
 	esac
 	fail ""
-	fail "  Cause: transx-ex connects to the \"postgres\" maintenance database for every"
+	fail "  Cause: data-mig connects to the \"postgres\" maintenance database for every"
 	fail "         server-level PostgreSQL operation, and this instance does not allow"
 	fail "         $RDBMS_USER to connect to it. The target database itself was created"
 	fail "         and is reachable - only that one connection is refused."
-	fail "  Where: transx-ex/dbmsx/driver/postgresql/postgresql.go, const pgMaintenanceDB"
+	fail "  Where: data-mig/dbmsx/driver/postgresql/postgresql.go, const pgMaintenanceDB"
 	fail "  What you can do:"
 	fail "    Nothing from this folder. The name is a constant, not a connection setting,"
 	fail "    so no .env value or CLI option changes it."

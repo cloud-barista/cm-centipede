@@ -2,7 +2,7 @@
 
 Runs a migration for **every combination of a source engine version and a target
 engine version**, where the source is a container this folder builds and the
-target is a **managed cloud database provisioned with cm-beetle**. The outcome is
+target is a **managed cloud database prepared with cm-beetle**. The outcome is
 reported as a matrix.
 
 ```
@@ -13,11 +13,11 @@ reported as a matrix.
 ```
 
 The migration itself is **cm-centipede**, driven over its REST API, with
-**cm-honeybee** collecting the source. This folder provisions, prepares and
+**cm-honeybee** collecting the source. This folder prepares, sets up and
 judges; it does not migrate anything itself.
 
 > **Four servers must already be running** — cm-honeybee and cm-centipede for the
-> migration, cm-beetle and cb-tumblebug for the provisioning (with cb-spider
+> migration, cm-beetle and cb-tumblebug for the preparation (with cb-spider
 > behind them). This folder starts none of them, and steps 1 and 2 of every run
 > check that all four answer before a single managed instance is created. `.env`
 > points at them with `HB_BASE`, `CP_BASE`, `BEETLE_URL` and `TUMBLEBUG_URL`.
@@ -129,7 +129,7 @@ cp .env.example .env && chmod 600 .env
 ```
 
 Start with a single cell. One cell exercises the whole path — image build,
-provisioning, target database creation, collection, migration, validation,
+preparation, target database creation, collection, migration, validation,
 teardown — for the price of one instance. Widen the version lists once it goes
 green.
 
@@ -250,7 +250,7 @@ Everything goes through `db_password()`, so putting the password back behind a
 secret store later changes that one function and nothing else.
 
 `assert_db_password` validates the NCP password against the rules NCP enforces
-**before** anything is provisioned. Without that check, NCP reports the violation
+**before** anything is prepared. Without that check, NCP reports the violation
 as a failed creation about 30 minutes later.
 
 ---
@@ -297,11 +297,11 @@ that flag picks the undo path for a failed cell.
 | | step 2 | `created` | a failed cell |
 |---|---|---|---|
 | `centipede` **(default)** | leftover dropped | `true` | the database is dropped whole |
-| `matrix` | leftover dropped, then created | `false` | transx-ex's rollback empties it and keeps it |
+| `matrix` | leftover dropped, then created | `false` | data-mig's rollback empties it and keeps it |
 
-Both are real situations — an operator who provisions the target ahead of time
+Both are real situations — an operator who prepares the target ahead of time
 gets the second — so both are runnable, and the value is recorded with the result.
-Either way a leftover from a previous cell goes first: transx-ex requires the
+Either way a leftover from a previous cell goes first: data-mig requires the
 target to exist and be empty, and under `centipede` a leftover would also make
 centipede find a database it does not own.
 
@@ -352,7 +352,7 @@ five libpq-style modes:
 | `verify-full` | yes | yes | yes | error |
 
 It governs the migration — the `beetleDb.tlsMode` centipede resolves and carries
-into transx-ex's `DirectConfig` — and nothing else. **Setting up a cell does not
+into data-mig's `DirectConfig` — and nothing else. **Setting up a cell does not
 use it.** Creating the target database is cm-beetle's call, made through
 cb-spider's SQL fallback, and that picks its own transport, whether centipede or
 this script asks for it.
@@ -377,7 +377,7 @@ records `auto` as `auto`. Any other value is used as written — plaintext needs
 Three limits worth knowing:
 
 - **MongoDB has no `prefer`** — a client either negotiates TLS or it does not, and
-  transx-ex rejects it. The matrix drops **mongodb cells to `disable`** and leaves
+  data-mig rejects it. The matrix drops **mongodb cells to `disable`** and leaves
   the other engines on the configured mode, so one mongodb does not refuse a whole
   run. Unreachable on this path in any case: a `beetleDb` target accepts mysql and
   mariadb only. The effective mode appears per engine in the result JSON
@@ -549,7 +549,7 @@ Outputs land in `logs/`:
   "csp": "aws",
   "namePrefix": "cpbdb",
   "nsId": "cpbdb01",
-  "provisioner": "cm-beetle",
+  "preparer": "cm-beetle",
   "migrator": "cm-centipede",
   "collector": "cm-honeybee",
   "srcMode": "direct",
@@ -597,7 +597,7 @@ CLI option  >  real shell variable  >  .env  >  script default
 
 | Key | Default | What it does |
 |---|---|---|
-| `BEETLE_URL` / `TUMBLEBUG_URL` | `:8056/beetle` / `:1323/tumblebug` | where the provisioner answers |
+| `BEETLE_URL` / `TUMBLEBUG_URL` | `:8056/beetle` / `:1323/tumblebug` | where the preparer answers |
 | `HB_BASE` / `CP_BASE` | `:8081` / `:8085` | where cm-honeybee and cm-centipede answer |
 | `MATRIX_NS` | `cpbdb01` | the cb-tumblebug namespace — this folder's own |
 | `MATRIX_NAME_PREFIX` | `cpbdb` | 2-6 chars; every resource name starts with it, and `--cleanup` matches on it |

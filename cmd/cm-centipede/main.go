@@ -44,6 +44,11 @@ func main() {
 			log.Fatal().Err(err).Msg("unusable centipede.migration.stagingDir")
 		}
 	}
+	// 3b. Configured concurrency: out of range, every migration that relies on
+	// it would be refused one by one instead.
+	if err := migration.CheckConcurrency(config.Conf.Migration.Concurrency); err != nil {
+		log.Fatal().Err(err).Msg("invalid centipede.migration.concurrency")
+	}
 
 	// 4. Database
 	if err := db.Open(); err != nil {
