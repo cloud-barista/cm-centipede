@@ -3,7 +3,7 @@
 ##############################################################
 #
 # The build context is the repository root, which is also where this file lives:
-#   docker build -t centipedetest/cm-centipede:0.0.0 .
+#   docker build -t cloudbaristaorg/cm-centipede:latest .
 #
 # The server imports the nested modules github.com/cloud-barista/cm-centipede/dmdl
 # and .../data-mig, which resolve through the local-path replace directives in
