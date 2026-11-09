@@ -18,7 +18,7 @@ echo -e "=========================================================="
 echo -e "[Info]"
 echo -e "=========================================================="
 echo -e "This script will ${RED}REMOVE PERSISTENT DATA${NC} in the local deployment."
-echo -e "Target directory: ${LGREEN}${DATA_DIR}${NC} (Excluding OpenBao data)"
+echo -e "Target directory: ${LGREEN}${DATA_DIR}${NC} (Excluding shared OpenBao data)"
 echo ""
 
 if [ ! -d "$DATA_DIR" ]; then
@@ -26,7 +26,10 @@ if [ ! -d "$DATA_DIR" ]; then
     exit 0
 fi
 
-# Identify subdirectories to remove (excluding openbao-data)
+# Identify subdirectories to remove (excluding the shared openbao-data).
+# openbao-honeybee-data is removed together with cm-honeybee-container: CM-Honeybee
+# keeps that OpenBao's unseal key and root token in its own DB, so keeping one
+# without the other leaves an OpenBao that can no longer be unsealed.
 CLEAN_TARGETS=$(ls -A1 "$DATA_DIR" 2>/dev/null | grep -v "^openbao-data$" || true)
 
 if [ -z "$CLEAN_TARGETS" ]; then

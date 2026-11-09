@@ -9,6 +9,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from getpass import getpass
+from urllib.parse import quote
 
 import requests
 import yaml
@@ -32,6 +33,8 @@ Examples:
   %(prog)s --load-assets-only                 # Load assets (specs and images) only
   %(prog)s --fetch-price-only                 # Fetch price information only
   %(prog)s --load-templates-only              # Load template files only
+  %(prog)s -y --providers openstack-dev01     # Fetch specs/images for one CSP only (minutes)
+  %(prog)s -y --providers aws,gcp             # Fetch specs/images for a few CSPs
   %(prog)s --credentials --load-assets        # Register credentials and load assets
   %(prog)s -y --credentials --fetch-price     # Register credentials and fetch price (no confirmation)
   %(prog)s --key-file /path/to/keyfile        # Use key file for decryption
@@ -72,6 +75,16 @@ parser.add_argument(
     default=None,
     help="Path to decryption key file (default: ~/.cloud-barista/.tmp_enc_key, then prompt)",
 )
+parser.add_argument(
+    "--providers",
+    type=str,
+    default=None,
+    metavar="LIST",
+    help="Comma-separated providers to fetch specs/images for (ex: aws,gcp). "
+    "Names are the ones from GET /provider, so a single registered CSP can be targeted. "
+    "Fetching one provider takes minutes instead of the 10-40 minutes a full run needs. "
+    "Skips the backup prompt and the price step.",
+)
 args = parser.parse_args()
 
 # Determine which operations to run
@@ -81,6 +94,15 @@ run_credentials = run_all or args.credentials_only
 run_load_assets = run_all or args.load_assets_only
 run_fetch_price = run_all or args.fetch_price_only
 run_load_templates = run_all or args.load_templates_only
+
+# Providers to fetch specs/images for. Empty means every provider.
+target_providers = [p.strip() for p in (args.providers or "").split(",") if p.strip()]
+if target_providers:
+    # A targeted fetch is for topping up one or two CSPs, so restoring the full backup
+    # would undo the point, and pricing is a whole-system pass that is not worth
+    # 10 minutes here (private clouds have no price data at all).
+    run_fetch_price = args.fetch_price_only
+    run_load_assets = True
 
 # Initialize colorama
 init(autoreset=True)
@@ -196,6 +218,8 @@ backup_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", 
 backup_available = os.path.isfile(backup_db_path)
 backup_size_mb = 0
 backup_age_days = 0
+backup_summary = None   # From the backup manifest sidecar, if present
+backup_created = None   # From the backup manifest sidecar, if present
 use_backup = False  # Decision variable
 patch_after_restore = False  # Decision variable: patch CSV assets after backup restore
 include_azure = False  # Decision variable for Azure image fetch
@@ -226,8 +250,67 @@ if backup_available:
         backup_mtime = os.path.getmtime(backup_db_path)
         backup_age_days = int((time.time() - backup_mtime) / 86400)
 
+    # Read the manifest sidecar (written next to the dump by backup-assets.sh) so the
+    # menu can show what this specific backup holds, not a generic description.
+    info_path = backup_db_path + ".info"
+    if os.path.isfile(info_path):
+        try:
+            with open(info_path, encoding="utf-8") as info_file:
+                for line in info_file:
+                    if line.startswith("summary:"):
+                        backup_summary = line.split(":", 1)[1].strip()
+                    elif line.startswith("created:"):
+                        backup_created = line.split(":", 1)[1].strip()
+        except OSError:
+            pass
+
+def prompt_for_providers():
+    """Ask which providers to fetch, listing the ones actually registered.
+
+    Returns a list of provider names, or [] if the user backs out.
+    """
+    try:
+        resp = requests.get(f"http://{TUMBLEBUG_SERVER}/tumblebug/provider", headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        body = resp.json()
+        providers = sorted(body.get("providers") or body.get("output") or body)
+    except Exception as e:
+        print(Fore.RED + f"Could not list providers from the server: {e}")
+        print(Fore.WHITE + "Enter names manually, comma-separated (or leave empty to cancel).")
+        providers = []
+
+    if providers:
+        print("")
+        print(Fore.CYAN + "Registered providers:")
+        for i, p in enumerate(providers, 1):
+            print(Fore.WHITE + f"  {i:2}. {p}")
+        print("")
+        raw = input(Fore.CYAN + "Numbers or names (comma-separated): " + Fore.RESET)
+    else:
+        raw = input(Fore.CYAN + "Provider names (comma-separated): " + Fore.RESET)
+
+    selected = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token.isdigit() and providers:
+            idx = int(token)
+            if 1 <= idx <= len(providers):
+                selected.append(providers[idx - 1])
+            else:
+                print(Fore.RED + f"  Ignoring out-of-range number: {idx}")
+        else:
+            selected.append(token)
+    return selected
+
+
 # Ask for backup choice BEFORE showing operations summary
-if run_load_assets and backup_available and not args.yes:
+if run_load_assets and target_providers:
+    # Provider list came from --providers; nothing to ask.
+    use_backup = False
+    include_azure = False
+elif run_load_assets and backup_available and not args.yes:
     print(Fore.CYAN + "=" * 80)
     print(Fore.CYAN + "🚀 Choose Initialization Method")
     print(Fore.CYAN + "=" * 80)
@@ -238,13 +321,18 @@ if run_load_assets and backup_available and not args.yes:
         print(Fore.YELLOW + f"     ⚠️  Backup is {backup_age_days} days old - data may be outdated")
     elif backup_age_days > 7:
         print(Fore.YELLOW + f"     ℹ️  Backup is {backup_age_days} days old - consider fetching fresh data for latest info")
-    print(Fore.WHITE + "     Contains: Specs, Images, and Pricing data")
+    if backup_summary:
+        print(Fore.WHITE + f"     Contains: {backup_summary}")
+    else:
+        print(Fore.WHITE + "     Contains: Specs, Images, and Pricing data")
+    if backup_created:
+        print(Fore.WHITE + f"     Backup taken: {backup_created}")
     print(Fore.WHITE + "     → Steps 2 & 3 will be skipped")
     print("")
     print(Fore.GREEN + "  a+. ⏩ Restore from backup + patch CSV assets (~2 minutes)")
     print(Fore.WHITE + f"     Location: ./assets/assets.dump.gz ({backup_size_mb:.1f} MB, {backup_age_days} days old)")
-    print(Fore.WHITE + "     → Restores backup, then applies latest cloudimage.csv on top")
-    print(Fore.WHITE + "     → Useful when cloudimage.csv has been updated since the backup was created")
+    print(Fore.WHITE + "     → Restores backup, then applies latest cloudspec.csv and cloudimage.csv on top")
+    print(Fore.WHITE + "     → Useful when cloudspec.csv or cloudimage.csv has been updated since the backup was created")
     print("")
     print(Fore.YELLOW + "  b. 🔄 Fetch fresh from CSPs (~10-20 minutes)")
     print(Fore.WHITE + "     → Fetches latest specs, images from cloud providers (excluding Azure)")
@@ -254,9 +342,14 @@ if run_load_assets and backup_available and not args.yes:
     print(Fore.WHITE + "     → Fetches from ALL cloud providers including Azure")
     print(Fore.YELLOW + "     ⚠️  Warning: Azure image fetch is very slow and may take 40+ minutes")
     print("")
+    print(Fore.CYAN + "  d. 🎯 Fetch from SELECTED CSPs only (~minutes)")
+    print(Fore.WHITE + "     → Pick from the providers registered on this server")
+    print(Fore.WHITE + "     → Use after registering a new CSP; leaves existing data untouched")
+    print(Fore.WHITE + "     → Step 3 (pricing) is skipped")
+    print("")
 
     while True:
-        choice = input(Fore.CYAN + "Select option (a/a+/b/c): " + Fore.RESET).lower()
+        choice = input(Fore.CYAN + "Select option (a/a+/b/c/d): " + Fore.RESET).lower()
         if choice in ["a"]:
             use_backup = True
             patch_after_restore = False
@@ -275,8 +368,19 @@ if run_load_assets and backup_available and not args.yes:
             use_backup = False
             include_azure = True
             break
+        elif choice in ["d"]:
+            selected = prompt_for_providers()
+            if not selected:
+                print(Fore.RED + "No provider selected. Choose again.")
+                continue
+            target_providers = selected
+            use_backup = False
+            include_azure = False
+            run_fetch_price = args.fetch_price_only
+            print(Fore.GREEN + f"\nSelected providers: {', '.join(target_providers)}")
+            break
         else:
-            print(Fore.RED + "Invalid input. Please enter 'a', 'a+', 'b', or 'c'.")
+            print(Fore.RED + "Invalid input. Please enter 'a', 'a+', 'b', 'c', or 'd'.")
     print("")
 elif run_load_assets and backup_available and args.yes:
     # Auto-yes mode: use backup by default
@@ -312,6 +416,8 @@ if run_load_assets:
         operations.append(f"Load assets from backup ({backup_size_mb:.1f} MB - includes specs, images, pricing)")
         if patch_after_restore:
             operations.append("Patch images from cloudimage.csv (POST /tumblebug/updateImagesFromAsset)")
+    elif target_providers:
+        operations.append(f"Load assets (fetch from {', '.join(target_providers)} only)")
     else:
         operations.append("Load assets (fetch from CSPs)")
 if run_fetch_price and not use_backup:
@@ -539,6 +645,10 @@ def register_credential(holder_name, provider, credentials):
 # Collects per-credential OpenBao registration failures for the final summary.
 openbao_issues = []
 
+# Collects regions that failed verification with the reason the server reported
+# (ConnConfig.verifiedMessage), so the ✗ marks can be explained in one summary.
+unverified_regions = []
+
 
 def print_credential_info(response):
     if "credentialName" in response and "credentialHolder" in response:
@@ -588,7 +698,11 @@ def print_credential_info(response):
                         "zones": set(),  # Use set for O(1) lookups
                         "all_verified": True,  # Track if all connections are verified
                         "any_verified": False,  # Track if any connection is verified
+                        "reasons": set(),  # Why verification failed (from the server)
                     }
+
+                if not is_verified:
+                    region_groups[region]["reasons"].add(" ".join(conn.get("verifiedMessage", "").split()))
 
                 # Update base_config_name to use shortest name (usually the base without zone suffix)
                 if len(config_name) < len(region_groups[region]["base_config_name"]):
@@ -628,6 +742,8 @@ def print_credential_info(response):
 
             # Use green check if all verified, red X if none verified, yellow ~ if mixed
             config_name = data["base_config_name"]
+            if not data["all_verified"]:
+                unverified_regions.append({"name": config_name, "reasons": sorted(r for r in data["reasons"] if r)})
             if data["all_verified"]:
                 print(f"{Fore.GREEN}✓{Style.RESET_ALL} {Fore.CYAN}{config_name}{Style.RESET_ALL} : {Fore.YELLOW}{region}{Style.RESET_ALL} ({zones_str})")
             elif not data["any_verified"]:
@@ -637,24 +753,178 @@ def print_credential_info(response):
                 print(f"{Fore.YELLOW}~{Style.RESET_ALL} {Fore.CYAN}{config_name}{Style.RESET_ALL} : {Fore.YELLOW}{region}{Style.RESET_ALL} ({zones_str})")
 
 
+def print_unverified_summary():
+    """Explain the ✗ marks above, grouped by the reason the server reported."""
+    if not unverified_regions:
+        return
+
+    no_reason = "no reason reported (check the cb-tumblebug server log)"
+    by_reason = {}
+    for item in unverified_regions:
+        reason = " | ".join(item["reasons"]) or no_reason
+        by_reason.setdefault(reason, []).append(item["name"])
+
+    total = len(unverified_regions)
+    print(Fore.YELLOW + f"\n⚠ {total} connection(s) failed verification (✗ above) and are excluded from provisioning:")
+    for reason, names in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        print(Fore.RED + f"  - {', '.join(sorted(names))}")
+        print(Fore.RED + f"      {reason[:300]}")
+    print(Fore.YELLOW + "  Re-run 'make init' to retry; a timeout here is usually transient load on CB-Spider.")
+    print(Fore.RESET)
+
+
+def get_load_assets_status():
+    """Poll GET /tumblebug/loadAssetsStatus for real-time progress without blocking."""
+    try:
+        resp = requests.get(
+            f"http://{TUMBLEBUG_SERVER}/tumblebug/loadAssetsStatus",
+            headers=HEADERS,
+            timeout=2,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return None
+
+
+def format_load_assets_progress(status):
+    """Format a concise one-line progress summary from /tumblebug/loadAssetsStatus."""
+    if not status or not isinstance(status, dict):
+        return ""
+    phase = status.get("currentPhase") or ""
+    phase_idx = status.get("phaseIndex") or 0
+    total_phases = status.get("totalPhases") or 4
+
+    phase_labels = {
+        "initializing": "Initializing",
+        "fetching_specs": "Fetching Specs",
+        "updating_specs_from_asset": "Updating Specs CSV",
+        "fetching_images": "Fetching Images",
+        "updating_images_from_asset": "Updating Images CSV",
+        "completed": "Completed",
+    }
+    phase_label = phase_labels.get(phase, phase)
+
+    detail = ""
+    if phase in ("fetching_specs", "updating_specs_from_asset"):
+        sf = status.get("specFetch") or {}
+        total_reg = sf.get("totalRegions") or 0
+        succ_reg = sf.get("succeedRegions") or 0
+        fail_reg = sf.get("failedRegions") or 0
+        reg_specs = sf.get("registeredSpecs") or 0
+        done_reg = succ_reg + fail_reg
+        if total_reg > 0:
+            pct = int(done_reg * 100 / total_reg)
+            detail = f" | {done_reg}/{total_reg} regions ({pct}%, ✓{succ_reg} ✗{fail_reg}) | {reg_specs:,} specs"
+        elif reg_specs > 0:
+            detail = f" | {reg_specs:,} specs"
+    elif phase in ("fetching_images", "updating_images_from_asset"):
+        imf = status.get("imageFetch") or {}
+        total_reg = imf.get("totalRegions") or 0
+        succ_reg = imf.get("succeedRegions") or 0
+        fail_reg = imf.get("failedRegions") or 0
+        reg_imgs = imf.get("registeredImages") or 0
+        done_reg = succ_reg + fail_reg
+        if total_reg > 0:
+            pct = int(done_reg * 100 / total_reg)
+            detail = f" | {done_reg}/{total_reg} regions ({pct}%, ✓{succ_reg} ✗{fail_reg}) | {reg_imgs:,} images"
+        elif reg_imgs > 0:
+            detail = f" | {reg_imgs:,} images"
+
+    if phase_idx > 0:
+        return f"[Step {phase_idx}/{total_phases}: {phase_label}]{detail}"
+    if phase_label:
+        return f"[{phase_label}]{detail}"
+    return ""
+
+
+def format_price_fetch_progress(status):
+    """Format a concise one-line progress summary for FetchPrice."""
+    if not status or not isinstance(status, dict):
+        return ""
+    pf = status.get("priceFetch") or {}
+    total_reg = pf.get("totalRegions") or 0
+    succ_reg = pf.get("succeedRegions") or 0
+    fail_reg = pf.get("failedRegions") or 0
+    done_reg = pf.get("processedRegions") or (succ_reg + fail_reg)
+    active = pf.get("activeProviders") or []
+    completed = pf.get("completedProviders") or []
+
+    parts = []
+    if total_reg > 0:
+        pct = int(done_reg * 100 / total_reg)
+        parts.append(f"{done_reg}/{total_reg} regions ({pct}%, ✓{succ_reg} ✗{fail_reg})")
+    if active:
+        parts.append(f"active: {','.join(active)}")
+    if completed:
+        parts.append(f"done: {','.join(completed)}")
+    return " | ".join(parts)
+
+
 # Function to fetch price information from CSPs
 def fetch_price():
-    try:
-        # FetchPrice API is a POST endpoint with no required body
-        response = requests.post(f"http://{TUMBLEBUG_SERVER}/tumblebug/fetchPrice", headers=HEADERS)
-        response.raise_for_status()  # Will raise an exception for HTTP error codes
+    price_response = {}
+    price_event = threading.Event()
 
-        response_json = response.json()
-        if response_json is None:  # Check if response.json() returned None
-            response_json = {"error": "No content returned"}
+    def _run_fetch_price():
+        nonlocal price_response
+        try:
+            response = requests.post(f"http://{TUMBLEBUG_SERVER}/tumblebug/fetchPrice", headers=HEADERS)
+            response.raise_for_status()
+            price_response = response.json() or {"error": "No content returned"}
+        except requests.RequestException as e:
+            price_response = {"error": f"Failed to fetch prices: {str(e)}"}
+        finally:
+            price_event.set()
 
-        # Log success message
-        print(f"Price fetching initiated: {response_json.get('message', 'No message returned')}")
-        return response_json
-    except requests.RequestException as e:
-        error_msg = f"Failed to fetch prices: {str(e)}"
-        print(Fore.RED + error_msg)
-        return {"error": error_msg}
+    start_time = time.time()
+    thread = threading.Thread(target=_run_fetch_price)
+    thread.start()
+
+    spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    spinner_idx = 0
+    last_poll_time = 0.0
+    last_print_sec = -1
+    progress_detail = ""
+    is_tty = sys.stdout.isatty()
+
+    while not price_event.is_set():
+        time.sleep(0.1)
+        elapsed = time.time() - start_time
+        spinner_idx = (spinner_idx + 1) % len(spinner_chars)
+
+        if elapsed - last_poll_time >= 2.0:
+            last_poll_time = elapsed
+            status = get_load_assets_status()
+            formatted = format_price_fetch_progress(status)
+            if formatted:
+                progress_detail = f" | {formatted}"
+
+        mins, secs = divmod(int(elapsed), 60)
+        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+
+        if is_tty:
+            line = f"\r{spinner_chars[spinner_idx]} Fetching prices... {time_str}{progress_detail}"
+            print(f"{line:<115}", end="", flush=True)
+        else:
+            current_sec = int(elapsed)
+            if current_sec > last_print_sec:
+                last_print_sec = current_sec
+                if current_sec % 15 == 0:
+                    print(f"Fetching prices... {time_str}{progress_detail}", flush=True)
+
+    if is_tty:
+        print(f"\r{' ' * 115}\r", end="")
+
+    thread.join()
+
+    if "error" in price_response:
+        print(Fore.RED + price_response["error"])
+        return price_response
+
+    print(f"Price fetching initiated: {price_response.get('message', 'No message returned')}")
+    return price_response
 
 
 def print_assets_summary(ns_id="system"):
@@ -758,6 +1028,8 @@ if run_credentials:
                     if color == Fore.GREEN and isinstance(message, dict):
                         print_credential_info(message)
 
+print_unverified_summary()
+
 # Load assets (specs and images) if requested
 if run_load_assets:
     # use_backup was already determined earlier (before confirmation prompt)
@@ -808,59 +1080,63 @@ if run_load_assets:
                     except Exception as ns_err:
                         print(Fore.YELLOW + f"   ⚠️  Namespace check failed: {str(ns_err)}")
 
-                    # Patch with latest cloudimage.csv if requested (Option a+)
+                    # Patch with latest cloudspec.csv and cloudimage.csv if requested (Option a+)
                     if patch_after_restore:
-                        print(Fore.YELLOW + "\n   Patching with latest cloudimage.csv assets...")
-                        patch_response_holder = {}
-                        patch_event = threading.Event()
+                        for csv_name, endpoint in [
+                            ("cloudspec.csv", "updateSpecsFromAsset"),
+                            ("cloudimage.csv", "updateImagesFromAsset"),
+                        ]:
+                            print(Fore.YELLOW + f"\n   Patching with latest {csv_name} assets...")
+                            patch_response_holder = {}
+                            patch_event = threading.Event()
 
-                        def do_patch():
-                            try:
-                                r = requests.post(
-                                    f"http://{TUMBLEBUG_SERVER}/tumblebug/updateImagesFromAsset",
-                                    headers=HEADERS,
-                                    timeout=600,
-                                )
-                                patch_response_holder["status"] = r.status_code
-                                patch_response_holder["text"] = r.text[:200]
-                            except Exception as e:
-                                patch_response_holder["error"] = str(e)
-                            finally:
-                                patch_event.set()
+                            def do_patch(ep=endpoint):
+                                try:
+                                    r = requests.post(
+                                        f"http://{TUMBLEBUG_SERVER}/tumblebug/{ep}",
+                                        headers=HEADERS,
+                                        timeout=600,
+                                    )
+                                    patch_response_holder["status"] = r.status_code
+                                    patch_response_holder["text"] = r.text[:200]
+                                except Exception as e:
+                                    patch_response_holder["error"] = str(e)
+                                finally:
+                                    patch_event.set()
 
-                        patch_thread = threading.Thread(target=do_patch)
-                        patch_thread.start()
+                            patch_thread = threading.Thread(target=do_patch)
+                            patch_thread.start()
 
-                        spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                        spinner_idx = 0
-                        patch_elapsed = 0
-                        is_tty = sys.stdout.isatty()
-                        last_print_sec = -1
-                        while not patch_event.is_set():
-                            time.sleep(0.08)
-                            patch_elapsed += 0.08
-                            spinner_idx = (spinner_idx + 1) % len(spinner_chars)
-                            mins, secs = divmod(int(patch_elapsed), 60)
-                            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                            spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                            spinner_idx = 0
+                            patch_elapsed = 0
+                            is_tty = sys.stdout.isatty()
+                            last_print_sec = -1
+                            while not patch_event.is_set():
+                                time.sleep(0.08)
+                                patch_elapsed += 0.08
+                                spinner_idx = (spinner_idx + 1) % len(spinner_chars)
+                                mins, secs = divmod(int(patch_elapsed), 60)
+                                time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                                if is_tty:
+                                    print(f"\r   {spinner_chars[spinner_idx]} Patching {csv_name}... {time_str}", end="", flush=True)
+                                else:
+                                    current_sec = int(patch_elapsed)
+                                    if current_sec > last_print_sec:
+                                        last_print_sec = current_sec
+                                        if current_sec % 30 == 0:
+                                            print(f"   Patching {csv_name}... {time_str}", flush=True)
                             if is_tty:
-                                print(f"\r   {spinner_chars[spinner_idx]} Patching... {time_str}", end="", flush=True)
+                                print(f"\r{' ' * 60}\r", end="")
+
+                            patch_thread.join()
+
+                            if "error" in patch_response_holder:
+                                print(Fore.YELLOW + f"   ⚠️  {csv_name} patch failed (non-critical): {patch_response_holder['error']}")
+                            elif patch_response_holder.get("status") in (200, 202):
+                                print(Fore.GREEN + f"   ✅ {csv_name} patch applied successfully (elapsed: {int(patch_elapsed)}s)")
                             else:
-                                current_sec = int(patch_elapsed)
-                                if current_sec > last_print_sec:
-                                    last_print_sec = current_sec
-                                    if current_sec % 30 == 0:
-                                        print(f"   Patching cloudimage.csv... {time_str}", flush=True)
-                        if is_tty:
-                            print(f"\r{' ' * 60}\r", end="")
-
-                        patch_thread.join()
-
-                        if "error" in patch_response_holder:
-                            print(Fore.YELLOW + f"   ⚠️  Patch failed (non-critical): {patch_response_holder['error']}")
-                        elif patch_response_holder.get("status") in (200, 202):
-                            print(Fore.GREEN + f"   ✅ cloudimage.csv patch applied successfully (elapsed: {int(patch_elapsed)}s)")
-                        else:
-                            print(Fore.YELLOW + f"   ⚠️  Patch returned HTTP {patch_response_holder.get('status')}: {patch_response_holder.get('text', '')}")
+                                print(Fore.YELLOW + f"   ⚠️  {csv_name} patch returned HTTP {patch_response_holder.get('status')}: {patch_response_holder.get('text', '')}")
 
                     # Skip the load_resources call since DB is already populated
                     run_load_assets = False  # Mark as completed
@@ -880,7 +1156,11 @@ if run_load_assets:
     # If not using backup or backup failed, proceed with standard initialization
     if not use_backup and run_load_assets:
         # Adjust estimated time based on Azure inclusion
-        if include_azure:
+        if target_providers:
+            expected_completion_time_seconds = 300  # a handful of providers
+            print(Fore.YELLOW + f"\nLoading common Specs and Images from: {', '.join(target_providers)}")
+            print(Fore.CYAN + "Other providers keep the data they already have.")
+        elif include_azure:
             expected_completion_time_seconds = 2400  # 40 minutes for Azure
             print(Fore.YELLOW + "\nLoading common Specs and Images from ALL CSPs including Azure...")
             print(Fore.MAGENTA + "⚠️  This may take 40+ minutes due to Azure image fetch")
@@ -893,9 +1173,12 @@ if run_load_assets:
     def load_resources():
         global response_json
         try:
-            # Build URL with includeAzure parameter
+            # Build URL. providers takes precedence server-side: naming the providers
+            # already says what to fetch, so includeAzure no longer applies.
             url = f"http://{TUMBLEBUG_SERVER}/tumblebug/loadAssets"
-            if include_azure:
+            if target_providers:
+                url += "?providers=" + quote(",".join(target_providers))
+            elif include_azure:
                 url += "?includeAzure=true"
 
             response = requests.get(url, headers=HEADERS)
@@ -923,15 +1206,23 @@ if run_load_assets:
         # provides smoother visual feedback for operations with unpredictable duration
         spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         spinner_idx = 0
-        elapsed = 0
+        last_poll_time = 0.0
         last_print_sec = -1  # Track last printed second for non-TTY mode
+        progress_detail = ""
         is_tty = sys.stdout.isatty()  # Detect if running in interactive terminal
 
         while not event.is_set():
             # Use shorter sleep for smoother animation
             time.sleep(0.08)
-            elapsed += 0.08
+            elapsed = time.time() - start_time
             spinner_idx = (spinner_idx + 1) % len(spinner_chars)
+
+            if elapsed - last_poll_time >= 2.0:
+                last_poll_time = elapsed
+                status = get_load_assets_status()
+                formatted = format_load_assets_progress(status)
+                if formatted:
+                    progress_detail = f" {formatted}"
 
             # Format elapsed time
             mins, secs = divmod(int(elapsed), 60)
@@ -939,8 +1230,9 @@ if run_load_assets:
 
             if is_tty:
                 # Interactive terminal: spinner animation with carriage return
+                line = f"\r{spinner_chars[spinner_idx]} Loading... {time_str}{progress_detail}"
                 print(
-                    f"\r{spinner_chars[spinner_idx]} Loading... {time_str} (expected: ~{expected_completion_time_seconds}s)",
+                    f"{line:<115}",
                     end="",
                     flush=True,
                 )
@@ -949,13 +1241,13 @@ if run_load_assets:
                 current_sec = int(elapsed)
                 if current_sec > last_print_sec:
                     last_print_sec = current_sec
-                    # Print simple progress every 30 seconds to avoid log spam
-                    if current_sec % 30 == 0:
-                        print(f"Loading... {time_str}", flush=True)
+                    # Print simple progress every 15 seconds to avoid log spam
+                    if current_sec % 15 == 0:
+                        print(f"Loading... {time_str}{progress_detail}", flush=True)
 
         # Clear the spinner line (only for TTY)
         if is_tty:
-            print(f"\r{' ' * 80}\r", end="")
+            print(f"\r{' ' * 115}\r", end="")
 
         # Wait for the thread to complete
         thread.join()
@@ -1061,7 +1353,17 @@ if run_load_templates:
                     if resp.status_code == 200:
                         print(Fore.GREEN + f"  ✅ Template loaded: {template_name} (type: {template_type}, ns: {ns_id})")
                     elif "already exists" in resp.text:
-                        print(Fore.CYAN + f"  ℹ️  Template already exists: {template_name} (type: {template_type}, ns: {ns_id})")
+                        # Already present: update it in place (PUT, id == name) so re-running init
+                        # refreshes edited template files instead of silently keeping the old copy.
+                        put_url = f"{url}/{template_name}"
+                        put_resp = requests.put(put_url, json=template_data, headers=HEADERS, timeout=30)
+                        if put_resp.status_code == 429:
+                            time.sleep(1)
+                            put_resp = requests.put(put_url, json=template_data, headers=HEADERS, timeout=30)
+                        if put_resp.status_code == 200:
+                            print(Fore.GREEN + f"  🔄 Template updated: {template_name} (type: {template_type}, ns: {ns_id})")
+                        else:
+                            print(Fore.RED + f"  ❌ Failed to update template {template_name}: {put_resp.text}")
                     else:
                         print(Fore.RED + f"  ❌ Failed to load template {template_name}: {resp.text}")
                 except Exception as e:

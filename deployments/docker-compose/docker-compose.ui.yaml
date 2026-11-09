@@ -34,13 +34,15 @@ services:
       - "3000:3000"
     environment:
       # Resolved server-side via Docker internal DNS from docker-compose.yaml network.
-      - CENTIPEDE_ENDPOINT=http://cm-centipede:8057
-      - BEETLE_ENDPOINT=http://cm-beetle:8056
-      - TUMBLEBUG_ENDPOINT=http://cb-tumblebug:1323
+      - CENTIPEDE_ENDPOINT=http://cm-centipede:8085
+      - CENTIPEDE_API_USERNAME=${CENTIPEDE_API_USERNAME:?Please set CENTIPEDE_API_USERNAME}
+      - CENTIPEDE_API_PASSWORD=${CENTIPEDE_API_PASSWORD:?Please set CENTIPEDE_API_PASSWORD}
       - HONEYBEE_ENDPOINT=http://cm-honeybee:8081
-      - DAMSELFLY_ENDPOINT=http://cm-damselfly:8088
+      - BEETLE_ENDPOINT=http://cm-beetle:8056
+      - BEETLE_API_USERNAME=${BEETLE_API_USERNAME:?Please set BEETLE_API_USERNAME}
+      - BEETLE_API_PASSWORD=${BEETLE_API_PASSWORD:?Please set BEETLE_API_PASSWORD}
     depends_on:
+      - cm-centipede
       - cm-beetle
       - cm-honeybee
-      - cm-damselfly
     restart: always

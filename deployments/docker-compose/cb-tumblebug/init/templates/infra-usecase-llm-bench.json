@@ -1,0 +1,111 @@
+{
+  "resourceType": "infra",
+  "name": "infra-usecase-llm-bench",
+  "description": "LLM benchmarking Infra with GPU VMs across multiple CSPs (NVIDIA A10, L20, L4, L40S, AMD Radeon PRO V710) and a CPU-based observability node",
+  "infraDynamicReq": {
+    "installMonAgent": "no",
+    "nodeGroups": [
+      {
+        "name": "benchmark",
+        "nodeGroupSize": 1,
+        "label": {
+          "role": "observability"
+        },
+        "description": "CPU-based observability node (e2-standard-8, 8 vCPU, 32 GiB)",
+        "specId": "gcp+europe-west1+e2-standard-8",
+        "imageId": "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20260820",
+        "rootDiskType": "pd-standard",
+        "rootDiskSize": 200
+      },
+      {
+        "name": "alibaba-nvidia-a10",
+        "nodeGroupSize": 1,
+        "label": {
+          "accelerator": "gpu"
+        },
+        "description": "NVIDIA A10 GPU node on Alibaba Cloud (ecs.gn7i-c32g1.16xlarge, 2x A10 24GB)",
+        "specId": "alibaba+ap-southeast-1+ecs.gn7i-c32g1.16xlarge",
+        "imageId": "ubuntu_22_04_x64_20G_alibase_20261016.vhd",
+        "rootDiskType": "cloud_auto",
+        "rootDiskSize": 200,
+        "zone": "ap-southeast-1b"
+      },
+      {
+        "name": "alibaba-nvidia-l20",
+        "nodeGroupSize": 1,
+        "label": {
+          "accelerator": "gpu"
+        },
+        "description": "NVIDIA L20 GPU node on Alibaba Cloud (ecs.gn8is.4xlarge, 1x L20 48GB)",
+        "specId": "alibaba+ap-southeast-3+ecs.gn8is.4xlarge",
+        "imageId": "ubuntu_22_04_x64_20G_alibase_20260916.vhd",
+        "rootDiskType": "cloud_auto",
+        "rootDiskSize": 200
+      },
+      {
+        "name": "aws-nvidia-l4",
+        "nodeGroupSize": 1,
+        "label": {
+          "accelerator": "gpu"
+        },
+        "description": "NVIDIA L4 GPU node on AWS (g6.8xlarge, 1x L4 24GB)",
+        "specId": "aws+us-west-2+g6.8xlarge",
+        "imageId": "ami-055c254ebd87b4dba",
+        "rootDiskType": "gp2",
+        "rootDiskSize": 200,
+        "zone": "us-west-2d"
+      },
+      {
+        "name": "aws-nvidia-l40s",
+        "nodeGroupSize": 1,
+        "label": {
+          "accelerator": "gpu"
+        },
+        "description": "NVIDIA L40S GPU node on AWS (g6e.2xlarge, 1x L40S 48GB)",
+        "specId": "aws+ap-northeast-2+g6e.2xlarge",
+        "imageId": "ami-012a353bb3afb92ee",
+        "rootDiskType": "gp2",
+        "rootDiskSize": 200,
+        "zone": "ap-northeast-2b"
+      },
+      {
+        "name": "azure-amd-v710",
+        "nodeGroupSize": 1,
+        "label": {
+          "accelerator": "gpu"
+        },
+        "description": "AMD Radeon PRO V710 GPU node on Azure (Standard_NV24ads_V710_v5, 1x V710 24GB)",
+        "specId": "azure+westus+standard_nv24ads_v710_v5",
+        "imageId": "Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:22.04.202608060",
+        "rootDiskType": "PremiumSSD",
+        "rootDiskSize": 200
+      },
+      {
+        "name": "gcp-nvidia-l4",
+        "nodeGroupSize": 1,
+        "label": {
+          "accelerator": "gpu"
+        },
+        "description": "NVIDIA L4 GPU node on GCP (g2-standard-24, 2x L4 24GB)",
+        "specId": "gcp+us-west4+g2-standard-24",
+        "imageId": "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20260820",
+        "rootDiskType": "pd-balanced",
+        "rootDiskSize": 200,
+        "zone": "us-west4-a"
+      },
+      {
+        "name": "ibm-nvidia-l4",
+        "nodeGroupSize": 1,
+        "label": {
+          "accelerator": "gpu"
+        },
+        "description": "NVIDIA L4 GPU node on IBM Cloud (gx3-32x160x2l4, 2x L4 24GB)",
+        "specId": "ibm+us-east+gx3-32x160x2l4",
+        "imageId": "r014-13be14d6-99f8-4a41-b3c1-80cfcc7c7943",
+        "rootDiskType": "general-purpose",
+        "rootDiskSize": 200,
+        "zone": "us-east-1"
+      }
+    ]
+  }
+}
