@@ -14,6 +14,11 @@
 #     ./scripts/gen-data.sh --provider ncp --target all         # NCP resources
 #     ./scripts/gen-data.sh --target all --dry-run             # generate only, skip upload/transfer/load
 #     ./scripts/gen-data.sh --target bucket --force            # skip the existing-data check
+#     ./scripts/gen-data.sh --source vm --target database      # the DBs installed ON the aws VM
+#     ./scripts/gen-data.sh --source vm --target bucket        # the MinIO installed on the aws VM
+#         (--source is this script's own option: managed (default) reads the
+#          bucket and database modules, vm reads everything from the vm module,
+#          whose servers come from TF_VAR_aws_vm_servers. aws only.)
 #     ./scripts/gen-data.sh --target bucket,filesystem --large-only
 #         (adds only the GENDATA_LARGE_FILE_MB x GENDATA_LARGE_FILES files to the
 #          dataset already there; --large-file-mb / --large-files override .env)
@@ -75,12 +80,23 @@ die() { echo -e "${RED}$*${NC}" >&2; exit 1; }
 # gendata's flags are passed straight through; these two also decide what this
 # script has to look up, so they are read here as well. Both spellings the Go
 # flag package accepts are handled.
+#
+# --source is the one option that is this script's alone: it says which modules
+# the connection info comes from, which gendata never needs to know. It is taken
+# out of the arguments before they reach gendata, which would reject it.
 PROVIDER="aws"
 TARGET="all"
+SOURCE="managed"
 HELP=0
 prev=""
+GENDATA_ARGS=()
 for arg in "$@"; do
+    case "$prev" in
+        --source|-source) SOURCE="$arg"; prev=""; continue ;;
+    esac
     case "$arg" in
+        --source|-source)         prev="$arg"; continue ;;
+        --source=*|-source=*)     SOURCE="${arg#*=}"; prev=""; continue ;;
         --provider=*|-provider=*) PROVIDER="${arg#*=}" ;;
         --target=*|-target=*)     TARGET="${arg#*=}" ;;
         -h|--help|-help)          HELP=1 ;;
@@ -91,9 +107,12 @@ for arg in "$@"; do
             esac
             ;;
     esac
+    GENDATA_ARGS+=("$arg")
     prev="$arg"
 done
 PROVIDER="$(echo "$PROVIDER" | tr '[:upper:]' '[:lower:]')"
+SOURCE="$(echo "$SOURCE" | tr '[:upper:]' '[:lower:]')"
+set -- "${GENDATA_ARGS[@]+"${GENDATA_ARGS[@]}"}"
 
 want() {
     case "$TARGET" in
@@ -127,6 +146,11 @@ case "$PROVIDER" in
     aws|ncp) ;;
     *) die "unknown provider '${PROVIDER}' (aws|ncp)" ;;
 esac
+case "$SOURCE" in
+    managed) ;;
+    vm) [ "$PROVIDER" = "aws" ] || die "--source vm is aws only: servers are installed on the aws VM (TF_VAR_aws_vm_servers)" ;;
+    *) die "unknown source '${SOURCE}' (managed|vm)" ;;
+esac
 for t in ${TARGET//,/ }; do
     case "$t" in
         bucket|filesystem|database|all) ;;
@@ -155,7 +179,13 @@ VAULT_ADDR="${VAULT_ADDR:-http://localhost:38200}"
 # shellcheck source=./lib/workspace.sh
 . "$SCRIPT_DIR/lib/workspace.sh"
 ws_load "$PROVIDER"
-MANIFEST="runs/${PROVIDER}-${WS_PREFIX}-last-run.json"
+# The VM's servers keep a summary of their own, so a run against them does not
+# overwrite the one for the managed bucket and databases.
+if [ "$SOURCE" = "vm" ]; then
+    MANIFEST="runs/${PROVIDER}-${WS_PREFIX}-vm-last-run.json"
+else
+    MANIFEST="runs/${PROVIDER}-${WS_PREFIX}-last-run.json"
+fi
 
 # Built before the lookups rather than after, so a compile error or a misspelled
 # GENDATA_ key is reported now instead of a minute of tofu and OpenBao calls later.
@@ -223,13 +253,35 @@ vault_read() {
 
 # --- Assemble -----------------------------------------------------------------
 
-BUCKET_NAME=""; REGION=""; ACCESS_KEY=""; SECRET_KEY=""
+BUCKET_NAME=""; REGION=""; ACCESS_KEY=""; SECRET_KEY=""; BUCKET_ENDPOINT=""; BUCKET_LOOKUP=""
 VM_HOST=""; VM_USER=""; VM_KEY=""; VM_PATH=""; VM_VOLUME_GB=0
 DB_USER=""; DB_PASSWORD=""; DB_NAME=""; DB_STORAGE_GB=0
 MYSQL_HOST=""; MYSQL_PORT=""; MARIADB_HOST=""; MARIADB_PORT=""
 PG_HOST=""; PG_PORT=""; MONGO_HOST=""; MONGO_PORT=""
 
-if want bucket; then
+# --source vm: the servers installed on the VM. Everything comes from the vm
+# module's outputs - addresses and the one server account alike - so neither
+# OpenBao nor the bucket and database modules are read.
+VO=""
+if [ "$SOURCE" = "vm" ]; then
+    VO="$(tofu_output vm)"
+    if [ "$(printf '%s' "$VO" | jq -r '.vm_servers.value // [] | length')" = "0" ]; then
+        die "aws/vm (prefix ${WS_PREFIX}) has no servers installed.
+  Set TF_VAR_aws_vm_servers (and TF_VAR_aws_vm_server_password) in .env, then
+  ./scripts/prepare.sh aws vm --force"
+    fi
+fi
+
+if want bucket && [ "$SOURCE" = "vm" ]; then
+    BUCKET_ENDPOINT="$(out_val "$VO" minio_endpoint)"
+    [ -n "$BUCKET_ENDPOINT" ] || die "minio is not installed on the aws VM (TF_VAR_aws_vm_servers)"
+    BUCKET_NAME="$(out_val "$VO" minio_bucket)"
+    # MinIO's default region; path-style, since the endpoint is a bare IP.
+    REGION="us-east-1"
+    BUCKET_LOOKUP="path"
+    ACCESS_KEY="$(out_val "$VO" server_username)"
+    SECRET_KEY="$(out_val "$VO" server_password)"
+elif want bucket; then
     BO="$(tofu_output bucket)"
     BUCKET_NAME="$(out_val "$BO" bucket_name)"
     REGION="$(out_val "$BO" bucket_region)"
@@ -254,7 +306,7 @@ if want bucket; then
 fi
 
 if want filesystem; then
-    VO="$(tofu_output vm)"
+    [ -n "$VO" ] || VO="$(tofu_output vm)"
     VM_HOST="$(out_val "$VO" public_ip)"
     VM_USER="$(out_val "$VO" ssh_user)"
     if [ -z "$VM_USER" ]; then
@@ -308,7 +360,18 @@ if want filesystem; then
     fi
 fi
 
-if want database; then
+if want database && [ "$SOURCE" = "vm" ]; then
+    DB_USER="$(out_val "$VO" server_username)"
+    DB_PASSWORD="$(out_val "$VO" server_password)"
+    DB_NAME="$(out_val "$VO" db_name)"
+    MYSQL_HOST="$(out_val "$VO" mysql_host)";     MYSQL_PORT="$(out_val "$VO" mysql_port)"
+    MARIADB_HOST="$(out_val "$VO" mariadb_host)"; MARIADB_PORT="$(out_val "$VO" mariadb_port)"
+    PG_HOST="$(out_val "$VO" postgres_host)";     PG_PORT="$(out_val "$VO" postgres_port)"
+    MONGO_HOST="$(out_val "$VO" mongodb_host)";   MONGO_PORT="$(out_val "$VO" mongodb_port)"
+    # The databases share the VM's root volume with the OS and any filesystem test
+    # data, so the volume is the most the bulk rows can be checked against.
+    DB_STORAGE_GB="${TF_VAR_aws_vm_volume_size:-20}"
+elif want database; then
     DO="$(tofu_output database)"
     DB_USER="$(out_val "$DO" db_username)"
     DB_PASSWORD="$(out_val "$DO" db_password)"
@@ -337,6 +400,7 @@ fi
 INPUTS="$(jq -n \
     --arg bucket "$BUCKET_NAME" --arg region "$REGION" \
     --arg ak "$ACCESS_KEY"      --arg sk "$SECRET_KEY" \
+    --arg bep "$BUCKET_ENDPOINT" --arg blk "$BUCKET_LOOKUP" \
     --arg vmhost "$VM_HOST" --arg vmuser "$VM_USER" \
     --arg vmkey "$VM_KEY"   --arg vmpath "$VM_PATH" \
     --arg dbuser "$DB_USER" --arg dbpass "$DB_PASSWORD" --arg dbname "$DB_NAME" \
@@ -347,6 +411,7 @@ INPUTS="$(jq -n \
     --argjson vmgb "${VM_VOLUME_GB:-0}" --argjson dbgb "${DB_STORAGE_GB:-0}" \
     '{
         BucketName: $bucket, Region: $region, AccessKey: $ak, SecretKey: $sk,
+        BucketEndpoint: $bep, BucketLookup: $blk,
         VMHost: $vmhost, VMUser: $vmuser, VMKeyPath: $vmkey, VMDataPath: $vmpath,
         DBUser: $dbuser, DBPassword: $dbpass, DBName: $dbname,
         MySQLHost: $myh,    MySQLPort: $myp,
@@ -360,21 +425,24 @@ INPUTS="$(jq -n \
 # about: a database load has nothing to say about the bucket, and a "-" next to
 # one reads like something is missing rather than like something is not asked for.
 if want bucket; then
-    printf '%s' "$INPUTS" | jq -r '"  bucket     : " + (if .BucketName == "" then "-" else .BucketName end)'
+    printf '%s' "$INPUTS" | jq -r '"  bucket     : " + (if .BucketName == "" then "-" else .BucketName end)
+        + (if .BucketEndpoint == "" then "" else " (" + .BucketEndpoint + ")" end)'
 fi
 if want filesystem; then
     printf '%s' "$INPUTS" | jq -r '"  vm         : " + (if .VMHost == "" then "-" else .VMUser + "@" + .VMHost end)'
 fi
 if want database; then
-    # Only the engines the provider actually serves: AWS has no MongoDB and NCP has
-    # no MariaDB, so listing them would print a "-" for something never prepared.
+    # Only the engines the source actually serves: managed AWS has no MongoDB and
+    # NCP has no MariaDB, so listing them would print a "-" for something never
+    # prepared. The VM can run all four.
     printf '%s' "$INPUTS" | jq -r '
-        "  mysql      : " + (if .MySQLHost == "" then "-" else .MySQLHost end),
-        "  postgresql : " + (if .PostgresHost == "" then "-" else .PostgresHost end)'
-    if [ "$PROVIDER" = "ncp" ]; then
-        printf '%s' "$INPUTS" | jq -r '"  mongodb    : " + (if .MongoHost == "" then "-" else .MongoHost end)'
-    else
-        printf '%s' "$INPUTS" | jq -r '"  mariadb    : " + (if .MariaDBHost == "" then "-" else .MariaDBHost end)'
+        "  mysql      : " + (if .MySQLHost == "" then "-" else .MySQLHost + ":" + .MySQLPort end),
+        "  postgresql : " + (if .PostgresHost == "" then "-" else .PostgresHost + ":" + .PostgresPort end)'
+    if [ "$PROVIDER" = "ncp" ] || [ "$SOURCE" = "vm" ]; then
+        printf '%s' "$INPUTS" | jq -r '"  mongodb    : " + (if .MongoHost == "" then "-" else .MongoHost + ":" + .MongoPort end)'
+    fi
+    if [ "$PROVIDER" = "aws" ]; then
+        printf '%s' "$INPUTS" | jq -r '"  mariadb    : " + (if .MariaDBHost == "" then "-" else .MariaDBHost + ":" + .MariaDBPort end)'
     fi
 fi
 
