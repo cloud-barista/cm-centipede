@@ -22,7 +22,7 @@ cloud:
     nlb:
       enable: "y"
       interval: 10
-      timeout: 9
+      timeout: -1
       threshold: 3
     k8scluster:
       enable: "y"
@@ -100,6 +100,6 @@ nlbsw:
   commandNlbDeploy: "sudo ~/deployNlb.sh"
   commandNlbAddTargetNode: "sudo ~/addTargetNode.sh"
   commandNlbApplyConfig: "sudo ~/applyConfig.sh"
-  nlbInfraSpecId: "aws-ap-northeast-2-t2-small"
-  nlbInfraImageId: "ubuntu18.04"
+  nlbInfraSpecId: "aws+ap-northeast-2+t2.small"
+  nlbInfraImageId: "ubuntu 22.04"
   nlbInfraNodeGroupSize: 2

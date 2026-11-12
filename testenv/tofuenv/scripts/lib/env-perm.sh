@@ -44,6 +44,7 @@ check_env_perm() {
 # [CREDENTIAL] keys are empty in normal use, once register-creds.sh has moved
 # them into OpenBao.
 PLACEHOLDER_VARS="AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DB_PASSWORD
+TF_VAR_aws_vm_server_password
 NCP_ACCESS_KEY NCP_SECRET_KEY NCP_DB_PASSWORD
 TF_VAR_aws_bucket_name TF_VAR_ncp_bucket_name"
 

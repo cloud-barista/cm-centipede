@@ -5,6 +5,7 @@
 #   Registration paths:
 #     secret/csp/aws  <- AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 #     secret/db/aws   <- AWS_DB_PASSWORD
+#     secret/vm/aws   <- TF_VAR_aws_vm_server_password  (the servers installed on the aws VM)
 #     secret/csp/ncp  <- NCP_ACCESS_KEY, NCP_SECRET_KEY
 #     secret/db/ncp   <- NCP_DB_PASSWORD
 #
@@ -135,10 +136,36 @@ if [ -n "${NCP_DB_PASSWORD:-}" ]; then
     echo -e "  ${GREEN}OK${NC}   NCP_DB_PASSWORD passed the provider rule check"
 fi
 
+# Validate the aws VM server password against the rules tofu/aws/vm enforces:
+# 8+ characters (MinIO's minimum) and none of ' " ` \ $ or whitespace, since the
+# install scripts write it into SQL, bash, PowerShell, YAML and XML unquoted.
+# Checked before it is stored, so a bad one never reaches OpenBao.
+validate_vm_server_password() {
+    local pw="$1"
+    local len=${#pw}
+    if [ "$len" -lt 8 ]; then
+        echo "must be at least 8 characters (currently ${len})"; return 1
+    fi
+    if printf '%s' "$pw" | LC_ALL=C grep -q '['"'"'"`\\$[:space:]]'; then
+        echo "contains a forbidden character (' \" \` \\ \$ or whitespace)"; return 1
+    fi
+    return 0
+}
+
+if [ -n "${TF_VAR_aws_vm_server_password:-}" ]; then
+    if ! reason=$(validate_vm_server_password "$TF_VAR_aws_vm_server_password"); then
+        echo -e "  ${RED}FAIL${NC} TF_VAR_aws_vm_server_password rejected: ${reason}" >&2
+        exit 1
+    fi
+    echo -e "  ${GREEN}OK${NC}   TF_VAR_aws_vm_server_password passed the rule check"
+fi
+
 register_group "csp/aws" "AWS_SECRET_ACCESS_KEY" \
     AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 register_group "db/aws" "AWS_DB_PASSWORD" \
     AWS_DB_PASSWORD
+register_group "vm/aws" "TF_VAR_aws_vm_server_password" \
+    TF_VAR_aws_vm_server_password
 register_group "csp/ncp" "NCP_SECRET_KEY" \
     NCP_ACCESS_KEY NCP_SECRET_KEY
 register_group "db/ncp" "NCP_DB_PASSWORD" \

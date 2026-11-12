@@ -13,13 +13,20 @@ just a VM, or just the databases.
 
 | CSP | vm<br>(for filesystem testing) | objectStorage | mysql | mariadb | postgresql | mongodb |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| aws | ✅<br>(+ NFS via EFS, optional) | ✅ | ✅ | ✅ | ✅ | — |
+| aws | ✅ Ubuntu / Windows<br>(+ NFS via EFS, optional)<br>(+ servers on the VM, optional) | ✅ | ✅ | ✅ | ✅ | — |
 | ncp | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 
-Every database is a managed service. Each CSP is left with the engines it offers:
+Every database in the table is a managed service. Each CSP is left with the engines it offers:
 AWS has no managed MongoDB and NCP has no managed MariaDB, so those two cells are empty.
-The AWS VM can also mount an EFS file system over NFS, as an option of the `vm`
-resource rather than a resource of its own — see [Step 3](#step-3--prepare-resources).
+
+The AWS VM has three options of its own, all part of the `vm` resource rather than
+resources of their own — see [Step 3](#step-3--prepare-resources):
+
+- **Windows** (`TF_VAR_aws_vm_os=windows`, Windows Server 2022) instead of Ubuntu 22.04
+- an **EFS file system** mounted over NFS (Ubuntu only)
+- **servers installed on the VM itself** — MinIO, MySQL, MariaDB, PostgreSQL, MongoDB,
+  natively, on either OS, reachable from outside. These are not managed services, so
+  AWS gets a MongoDB and an S3-compatible object storage this way.
 
 ---
 
@@ -80,9 +87,11 @@ the `vault` provider.
 | | AWS | NCP |
 |---|---|---|
 | Bucket | S3 | Object Storage |
-| VM login account | `ubuntu` | **`root`** |
+| VM OS | Ubuntu 22.04, or Windows Server 2022 | Ubuntu 22.04 (`TF_VAR_ncp_server_image_name`) |
+| VM login account | `ubuntu` (`Administrator` on Windows) | **`root`** |
+| Servers installed on the VM | optional: MinIO, MySQL, MariaDB, PostgreSQL, MongoDB | — |
 | MySQL / PostgreSQL | RDS | Managed Cloud DB |
-| MongoDB | **not prepared** | Managed Cloud DB (STAND_ALONE) |
+| MongoDB | **not prepared** as a managed DB (can run on the VM) | Managed Cloud DB (STAND_ALONE) |
 | MariaDB | RDS | **not prepared** |
 | Network | default VPC, nothing to do | **a VPC is required — created and destroyed automatically** |
 | Reaching a DB from outside | works immediately | **a public domain must be requested once, in the console** |
@@ -140,6 +149,7 @@ minimum for AWS is:
 AWS_ACCESS_KEY_ID=your_access_key_id
 AWS_SECRET_ACCESS_KEY=your_secret_access_key
 AWS_DB_PASSWORD=a_strong_db_password
+TF_VAR_aws_vm_server_password=        # empty unless you install servers on the VM (Step 3)
 
 # Settings - kept as is
 TF_VAR_aws_region=ap-northeast-2
@@ -332,9 +342,95 @@ engines named, comma-separated, using the same names as `gen-data.sh --engine`:
 ```bash
 ./scripts/aws-db-versions.sh           # optional: list engine versions, instance classes, AMI
 ./scripts/prepare.sh aws bucket
-./scripts/prepare.sh aws vm            # Ubuntu 22.04, for filesystem migration tests
+./scripts/prepare.sh aws vm            # Ubuntu 22.04 (or Windows), for filesystem migration tests
 ./scripts/prepare.sh aws database      # RDS: MySQL + MariaDB + PostgreSQL (or --engine)
 ```
+
+**AWS vm on Windows** — set `TF_VAR_aws_vm_os=windows` and the VM runs Windows Server
+2022 instead of Ubuntu 22.04:
+
+```dotenv
+TF_VAR_aws_vm_os=windows
+TF_VAR_aws_instance_type=t3.large    # Windows barely runs in a t3.micro's 1 GB
+TF_VAR_aws_vm_volume_size=60         # 30 at least: the AMI's own size
+```
+
+- **SSH** works as on Ubuntu, with the generated key, but the account is `Administrator`.
+  OpenSSH Server is installed on first boot, so the first connection can take a few
+  minutes more. `ssh_command` has it ready.
+- **RDP** logs in as `Administrator` with the password EC2 generates; tofu decrypts it
+  with the same key. `./scripts/conn-info.sh aws vm --reveal` prints it as
+  `admin_password`, next to `rdp_address`. Port 3389 is opened to `TF_VAR_allowed_cidr`.
+- **Test data** goes to `C:/testdata` (`data_path`), which the init script creates;
+  `TF_VAR_aws_data_path` moves it. It is not under the Administrator profile, which a
+  folder made before the first logon would split into `Administrator.<host>`.
+- Not supported on Windows: **NFS** (EFS has no Windows client; the plan refuses the
+  combination) and **rsync**. centipede moves files to and from a Windows host over
+  SFTP instead, listing the tree with PowerShell, so a Windows VM can be either end of
+  a filesystem migration. gendata's SFTP works too.
+- **Fixed at creation time.** Changing `TF_VAR_aws_vm_os` takes
+  `prepare.sh aws vm --force`, which **re-creates the VM**.
+
+**AWS vm with servers on it** — list them in `TF_VAR_aws_vm_servers` and they are
+installed **natively on the VM (no Docker)**, on Ubuntu or Windows, each listening on all
+interfaces with one shared account:
+
+```dotenv
+TF_VAR_aws_vm_servers='["minio","mysql","mariadb","postgresql","mongodb"]'
+TF_VAR_aws_vm_server_username=dbadmin
+TF_VAR_aws_vm_server_password=Cent1pede!2024   # required once a server is listed; moved into OpenBao by up.sh
+TF_VAR_aws_instance_type=t3.large              # five servers need memory
+TF_VAR_aws_vm_volume_size=50
+TF_VAR_allowed_cidr=203.0.113.7/32             # your own IP - see the warning below
+```
+
+| Server | Port | Ubuntu 22.04 | Windows Server 2022 | Account |
+|---|---|---|---|---|
+| minio | 9000, console 9001 | GitHub release binary, systemd `cptf-minio` | GitHub release `.exe`, WinSW service `cptf-minio` | root user; bucket `TF_VAR_aws_vm_minio_bucket` created |
+| mysql | 3306 | official tarball in `/opt/mysql`, `cptf-mysql` | official ZIP in `C:\cptf\mysql`, `cptf-mysql` | `'<user>'@'%'`, all privileges |
+| mariadb | **3307** | official tarball in `/opt/mariadb`, `cptf-mariadb` | official ZIP in `C:\cptf\mariadb`, `cptf-mariadb` | `'<user>'@'%'`, all privileges |
+| postgresql | 5432 | PGDG apt, `postgresql` | EDB binaries ZIP in `C:\cptf\postgresql`, `cptf-postgresql` | SUPERUSER role |
+| mongodb | 27017 | mongodb-org apt, `mongod` | MSI + mongosh + Database Tools, `MongoDB` | `root` in the admin database |
+
+- `TF_VAR_aws_vm_db_name` (`testdb`) is created on mysql, mariadb and postgresql; mongodb
+  creates it on first write. mariadb moves to 3307 so it can run next to mysql — each has
+  its own directories, socket and option file.
+- **The install runs over SSH once the VM is up**, and `prepare.sh` waits for it: when it
+  returns, the servers are ready, and when the install fails, so does the apply. Five
+  servers take about 10 minutes on Ubuntu and 15–25 on Windows.
+- **Changing the list, a version or the account later** — `prepare.sh aws vm --force`
+  runs the install again **on the same VM**; it is not re-created. What is installed is
+  kept and every account is reset. A server taken off the list loses its ports and
+  outputs but stays installed. On mongodb, a changed password cannot be applied once
+  authorization is on (the script logs in with the new one); re-create the VM for that.
+- **CLI tools are on PATH** for the login account, SSH and RDP alike: `mysql` and
+  `mysqldump` are MySQL's; MariaDB's are `mariadb`, `mariadb-dump`, ... (its own
+  `mysql*` copies are left off PATH, or behind MySQL's on Windows); plus `psql`/`pg_dump`,
+  `mongosh`/`mongodump` and `minio`. Connect over TCP with the port —
+  `mariadb -h 127.0.0.1 -P 3307 -u dbadmin -p` — since the sockets are not in the
+  clients' default places. `mc` is not installed.
+- **Versions** are `.env` settings — `TF_VAR_aws_vm_{mysql,mariadb,postgres,mongodb}_version`
+  and `TF_VAR_aws_vm_minio_release`; `.env.example` lists the defaults. On Ubuntu,
+  postgresql and mongodb come from apt, so they get the latest minor of the configured
+  series; everything else is exactly the version given.
+- **MinIO** comes from its GitHub releases, checked against a pinned SHA-256: dl.min.io no
+  longer serves the community builds and the open-source project is archived.
+  `RELEASE.2025-09-07T16-13-09Z` is the last release that ships binaries; the later
+  security release (`2025-10-15`) is source-only, so its fix is not in it, and no more
+  will come.
+- ⚠ **Every server port is open to `TF_VAR_allowed_cidr`, which is `0.0.0.0/0` unless you
+  narrow it** — the whole internet, guarded by one password. Set it to your own IP. It
+  must still include the address this machine reaches AWS from, since the install runs
+  over SSH from here.
+- `TF_VAR_aws_vm_server_password` is a `[CREDENTIAL]` key: `ChangeMe` is refused, and
+  `up.sh` (or `./scripts/register-creds.sh`) checks it against the rules above, stores it
+  in OpenBao at `secret/vm/aws` and blanks it in `.env`. The vm module reads it from there.
+  To change it, put the new one in `.env`, run `./scripts/register-creds.sh`, then
+  `prepare.sh aws vm --force`. Like every password here, it also ends up in the tofu
+  state.
+
+Fill them with test data with `./scripts/gen-data.sh --source vm` — see
+[Step 5](#step-5--load-test-data-optional).
 
 **AWS vm with NFS (EFS)** — set `TF_VAR_aws_nfs_enabled=true` before `prepare.sh aws vm`
 and the VM comes with an EFS file system, mounted over NFS (v4.1) on first boot:
@@ -398,6 +494,7 @@ Connection info is printed automatically when an apply finishes.
 | bucket (either CSP) | seconds |
 | the automatic `ncp network` step | about a minute, added to the first `ncp vm` or `ncp database` |
 | vm (either CSP) | a few minutes |
+| `aws vm` with `TF_VAR_aws_vm_servers` | about 10 minutes more on Ubuntu, 15–25 on Windows |
 | `aws database` | several minutes |
 | `ncp database` | **about 30 minutes** — do not interrupt it |
 
@@ -445,15 +542,15 @@ Fills the prepared resources with dummy and seed data by building and running
 |---|---|
 | `bucket` | Uploads dummy files (CSV, TXT, JSON, XML, SQL, PNG, GIF, ZIP) |
 | `filesystem` | Transfers dummy files to the VM over SFTP |
-| `database` | Loads the `shop_db` schema and seed data into whichever engines the provider has (AWS: MySQL, MariaDB, PostgreSQL / NCP: MySQL, PostgreSQL, MongoDB) |
+| `database` | Loads the `shop_db` schema and seed data into whichever engines the provider has (AWS: MySQL, MariaDB, PostgreSQL / NCP: MySQL, PostgreSQL, MongoDB / the AWS VM's servers, with `--source vm`: any of the four) |
 
 **Prerequisites:** the runner container is up (Step 2), the target resources exist
 (Step 3), `go` is installed, and for NCP managed databases the public domain has been
 issued (Step 4) — engines without one are skipped with a warning.
 
 **The filesystem target writes to `data_path`**, the vm module's output —
-`/home/ubuntu/testdata` on AWS, `/root/testdata` on NCP, following each image's
-login account. `conn-info.sh <csp> vm` prints it, and that path is the source a
+`/home/ubuntu/testdata` on AWS (`C:/testdata` on a Windows VM), `/root/testdata` on NCP,
+following each image's login account. `conn-info.sh <csp> vm` prints it, and that path is the source a
 filesystem migration reads from. Override it with `TF_VAR_aws_data_path` /
 `TF_VAR_ncp_data_path`, to somewhere that account can write — SFTP does not sudo.
 
@@ -479,8 +576,26 @@ what lets gendata have a single input path.
 ./scripts/gen-data.sh -h                              # full option list
 ```
 
+**The servers installed on the AWS VM** (`TF_VAR_aws_vm_servers`) are filled with
+`--source vm`. Every value then comes from the `vm` module — the servers' addresses and
+their one account — so neither the `bucket` and `database` modules nor OpenBao are read,
+and they need not exist:
+
+```bash
+./scripts/gen-data.sh --source vm --target all                  # VM files + MinIO + the VM's DBs
+./scripts/gen-data.sh --source vm --target database             # mysql, mariadb, postgresql, mongodb
+./scripts/gen-data.sh --source vm --target database --engine mariadb
+./scripts/gen-data.sh --source vm --target bucket               # the VM's MinIO bucket
+```
+
+The bucket target talks to MinIO at `http://<vm>:9000`, path-style. The bulk-size check
+uses the VM's volume (`TF_VAR_aws_vm_volume_size`), which the databases share with the OS
+and the filesystem data. The run summary goes to its own file,
+`gendata/runs/aws-<prefix>-vm-last-run.json`.
+
 | Option | Default | Values |
 |---|---|---|
+| `--source` | `managed` | `managed`: the `bucket` and `database` modules. `vm`: the servers on the AWS VM (aws only). Read by `gen-data.sh` itself, not passed to gendata |
 | `--target` | `all` | `bucket`, `filesystem`, `database`, `all` |
 | `--engine` | `all` | `mysql`, `mariadb`, `postgresql`, `mongodb`, `all`. An engine the provider does not serve, or one not prepared (`prepare.sh --engine`), has no host output and is skipped |
 | `--provider` | `aws` | `aws`, `ncp` |
@@ -610,8 +725,12 @@ Copy the `ssh_command` output and run it from the `tofuenv` directory:
 
 ```bash
 ssh -i ssh_keys/aws-cptf-vm.pem ubuntu@3.35.xxx.xxx          # AWS: user is ubuntu
+ssh -i ssh_keys/aws-cptf-vm.pem Administrator@3.35.xxx.xxx   # AWS Windows: Administrator
 ssh -i ssh_keys/ncp-cptf-vm-a1b2c3.pem root@223.130.xxx.xxx  # NCP: user is root
 ```
+
+A Windows VM also takes RDP at `rdp_address`, as `Administrator` with `admin_password`
+(`./scripts/conn-info.sh aws vm --reveal`).
 
 The private key is generated by tofu and written to `ssh_keys/` with mode 600. It is
 gitignored; never commit it. The file name carries the prefix — on NCP the whole login
@@ -637,11 +756,13 @@ reading them stays CSP-agnostic:
 |---|---|
 | bucket | `bucket_name`, `bucket_region`; AWS also `bucket_arn`, `bucket_domain_name`; NCP also `s3_endpoint`, `s3_signing_region` |
 | every module | `name_prefix` — the prefix, and so the workspace, the environment lives in |
-| vm | `public_ip`, `ssh_user`, `key_file`, `ssh_command`, `data_path`; AWS also `nfs_enabled`, `nfs_file_system_id`, `nfs_dns_name`, `nfs_mount_path`; NCP also `private_ip`, `login_key_name` |
+| vm | `public_ip`, `ssh_user`, `key_file`, `ssh_command`, `data_path`; AWS also `nfs_enabled`, `nfs_file_system_id`, `nfs_dns_name`, `nfs_mount_path`, `vm_os`, `admin_password` and `rdp_address` (Windows); NCP also `private_ip`, `login_key_name` |
+| vm, AWS with servers | `vm_servers`, `server_username`, `server_password`, `db_name`; `<engine>_host`/`<engine>_port` named as in the database module (`mysql`, `mariadb`, `postgres`, `mongodb`); `minio_endpoint`, `minio_console_url`, `minio_bucket`. A server not installed has null outputs |
 | database | `db_name`, `db_username`, `db_password`; per engine `<engine>_host`, `<engine>_port`, `<engine>_connection_uri` where `<engine>` is `mysql`, `mariadb` or `postgres` on AWS, and `mysql`, `postgres` or `mongodb` on NCP |
 | database, NCP managed | `<engine>_public_domain`, `<engine>_private_domain`, `<engine>_acg_no` |
 
-Sensitive outputs (`db_password`, every `*_connection_uri`) need `-raw`. On NCP,
+Sensitive outputs (`db_password`, every `*_connection_uri`, and the vm's `server_password`
+and `admin_password`) need `-raw`. On NCP,
 `<engine>_host` **is** the public domain, so it and the URI are empty until Step 4 is
 done; `<engine>_private_domain` only resolves inside the VPC.
 

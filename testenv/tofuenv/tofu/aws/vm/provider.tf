@@ -15,6 +15,16 @@ data "vault_kv_secret_v2" "aws" {
   name  = "csp/aws"
 }
 
+# The password of the servers installed on the VM (secret/vm/aws, registered from
+# TF_VAR_aws_vm_server_password by register-creds.sh). Read only when there are
+# servers to install, so a VM without them needs no such secret.
+data "vault_kv_secret_v2" "vm" {
+  count = length(var.aws_vm_servers) > 0 ? 1 : 0
+
+  mount = "secret"
+  name  = "vm/aws"
+}
+
 provider "aws" {
   region     = var.aws_region
   access_key = data.vault_kv_secret_v2.aws.data["AWS_ACCESS_KEY_ID"]

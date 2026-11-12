@@ -64,7 +64,7 @@ prepare-volumes: ## Create bind-mount directories with correct ownership
 		deployments/docker-compose/data/cm-beetle-container/log \
 		deployments/docker-compose/data/cm-damselfly-container/db \
 		deployments/docker-compose/data/cm-honeybee-container \
-		deployments/docker-compose/data/openbao-honeybee-container/data \
+		deployments/docker-compose/data/openbao-honeybee-data \
 		2>/dev/null || \
 	sudo mkdir -p \
 		deployments/docker-compose/data/cb-tumblebug-container/meta_db \
@@ -78,7 +78,7 @@ prepare-volumes: ## Create bind-mount directories with correct ownership
 		deployments/docker-compose/data/cm-beetle-container/log \
 		deployments/docker-compose/data/cm-damselfly-container/db \
 		deployments/docker-compose/data/cm-honeybee-container \
-		deployments/docker-compose/data/openbao-honeybee-container/data
+		deployments/docker-compose/data/openbao-honeybee-data
 	@# Fix ownership for mc-terrarium volume (container runs as appuser, uid 1000)
 	@if [ "$$(stat -c '%u' deployments/docker-compose/data/mc-terrarium-container/.terrarium 2>/dev/null)" != "$$(id -u)" ]; then \
 		echo "Fixing ownership of mc-terrarium volume..."; \
@@ -137,7 +137,7 @@ clean-db: compose-down ## Clean all database metadata and persistent data (exclu
 clean-all: compose-down clean-db ## Full reset including OpenBao (requires re-init)
 	@echo "Cleaning OpenBao configuration and secrets..."
 	@sudo rm -rf deployments/docker-compose/data/openbao-data/
-	@sudo rm -rf deployments/docker-compose/data/openbao-honeybee-container/
+	@sudo rm -rf deployments/docker-compose/data/openbao-honeybee-data/
 	@find deployments/docker-compose/openbao/secrets -type f ! -name ".gitkeep" -delete
 	@sed -i 's/^VAULT_TOKEN=.*/VAULT_TOKEN=/' deployments/docker-compose/.env 2>/dev/null || true
 	@echo "Cleaned! Run 'make up' to re-initialize."

@@ -96,6 +96,8 @@ sensitive_outputs() {
                 echo "db_password mysql_connection_uri mariadb_connection_uri postgres_connection_uri"
             fi
             ;;
+        # The aws VM's installed-server account, and the windows RDP password.
+        vm) [ "$CSP" = "aws" ] && echo "server_password admin_password" || echo "" ;;
         *) echo "" ;;
     esac
 }

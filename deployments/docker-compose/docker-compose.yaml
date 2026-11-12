@@ -10,49 +10,79 @@ x-default-healthcheck: &default-healthcheck
 
 services:
   # ============================================================================
-  # CM-Centipede
-  # ----------------------------------------------------------------------------
-  # Placeholder — no Dockerfile/source code exists in this repository yet.
-  # Uncomment and adjust once cmd/cm-centipede/main.go and a Dockerfile are
-  # added (see cloud-barista/cm-beetle's Dockerfile + docker-compose.yaml for
-  # the pattern this block is modeled on). Port 8057 below is only an example;
-  # pick a free port when the service is wired up for real.
+  # CM-Centipede (Data Migration)
   # ============================================================================
-  # cm-centipede:
-  #   image: cloudbaristaorg/cm-centipede:0.1.0
-  #   container_name: cm-centipede
-  #   # build:
-  #   #   context: ${PROJECT_ROOT}
-  #   #   dockerfile: Dockerfile
-  #   platform: linux/amd64
-  #   networks:
-  #     - cloud-barista
-  #   ports:
-  #     - target: 8057
-  #       published: 8057
-  #       protocol: tcp
-  #   depends_on:
-  #     - cb-tumblebug
-  #     - cm-beetle
-  #     - cm-honeybee
-  #   volumes:
-  #     - ./data/cm-centipede-container/log/:/app/log/
-  #     - ./data/cm-centipede-container/db/:/app/db/
-  #   environment:
-  #     - CENTIPEDE_SELF_ENDPOINT=localhost:8057
-  #     - CENTIPEDE_API_USERNAME=${CENTIPEDE_API_USERNAME:?Please set CENTIPEDE_API_USERNAME}
-  #     - CENTIPEDE_API_PASSWORD=${CENTIPEDE_API_PASSWORD:?Please set CENTIPEDE_API_PASSWORD}
-  #     # Passphrase the stored connection credentials are encrypted with. Keep
-  #     # it together with the db/ volume above: losing or changing either one
-  #     # makes every stored credential unrecoverable.
-  #     - CENTIPEDE_ENCRYPTION_SECRET_KEY=${CENTIPEDE_ENCRYPTION_SECRET_KEY:?Please set CENTIPEDE_ENCRYPTION_SECRET_KEY}
-  #     - CENTIPEDE_TUMBLEBUG_ENDPOINT=http://cb-tumblebug:1323
-  #     - CENTIPEDE_BEETLE_ENDPOINT=http://cm-beetle:8056
-  #     - CENTIPEDE_HONEYBEE_ENDPOINT=http://cm-honeybee:8081
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:8057/centipede/readyz"]
-  #     <<: *default-healthcheck
-  #   restart: unless-stopped
+  cm-centipede:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: cloudbaristaorg/cm-centipede:latest  
+    container_name: cm-centipede
+    networks:
+      - cloud-barista
+    ports:
+      - target: 8085
+        published: 8085
+        protocol: tcp
+    depends_on:
+      # CM-Honeybee has to be healthy first: it creates the RSA key mounted below.
+      cm-honeybee:
+        condition: service_healthy
+      cm-beetle:
+        condition: service_started
+      cb-tumblebug:
+        condition: service_started
+    volumes:
+      - ./data/cm-centipede-container/log/:/app/log/
+      - ./data/cm-centipede-container/db/:/app/db/
+      # Staging root for relays, cross-storage transfers and DBMS dumps (see
+      # CENTIPEDE_MIGRATION_STAGING_DIR below). On the host disk rather than in
+      # the container's writable layer: a dump can be as large as the source
+      # database.
+      - ./data/cm-centipede-container/staging/:/app/staging/
+      # CM-Honeybee encrypts its API responses with its own RSA key, so
+      # CM-Centipede has to read that exact private key. Mounted read-only on
+      # purpose: with write access CM-Centipede would generate a fresh key here
+      # whenever the file is missing and then silently fail to decrypt every
+      # CM-Honeybee response.
+      - ./data/cm-honeybee-container/data/:/root/.cm-honeybee/:ro
+    environment:
+      # The listen port is taken from this endpoint.
+      - CENTIPEDE_SELF_ENDPOINT=localhost:8085
+      - CENTIPEDE_API_USERNAME=${CENTIPEDE_API_USERNAME:?Please set CENTIPEDE_API_USERNAME}
+      - CENTIPEDE_API_PASSWORD=${CENTIPEDE_API_PASSWORD:?Please set CENTIPEDE_API_PASSWORD}
+      - CENTIPEDE_HONEYBEE_ENDPOINT=http://cm-honeybee:8081
+      - CENTIPEDE_HONEYBEE_PRIVATE_KEY_PATH=/root/.cm-honeybee/honeybee.key
+      - CENTIPEDE_BEETLE_ENDPOINT=http://cm-beetle:8056
+      # CM-Centipede authenticates to CM-Beetle / CB-Tumblebug with their credentials.
+      - CENTIPEDE_BEETLE_USERNAME=${BEETLE_API_USERNAME:?Please set BEETLE_API_USERNAME}
+      - CENTIPEDE_BEETLE_PASSWORD=${BEETLE_API_PASSWORD:?Please set BEETLE_API_PASSWORD}
+      - CENTIPEDE_TUMBLEBUG_ENDPOINT=http://cb-tumblebug:1323
+      - CENTIPEDE_TUMBLEBUG_USERNAME=${TB_API_USERNAME:?Please set TB_API_USERNAME}
+      - CENTIPEDE_TUMBLEBUG_PASSWORD=${TB_API_PASSWORD:?Please set TB_API_PASSWORD}
+      # Passphrase the stored connection credentials are encrypted with. Keep
+      # it with the db/ volume above: losing or changing either one makes every
+      # stored credential unrecoverable.
+      - CENTIPEDE_ENCRYPTION_SECRET_KEY=${CENTIPEDE_ENCRYPTION_SECRET_KEY:?Please set CENTIPEDE_ENCRYPTION_SECRET_KEY}      
+      - CENTIPEDE_DB_PATH=/app/db/cm-centipede.db
+      - CENTIPEDE_LOGFILE_PATH=/app/log/cm-centipede.log
+      # Default staging root, used when a migration request names no stagingDir.
+      # Must match the staging/ volume above.
+      - CENTIPEDE_MIGRATION_STAGING_DIR=/app/staging
+      # Default concurrency, used when a migration request names none: how many
+      # transfers each item runs at once (rsync processes, objects and parts,
+      # restore connections). 1 to 32; 0 leaves data-mig's default, 4. The
+      # server refuses to start on a value out of range.
+      - CENTIPEDE_MIGRATION_CONCURRENCY=${CENTIPEDE_MIGRATION_CONCURRENCY:-0}
+      # trace | debug | info | warn | error | fatal ("trace"/"debug" also make
+      # GORM print every SQL statement)
+      - CENTIPEDE_LOGLEVEL=info
+    healthcheck:
+      # /centipede/readyz sits behind the same Basic Auth as the rest of the API,
+      # so the check has to send credentials.
+      test: ["CMD-SHELL", "curl -f -u $$CENTIPEDE_API_USERNAME:$$CENTIPEDE_API_PASSWORD http://localhost:8085/centipede/readyz"]
+      <<: *default-healthcheck
+    restart: unless-stopped
 
   # ============================================================================
   # CM-Beetle (Infrastructure Migration)
@@ -60,7 +90,7 @@ services:
   # that CM-Beetle has already migrated/provisioned via CB-Tumblebug.
   # ============================================================================
   cm-beetle:
-    image: cloudbaristaorg/cm-beetle:0.5.11
+    image: cloudbaristaorg/cm-beetle:0.6.4
     container_name: cm-beetle
     platform: linux/amd64
     networks:
@@ -75,65 +105,64 @@ services:
       - ./data/cm-beetle-container/log/:/app/log/
       - ./data/cm-beetle-container/db/:/app/db/
     environment:
+      # - BEETLE_ROOT=/app
       - BEETLE_SELF_ENDPOINT=localhost:8056
+      # - BEETLE_API_ALLOW_ORIGINS=*
+      # - BEETLE_API_AUTH_ENABLED=true
+      # - BEETLE_API_AUTH_MODE=basic
       - BEETLE_API_USERNAME=${BEETLE_API_USERNAME:?Please set BEETLE_API_USERNAME}
       - BEETLE_API_PASSWORD=${BEETLE_API_PASSWORD:?Please set BEETLE_API_PASSWORD}
+      # - BEETLE_LKVSTORE_PATH=/app/db/beetle.db
+      # - BEETLE_LOGFILE_PATH=/app/log/beetle.log
+      # - BEETLE_LOGFILE_MAXSIZE=1000
+      # - BEETLE_LOGFILE_MAXBACKUPS=3
+      # - BEETLE_LOGFILE_MAXAGE=30
+      # - BEETLE_LOGFILE_COMPRESS=false
+      # - BEETLE_LOGLEVEL=debug
+      # - BEETLE_LOGWRITER=both
       - BEETLE_NODE_ENV=development
+      # - BEETLE_AUTOCONTROL_DURATION_MS=10000
       - BEETLE_TUMBLEBUG_ENDPOINT=http://cb-tumblebug:1323
+      # - BEETLE_TUMBLEBUG_API_USERNAME=default
+      # - BEETLE_TUMBLEBUG_API_PASSWORD=default
+      # Set REQUESTS_PER_SEC to CB-Tumblebug's own per-client-IP limit
+      # - BEETLE_TUMBLEBUG_RETRIEVAL_REQUESTS_PER_SEC=2
+      # - BEETLE_TUMBLEBUG_RETRIEVAL_MAX_WAIT_SEC=8
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8056/beetle/readyz"]
       <<: *default-healthcheck
     restart: unless-stopped
 
   # ============================================================================
-  # CM-Damselfly (On-Premise & Cloud Infrastructure Model Repository)
-  # ============================================================================
-  cm-damselfly:
-    image: cloudbaristaorg/cm-damselfly:0.5.3
-    container_name: cm-damselfly
-    networks:
-      - cloud-barista
-    ports:
-      - "8088:8088"
-    environment:
-      - DAMSELFLY_API_ALLOW_ORIGINS=*
-      - DAMSELFLY_LOG_LEVEL=debug
-    volumes:
-      - ./data/cm-damselfly-container/db/:/app/db/
-    restart: always
-
-  # ============================================================================
   # CM-Honeybee (On-Premise / Source Computing Information Collector)
-  # Built locally from the sibling cm-honeybee repo, cloned next to this repo:
-  #   some-parent-dir/{cm-centipede, cm-honeybee}
   # ============================================================================
   cm-honeybee:
-    image: cm-honeybee:local
-    # image: cm-honeybee:0.5.x
-    build:
-      context: ../../../cm-honeybee/server
-      dockerfile: Dockerfile
+    image: cloudbaristaorg/cm-honeybee:0.6.4
     container_name: cm-honeybee
     networks:
       - cloud-barista
     ports:
-      - "8081:8081" # server API
-      - "8082:8082" # agent proxy
+      - "8081:8081"
     depends_on:
       openbao-honeybee:
         condition: service_healthy
-    volumes:
-      - ./data/cm-honeybee-container/:/root/.cm-honeybee/:rw
-      - ./cm-honeybee/cm-honeybee.yaml:/conf/cm-honeybee.yaml:ro
     environment:
-      # Dedicated OpenBao endpoint. Only used by CM-Honeybee builds that
-      # include self-managed OpenBao init/unseal/KV-enable (upstream main as
-      # of 2026-08 — see https://github.com/cloud-barista/cm-honeybee/blob/main/server/docker-compose.yaml).
-      # Harmless if the checked-out cm-honeybee source predates that feature.
+      # cm-honeybee self-manages OpenBao (init/unseal/KV-enable); the unseal key +
+      # root token are stored RSA-encrypted in its DB.
       - HONEYBEE_VAULT_ADDR=http://openbao-honeybee:8200
+      # Optional overrides (defaults from server/conf/cm-honeybee.yaml):
+      # - HONEYBEE_LISTEN_PORT=8081
+      # - HONEYBEE_AGENT_PORT=8082
+      # - HONEYBEE_AGENT_REQUEST_TIMEOUT=600
+    volumes:
+      - ./data/cm-honeybee-container/data/:/root/.cm-honeybee/:rw
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/honeybee/readyz"]
-      <<: *default-healthcheck
+      # wget, not curl: the cm-honeybee image ships only BusyBox wget.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8081/honeybee/readyz"]
+      interval: 1m
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # CM-Honeybee's own dedicated OpenBao (separate from the shared "openbao"
@@ -159,13 +188,11 @@ services:
         chown -R openbao:openbao /openbao/data 2>/dev/null || true
         exec docker-entrypoint.sh server -config=/openbao/config/openbao-config.hcl
     volumes:
-      - ./data/openbao-honeybee-container/data:/openbao/data
-      - ./cm-honeybee/openbao-config.hcl:/openbao/config/openbao-config.hcl:ro
+      - ./data/openbao-honeybee-data:/openbao/data
+      - ./cm-honeybee/openbao/openbao-config.hcl:/openbao/config/openbao-config.hcl:ro
     healthcheck:
-      # 'bao status' exit codes: 0=unsealed, 1=sealed, 2=uninitialized — all
-      # three mean the process is up. CM-Honeybee builds with self-managed
-      # OpenBao init/unseal this instance themselves; older builds simply
-      # leave it uninitialized and unused.
+      # 0=unsealed, 1=sealed, 2=uninitialized: all mean OpenBao process is ready;
+      # cm-honeybee automatically initializes/unseals it on startup.
       test: ["CMD", "sh", "-c", "rc=0; bao status || rc=$$?; [ $$rc -le 2 ]"]
       interval: 10s
       timeout: 5s
@@ -175,7 +202,7 @@ services:
 
   # CB-Tumblebug
   cb-tumblebug:
-    image: cloudbaristaorg/cb-tumblebug:0.12.30
+    image: cloudbaristaorg/cb-tumblebug:0.13.8
     container_name: cb-tumblebug
     networks:
       - cloud-barista
@@ -196,9 +223,17 @@ services:
       - ./data/cb-tumblebug-container/meta_db/:/app/meta_db/
       - ./data/cb-tumblebug-container/log/:/app/log/
     environment:
+      # - TB_ROOT_PATH=/app
+      # # Enable TB_SELF_ENDPOINT to specify an endpoint for CB-TB API (default: localhost:1323)
+      # # Use public IP if you want to access the API Dashboard from outside of localhost
+      # - TB_SELF_ENDPOINT=xxx.xxx.xxx.xxx:1323
       - TB_SPIDER_REST_URL=http://cb-spider:1024/spider
       - TB_ETCD_ENDPOINTS=http://cb-tumblebug-etcd:2379
       - TB_TERRARIUM_REST_URL=http://mc-terrarium:8055/terrarium
+      - TB_IAM_MANAGER_REST_URL=http://mc-iam-manager:5000
+      # - TB_ETCD_AUTH_ENABLED=false
+      # - TB_ETCD_USERNAME=default
+      # - TB_ETCD_PASSWORD=default
       - TB_POSTGRES_ENDPOINT=cb-tumblebug-postgres:5432
       - TB_POSTGRES_DATABASE=${POSTGRES_DB:-tumblebug}
       - TB_POSTGRES_USER=${POSTGRES_USER:-tumblebug}
@@ -207,9 +242,22 @@ services:
       - TB_SPIDER_PASSWORD=${SP_API_PASSWORD:?Please set SP_API_PASSWORD}
       - TB_TERRARIUM_API_USERNAME=${TERRARIUM_API_USERNAME:?Please set TERRARIUM_API_USERNAME}
       - TB_TERRARIUM_API_PASSWORD=${TERRARIUM_API_PASSWORD:?Please set TERRARIUM_API_PASSWORD}
+      # - TB_ALLOW_ORIGINS=*
+      # - TB_AUTH_ENABLED=true
+      # - TB_AUTH_MODE=jwt
       - TB_API_USERNAME=${TB_API_USERNAME:?Please set TB_API_USERNAME}
       - TB_API_PASSWORD=${TB_API_PASSWORD:?Please set TB_API_PASSWORD}
+      # - TB_AUTOCONTROL_DURATION_MS=10000
+      # - TB_DEFAULT_NAMESPACE=default
+      # - TB_DEFAULT_CREDENTIALHOLDER=admin
+      # - TB_LOGFILE_PATH=/app/log/tumblebug.log
+      # - TB_LOGFILE_MAXSIZE=1000
+      # - TB_LOGFILE_MAXBACKUPS=3
+      # - TB_LOGFILE_MAXAGE=30
+      # - TB_LOGFILE_COMPRESS=false
       - TB_LOGLEVEL=debug
+      # - TB_LOGWRITER=both
+      # - TB_NODE_ENV=development
       - VAULT_ADDR=http://openbao:8200
       - VAULT_TOKEN=${VAULT_TOKEN:-}
     healthcheck:
@@ -284,7 +332,7 @@ services:
 
   # CB-Spider
   cb-spider:
-    image: cloudbaristaorg/cb-spider:0.12.42
+    image: cloudbaristaorg/cb-spider:0.13.20
     container_name: cb-spider
     networks:
       - cloud-barista

@@ -649,14 +649,21 @@ func capacityPreflight(cfg *config.Config, in *config.Inputs, targets map[string
 // ---------------------------------------------------------------------------
 
 func bucketParams(cfg *config.Config, in *config.Inputs, provider string) bucket.Params {
+	endpoint, lookup := cfg.ObjectStorage.EndpointOverride, cfg.ObjectStorage.BucketLookup
+	if in.BucketEndpoint != "" {
+		endpoint = in.BucketEndpoint
+	}
+	if in.BucketLookup != "" {
+		lookup = in.BucketLookup
+	}
 	return bucket.Params{
 		Provider:         provider,
 		Region:           in.Region,
 		Bucket:           in.BucketName,
 		AccessKey:        in.AccessKey,
 		SecretKey:        in.SecretKey,
-		EndpointOverride: cfg.ObjectStorage.EndpointOverride,
-		BucketLookup:     cfg.ObjectStorage.BucketLookup,
+		EndpointOverride: endpoint,
+		BucketLookup:     lookup,
 		BasePrefix:       cfg.ObjectStorage.BasePrefix,
 		Concurrency:      cfg.ObjectStorage.Concurrency,
 	}

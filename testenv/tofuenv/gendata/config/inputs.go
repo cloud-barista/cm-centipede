@@ -23,6 +23,13 @@ type Inputs struct {
 	Region     string `json:"Region"`
 	AccessKey  string `json:"AccessKey"` // object storage; from OpenBao, never from .env
 	SecretKey  string `json:"SecretKey"`
+	// BucketEndpoint and BucketLookup point the bucket target at an S3-compatible
+	// server of the environment's own - the MinIO installed on a tofuenv VM
+	// (http://<ip>:9000, path-style) - instead of the provider's endpoint. When
+	// set they win over config.json's objectStorage.endpointOverride/bucketLookup,
+	// which describe a fixed setup rather than this run's infrastructure.
+	BucketEndpoint string `json:"BucketEndpoint"`
+	BucketLookup   string `json:"BucketLookup"`
 	// vm (filesystem)
 	VMHost     string `json:"VMHost"`
 	VMUser     string `json:"VMUser"`
